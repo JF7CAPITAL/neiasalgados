@@ -13,6 +13,7 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedSaidasRouteImport } from './routes/_authenticated/saidas'
+import { Route as AuthenticatedRelatoriosRouteImport } from './routes/_authenticated/relatorios'
 import { Route as AuthenticatedRecheiosRouteImport } from './routes/_authenticated/recheios'
 import { Route as AuthenticatedProdutosRouteImport } from './routes/_authenticated/produtos'
 import { Route as AuthenticatedPainelRouteImport } from './routes/_authenticated/painel'
@@ -41,6 +42,11 @@ const IndexRoute = IndexRouteImport.update({
 const AuthenticatedSaidasRoute = AuthenticatedSaidasRouteImport.update({
   id: '/saidas',
   path: '/saidas',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedRelatoriosRoute = AuthenticatedRelatoriosRouteImport.update({
+  id: '/relatorios',
+  path: '/relatorios',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedRecheiosRoute = AuthenticatedRecheiosRouteImport.update({
@@ -110,6 +116,7 @@ export interface FileRoutesByFullPath {
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/recheios': typeof AuthenticatedRecheiosRoute
+  '/relatorios': typeof AuthenticatedRelatoriosRoute
   '/saidas': typeof AuthenticatedSaidasRoute
 }
 export interface FileRoutesByTo {
@@ -125,6 +132,7 @@ export interface FileRoutesByTo {
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/recheios': typeof AuthenticatedRecheiosRoute
+  '/relatorios': typeof AuthenticatedRelatoriosRoute
   '/saidas': typeof AuthenticatedSaidasRoute
 }
 export interface FileRoutesById {
@@ -142,6 +150,7 @@ export interface FileRoutesById {
   '/_authenticated/painel': typeof AuthenticatedPainelRoute
   '/_authenticated/produtos': typeof AuthenticatedProdutosRoute
   '/_authenticated/recheios': typeof AuthenticatedRecheiosRoute
+  '/_authenticated/relatorios': typeof AuthenticatedRelatoriosRoute
   '/_authenticated/saidas': typeof AuthenticatedSaidasRoute
 }
 export interface FileRouteTypes {
@@ -159,6 +168,7 @@ export interface FileRouteTypes {
     | '/painel'
     | '/produtos'
     | '/recheios'
+    | '/relatorios'
     | '/saidas'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -174,6 +184,7 @@ export interface FileRouteTypes {
     | '/painel'
     | '/produtos'
     | '/recheios'
+    | '/relatorios'
     | '/saidas'
   id:
     | '__root__'
@@ -190,6 +201,7 @@ export interface FileRouteTypes {
     | '/_authenticated/painel'
     | '/_authenticated/produtos'
     | '/_authenticated/recheios'
+    | '/_authenticated/relatorios'
     | '/_authenticated/saidas'
   fileRoutesById: FileRoutesById
 }
@@ -227,6 +239,13 @@ declare module '@tanstack/react-router' {
       path: '/saidas'
       fullPath: '/saidas'
       preLoaderRoute: typeof AuthenticatedSaidasRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/relatorios': {
+      id: '/_authenticated/relatorios'
+      path: '/relatorios'
+      fullPath: '/relatorios'
+      preLoaderRoute: typeof AuthenticatedRelatoriosRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/recheios': {
@@ -313,6 +332,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedPainelRoute: typeof AuthenticatedPainelRoute
   AuthenticatedProdutosRoute: typeof AuthenticatedProdutosRoute
   AuthenticatedRecheiosRoute: typeof AuthenticatedRecheiosRoute
+  AuthenticatedRelatoriosRoute: typeof AuthenticatedRelatoriosRoute
   AuthenticatedSaidasRoute: typeof AuthenticatedSaidasRoute
 }
 
@@ -327,6 +347,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedPainelRoute: AuthenticatedPainelRoute,
   AuthenticatedProdutosRoute: AuthenticatedProdutosRoute,
   AuthenticatedRecheiosRoute: AuthenticatedRecheiosRoute,
+  AuthenticatedRelatoriosRoute: AuthenticatedRelatoriosRoute,
   AuthenticatedSaidasRoute: AuthenticatedSaidasRoute,
 }
 
