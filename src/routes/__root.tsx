@@ -103,6 +103,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:title", content: "SalgaERP — Gestão para Fábrica de Salgados" },
+      { name: "description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
+      { property: "og:description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
+      { name: "twitter:description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2ce52fbc-37f4-407d-abd5-58e631b68cdf/id-preview-6c56b0c6--7ea57e35-ca16-4c9c-be55-62d11eb714b7.lovable.app-1782911571175.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/2ce52fbc-37f4-407d-abd5-58e631b68cdf/id-preview-6c56b0c6--7ea57e35-ca16-4c9c-be55-62d11eb714b7.lovable.app-1782911571175.png" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
