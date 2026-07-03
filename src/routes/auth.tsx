@@ -69,14 +69,12 @@ function AuthPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-3 flex size-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-            <ChefHat className="size-7" />
-          </div>
-          <h1 className="font-display text-3xl font-bold">SalgaERP</h1>
+          <img src={neiaLogo.url} alt="Neia Salgados" className="mb-4 h-24 w-auto object-contain" />
           <p className="mt-1 text-sm text-muted-foreground">
             Gestão industrial para fábricas de salgados
           </p>
         </div>
+
 
         <div className="rounded-2xl border border-border bg-card p-6 shadow-xl">
           <Tabs defaultValue="login">
