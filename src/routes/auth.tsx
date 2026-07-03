@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { createFileRoute, useNavigate, redirect } from "@tanstack/react-router";
-import { ChefHat, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
+import neiaLogo from "@/assets/neia-logo.png.asset.json";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+
 
 export const Route = createFileRoute("/auth")({
   ssr: false,
@@ -67,14 +69,12 @@ function AuthPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-3 flex size-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-            <ChefHat className="size-7" />
-          </div>
-          <h1 className="font-display text-3xl font-bold">SalgaERP</h1>
+          <img src={neiaLogo.url} alt="Neia Salgados" className="mb-4 h-24 w-auto object-contain" />
           <p className="mt-1 text-sm text-muted-foreground">
             Gestão industrial para fábricas de salgados
           </p>
         </div>
+
 
         <div className="rounded-2xl border border-border bg-card p-6 shadow-xl">
           <Tabs defaultValue="login">

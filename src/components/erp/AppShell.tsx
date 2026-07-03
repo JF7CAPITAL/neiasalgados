@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { Menu, LogOut, ChefHat, X } from "lucide-react";
+import { Menu, LogOut, X } from "lucide-react";
+import neiaLogo from "@/assets/neia-logo.png.asset.json";
+
 import { useQueryClient } from "@tanstack/react-query";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -63,17 +65,12 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
 
 function Brand() {
   return (
-    <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-5">
-      <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-        <ChefHat className="size-5" />
-      </div>
-      <div className="leading-tight">
-        <p className="font-display text-lg font-bold text-sidebar-foreground">SalgaERP</p>
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Fábrica de Salgados</p>
-      </div>
+    <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-4">
+      <img src={neiaLogo.url} alt="Neia Salgados" className="h-11 w-auto object-contain" />
     </div>
   );
 }
+
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -101,12 +98,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Mobile drawer */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-72 border-sidebar-border bg-sidebar p-0">
-          <div className="flex items-center justify-between border-b border-sidebar-border px-5 py-3">
-            <span className="font-display text-lg font-bold">SalgaERP</span>
+          <div className="flex items-center justify-between border-b border-sidebar-border px-4 py-3">
+            <img src={neiaLogo.url} alt="Neia Salgados" className="h-10 w-auto object-contain" />
             <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)}>
               <X className="size-5" />
             </Button>
           </div>
+
           <NavContent onNavigate={() => setMobileOpen(false)} />
         </SheetContent>
       </Sheet>

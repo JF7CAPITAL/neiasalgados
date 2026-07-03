@@ -88,14 +88,15 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "SalgaERP — Gestão para Fábrica de Salgados" },
+      { title: "Neia Salgados — Gestão para Fábrica de Salgados" },
       {
         name: "description",
         content:
           "ERP industrial para fábricas de salgados: produção por massadas, estoque em tempo real, ordens automáticas e controle total.",
       },
-      { name: "author", content: "SalgaERP" },
-      { property: "og:title", content: "SalgaERP — Gestão para Fábrica de Salgados" },
+      { name: "author", content: "Neia Salgados" },
+      { property: "og:title", content: "Neia Salgados — Gestão para Fábrica de Salgados" },
+
       {
         property: "og:description",
         content:
@@ -103,7 +104,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:title", content: "SalgaERP — Gestão para Fábrica de Salgados" },
+      { name: "twitter:title", content: "Neia Salgados — Gestão para Fábrica de Salgados" },
       { name: "description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
       { property: "og:description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
       { name: "twitter:description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
@@ -112,8 +113,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
     links: [
       { rel: "stylesheet", href: appCss },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "icon", href: "/favicon.png", type: "image/png" },
     ],
+
   }),
   shellComponent: RootShell,
   component: RootComponent,
