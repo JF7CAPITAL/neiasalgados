@@ -65,17 +65,12 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
 
 function Brand() {
   return (
-    <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-5">
-      <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-        <ChefHat className="size-5" />
-      </div>
-      <div className="leading-tight">
-        <p className="font-display text-lg font-bold text-sidebar-foreground">SalgaERP</p>
-        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Fábrica de Salgados</p>
-      </div>
+    <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-4">
+      <img src={neiaLogo.url} alt="Neia Salgados" className="h-11 w-auto object-contain" />
     </div>
   );
 }
+
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
