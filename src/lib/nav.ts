@@ -33,7 +33,9 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Ordens de Serviço", to: "/ordens", icon: ClipboardList, roles: ["admin", "producao", "compras", "estoque"], group: "Produção" },
 
   { label: "Estoque de Acabados", to: "/estoque", icon: Boxes, roles: ["admin", "estoque", "producao"], group: "Estoque" },
+  { label: "Lançar Entradas", to: "/entradas", icon: ArrowDownToLine, roles: ["admin", "estoque", "compras", "producao"], group: "Estoque" },
   { label: "Lançar Saídas", to: "/saidas", icon: ArrowUpFromLine, roles: ["admin", "estoque", "operacional", "producao"], group: "Estoque" },
+
   { label: "Almoxarifado", to: "/almoxarifado", icon: Warehouse, roles: ["admin", "estoque", "compras"], group: "Estoque" },
   { label: "Fornecedores", to: "/fornecedores", icon: Truck, roles: ["admin", "compras"], group: "Estoque" },
 
