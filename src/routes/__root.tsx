@@ -104,7 +104,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:title", content: "SalgaERP — Gestão para Fábrica de Salgados" },
+      { name: "twitter:title", content: "Neia Salgados — Gestão para Fábrica de Salgados" },
       { name: "description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
       { property: "og:description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
       { name: "twitter:description", content: "Web ERP for managing a snack factory, automating operations and centralizing data." },
