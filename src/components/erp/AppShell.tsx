@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { Menu, LogOut, ChefHat, X } from "lucide-react";
+import { Menu, LogOut, X } from "lucide-react";
+import neiaLogo from "@/assets/neia-logo.png.asset.json";
+
 import { useQueryClient } from "@tanstack/react-query";
 
 import { supabase } from "@/integrations/supabase/client";
