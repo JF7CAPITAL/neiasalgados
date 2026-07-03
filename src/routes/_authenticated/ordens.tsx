@@ -116,7 +116,7 @@ function OrdensPage() {
         supplier_id: p.supplier_id || null,
         quantidade_necessaria: p.quantidade,
         preco_medio: p.preco || 0,
-        prioridade: p.prioridade as PurchOrder["prioridade"],
+        prioridade: p.prioridade as "baixa" | "media" | "alta" | "urgente",
         observacoes: p.obs || null,
         auto_gerada: false,
       }).select("id").single();
