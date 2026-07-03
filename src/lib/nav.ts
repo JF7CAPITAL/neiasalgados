@@ -4,6 +4,7 @@ import {
   Package,
   Boxes,
   ArrowUpFromLine,
+  ArrowDownToLine,
   Warehouse,
   UtensilsCrossed,
   ClipboardList,
@@ -14,6 +15,7 @@ import {
   History,
   type LucideIcon,
 } from "lucide-react";
+
 
 export interface NavItem {
   label: string;
