@@ -98,12 +98,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Mobile drawer */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-72 border-sidebar-border bg-sidebar p-0">
-          <div className="flex items-center justify-between border-b border-sidebar-border px-5 py-3">
-            <span className="font-display text-lg font-bold">SalgaERP</span>
+          <div className="flex items-center justify-between border-b border-sidebar-border px-4 py-3">
+            <img src={neiaLogo.url} alt="Neia Salgados" className="h-10 w-auto object-contain" />
             <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)}>
               <X className="size-5" />
             </Button>
           </div>
+
           <NavContent onNavigate={() => setMobileOpen(false)} />
         </SheetContent>
       </Sheet>
