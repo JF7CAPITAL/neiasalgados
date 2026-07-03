@@ -88,14 +88,15 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "SalgaERP — Gestão para Fábrica de Salgados" },
+      { title: "Neia Salgados — Gestão para Fábrica de Salgados" },
       {
         name: "description",
         content:
           "ERP industrial para fábricas de salgados: produção por massadas, estoque em tempo real, ordens automáticas e controle total.",
       },
-      { name: "author", content: "SalgaERP" },
-      { property: "og:title", content: "SalgaERP — Gestão para Fábrica de Salgados" },
+      { name: "author", content: "Neia Salgados" },
+      { property: "og:title", content: "Neia Salgados — Gestão para Fábrica de Salgados" },
+
       {
         property: "og:description",
         content:
