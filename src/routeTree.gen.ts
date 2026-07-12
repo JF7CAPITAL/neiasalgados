@@ -14,6 +14,7 @@ import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedSaidasRouteImport } from './routes/_authenticated/saidas'
 import { Route as AuthenticatedRelatoriosRouteImport } from './routes/_authenticated/relatorios'
+import { Route as AuthenticatedRelatorioProducaoRouteImport } from './routes/_authenticated/relatorio-producao'
 import { Route as AuthenticatedRecheiosRouteImport } from './routes/_authenticated/recheios'
 import { Route as AuthenticatedProdutosRouteImport } from './routes/_authenticated/produtos'
 import { Route as AuthenticatedPainelRouteImport } from './routes/_authenticated/painel'
@@ -50,6 +51,12 @@ const AuthenticatedRelatoriosRoute = AuthenticatedRelatoriosRouteImport.update({
   path: '/relatorios',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedRelatorioProducaoRoute =
+  AuthenticatedRelatorioProducaoRouteImport.update({
+    id: '/relatorio-producao',
+    path: '/relatorio-producao',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedRecheiosRoute = AuthenticatedRecheiosRouteImport.update({
   id: '/recheios',
   path: '/recheios',
@@ -123,6 +130,7 @@ export interface FileRoutesByFullPath {
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/recheios': typeof AuthenticatedRecheiosRoute
+  '/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
   '/relatorios': typeof AuthenticatedRelatoriosRoute
   '/saidas': typeof AuthenticatedSaidasRoute
 }
@@ -140,6 +148,7 @@ export interface FileRoutesByTo {
   '/painel': typeof AuthenticatedPainelRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/recheios': typeof AuthenticatedRecheiosRoute
+  '/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
   '/relatorios': typeof AuthenticatedRelatoriosRoute
   '/saidas': typeof AuthenticatedSaidasRoute
 }
@@ -159,6 +168,7 @@ export interface FileRoutesById {
   '/_authenticated/painel': typeof AuthenticatedPainelRoute
   '/_authenticated/produtos': typeof AuthenticatedProdutosRoute
   '/_authenticated/recheios': typeof AuthenticatedRecheiosRoute
+  '/_authenticated/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
   '/_authenticated/relatorios': typeof AuthenticatedRelatoriosRoute
   '/_authenticated/saidas': typeof AuthenticatedSaidasRoute
 }
@@ -178,6 +188,7 @@ export interface FileRouteTypes {
     | '/painel'
     | '/produtos'
     | '/recheios'
+    | '/relatorio-producao'
     | '/relatorios'
     | '/saidas'
   fileRoutesByTo: FileRoutesByTo
@@ -195,6 +206,7 @@ export interface FileRouteTypes {
     | '/painel'
     | '/produtos'
     | '/recheios'
+    | '/relatorio-producao'
     | '/relatorios'
     | '/saidas'
   id:
@@ -213,6 +225,7 @@ export interface FileRouteTypes {
     | '/_authenticated/painel'
     | '/_authenticated/produtos'
     | '/_authenticated/recheios'
+    | '/_authenticated/relatorio-producao'
     | '/_authenticated/relatorios'
     | '/_authenticated/saidas'
   fileRoutesById: FileRoutesById
@@ -258,6 +271,13 @@ declare module '@tanstack/react-router' {
       path: '/relatorios'
       fullPath: '/relatorios'
       preLoaderRoute: typeof AuthenticatedRelatoriosRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/relatorio-producao': {
+      id: '/_authenticated/relatorio-producao'
+      path: '/relatorio-producao'
+      fullPath: '/relatorio-producao'
+      preLoaderRoute: typeof AuthenticatedRelatorioProducaoRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/recheios': {
@@ -352,6 +372,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedPainelRoute: typeof AuthenticatedPainelRoute
   AuthenticatedProdutosRoute: typeof AuthenticatedProdutosRoute
   AuthenticatedRecheiosRoute: typeof AuthenticatedRecheiosRoute
+  AuthenticatedRelatorioProducaoRoute: typeof AuthenticatedRelatorioProducaoRoute
   AuthenticatedRelatoriosRoute: typeof AuthenticatedRelatoriosRoute
   AuthenticatedSaidasRoute: typeof AuthenticatedSaidasRoute
 }
@@ -368,6 +389,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedPainelRoute: AuthenticatedPainelRoute,
   AuthenticatedProdutosRoute: AuthenticatedProdutosRoute,
   AuthenticatedRecheiosRoute: AuthenticatedRecheiosRoute,
+  AuthenticatedRelatorioProducaoRoute: AuthenticatedRelatorioProducaoRoute,
   AuthenticatedRelatoriosRoute: AuthenticatedRelatoriosRoute,
   AuthenticatedSaidasRoute: AuthenticatedSaidasRoute,
 }
