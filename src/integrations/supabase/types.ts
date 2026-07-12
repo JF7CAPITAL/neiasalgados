@@ -116,6 +116,56 @@ export type Database = {
         }
         Relationships: []
       }
+      filling_movements: {
+        Row: {
+          created_at: string
+          filling_id: string
+          id: string
+          motivo: string | null
+          observacoes: string | null
+          quantidade: number
+          ref_order_id: string | null
+          saldo_anterior: number | null
+          saldo_novo: number | null
+          tipo: Database["public"]["Enums"]["movement_type"]
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          filling_id: string
+          id?: string
+          motivo?: string | null
+          observacoes?: string | null
+          quantidade?: number
+          ref_order_id?: string | null
+          saldo_anterior?: number | null
+          saldo_novo?: number | null
+          tipo: Database["public"]["Enums"]["movement_type"]
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          filling_id?: string
+          id?: string
+          motivo?: string | null
+          observacoes?: string | null
+          quantidade?: number
+          ref_order_id?: string | null
+          saldo_anterior?: number | null
+          saldo_novo?: number | null
+          tipo?: Database["public"]["Enums"]["movement_type"]
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "filling_movements_filling_id_fkey"
+            columns: ["filling_id"]
+            isOneToOne: false
+            referencedRelation: "fillings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       filling_recipe_items: {
         Row: {
           created_at: string

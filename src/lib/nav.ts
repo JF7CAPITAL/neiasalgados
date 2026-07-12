@@ -13,6 +13,7 @@ import {
   Wallet,
   BarChart3,
   History,
+  LineChart,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,6 +41,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Fornecedores", to: "/fornecedores", icon: Truck, roles: ["admin", "compras"], group: "Estoque" },
 
   { label: "Colaboradores", to: "/colaboradores", icon: Users, roles: ["admin", "rh"], group: "Gestão" },
+  { label: "Relatório de Produção", to: "/relatorio-producao", icon: LineChart, roles: ["admin", "producao", "estoque", "financeiro"], group: "Gestão" },
   { label: "Relatórios", to: "/relatorios", icon: BarChart3, roles: ["admin", "producao", "estoque", "compras", "financeiro", "rh"], group: "Gestão" },
   { label: "Histórico", to: "/historico", icon: History, roles: ["admin"], group: "Gestão" },
   { label: "Financeiro", to: "/financeiro", icon: Wallet, roles: ["admin", "financeiro"], group: "Gestão" },
