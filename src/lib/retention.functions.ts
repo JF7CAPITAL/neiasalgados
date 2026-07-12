@@ -11,6 +11,8 @@ const HISTORY_TABLES = [
 
 type HistoryTable = (typeof HISTORY_TABLES)[number];
 
+type JsonRow = Record<string, string | number | boolean | null>;
+
 /** Registros mantidos por 3 anos. */
 const RETENTION_YEARS = 3;
 /** Limite de volume total (indicador de "espaço" de memória). */
