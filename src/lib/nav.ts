@@ -13,6 +13,7 @@ import {
   Wallet,
   BarChart3,
   History,
+  LineChart,
   type LucideIcon,
 } from "lucide-react";
 
