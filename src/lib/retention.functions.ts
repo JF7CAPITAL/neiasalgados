@@ -73,7 +73,7 @@ export const getRetentionStatus = createServerFn({ method: "GET" })
 
 export interface ArchivableRecords {
   cutoff: string;
-  rows: Record<HistoryTable, Record<string, unknown>[]>;
+  rows: Record<HistoryTable, JsonRow[]>;
 }
 
 /** Retorna os registros que serão removidos (mais antigos que 3 anos) para exportação. */
@@ -81,7 +81,7 @@ export const fetchArchivableRecords = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }): Promise<ArchivableRecords> => {
     const cutoff = cutoffISO();
-    const rows = {} as Record<HistoryTable, Record<string, unknown>[]>;
+    const rows = {} as Record<HistoryTable, JsonRow[]>;
     for (const table of HISTORY_TABLES) {
       const { data } = await context.supabase
         .from(table)
@@ -89,7 +89,7 @@ export const fetchArchivableRecords = createServerFn({ method: "GET" })
         .lt("created_at", cutoff)
         .order("created_at", { ascending: true })
         .limit(50_000);
-      rows[table] = (data ?? []) as Record<string, unknown>[];
+      rows[table] = (data ?? []) as JsonRow[];
     }
     return { cutoff, rows };
   });
