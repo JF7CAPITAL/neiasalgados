@@ -25,6 +25,7 @@ import { Route as AuthenticatedFinanceiroRouteImport } from './routes/_authentic
 import { Route as AuthenticatedEstoqueRouteImport } from './routes/_authenticated/estoque'
 import { Route as AuthenticatedEntradasRouteImport } from './routes/_authenticated/entradas'
 import { Route as AuthenticatedColaboradoresRouteImport } from './routes/_authenticated/colaboradores'
+import { Route as AuthenticatedAnotaRouteImport } from './routes/_authenticated/anota'
 import { Route as AuthenticatedAlmoxarifadoRouteImport } from './routes/_authenticated/almoxarifado'
 
 const AuthRoute = AuthRouteImport.update({
@@ -109,6 +110,11 @@ const AuthenticatedColaboradoresRoute =
     path: '/colaboradores',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedAnotaRoute = AuthenticatedAnotaRouteImport.update({
+  id: '/anota',
+  path: '/anota',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedAlmoxarifadoRoute =
   AuthenticatedAlmoxarifadoRouteImport.update({
     id: '/almoxarifado',
@@ -120,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
+  '/anota': typeof AuthenticatedAnotaRoute
   '/colaboradores': typeof AuthenticatedColaboradoresRoute
   '/entradas': typeof AuthenticatedEntradasRoute
   '/estoque': typeof AuthenticatedEstoqueRoute
@@ -138,6 +145,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
+  '/anota': typeof AuthenticatedAnotaRoute
   '/colaboradores': typeof AuthenticatedColaboradoresRoute
   '/entradas': typeof AuthenticatedEntradasRoute
   '/estoque': typeof AuthenticatedEstoqueRoute
@@ -158,6 +166,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/_authenticated/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
+  '/_authenticated/anota': typeof AuthenticatedAnotaRoute
   '/_authenticated/colaboradores': typeof AuthenticatedColaboradoresRoute
   '/_authenticated/entradas': typeof AuthenticatedEntradasRoute
   '/_authenticated/estoque': typeof AuthenticatedEstoqueRoute
@@ -178,6 +187,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/almoxarifado'
+    | '/anota'
     | '/colaboradores'
     | '/entradas'
     | '/estoque'
@@ -196,6 +206,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/almoxarifado'
+    | '/anota'
     | '/colaboradores'
     | '/entradas'
     | '/estoque'
@@ -215,6 +226,7 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/auth'
     | '/_authenticated/almoxarifado'
+    | '/_authenticated/anota'
     | '/_authenticated/colaboradores'
     | '/_authenticated/entradas'
     | '/_authenticated/estoque'
@@ -350,6 +362,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedColaboradoresRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/anota': {
+      id: '/_authenticated/anota'
+      path: '/anota'
+      fullPath: '/anota'
+      preLoaderRoute: typeof AuthenticatedAnotaRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/almoxarifado': {
       id: '/_authenticated/almoxarifado'
       path: '/almoxarifado'
@@ -362,6 +381,7 @@ declare module '@tanstack/react-router' {
 
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedAlmoxarifadoRoute: typeof AuthenticatedAlmoxarifadoRoute
+  AuthenticatedAnotaRoute: typeof AuthenticatedAnotaRoute
   AuthenticatedColaboradoresRoute: typeof AuthenticatedColaboradoresRoute
   AuthenticatedEntradasRoute: typeof AuthenticatedEntradasRoute
   AuthenticatedEstoqueRoute: typeof AuthenticatedEstoqueRoute
@@ -379,6 +399,7 @@ interface AuthenticatedRouteRouteChildren {
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAlmoxarifadoRoute: AuthenticatedAlmoxarifadoRoute,
+  AuthenticatedAnotaRoute: AuthenticatedAnotaRoute,
   AuthenticatedColaboradoresRoute: AuthenticatedColaboradoresRoute,
   AuthenticatedEntradasRoute: AuthenticatedEntradasRoute,
   AuthenticatedEstoqueRoute: AuthenticatedEstoqueRoute,
