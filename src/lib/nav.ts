@@ -14,6 +14,7 @@ import {
   BarChart3,
   History,
   LineChart,
+  ShoppingBag,
   type LucideIcon,
 } from "lucide-react";
 
