@@ -115,7 +115,7 @@ function AnotaPage() {
   const [mapDraft, setMapDraft] = useState<Record<string, string>>({});
 
   const test = useMutation({
-    mutationFn: () => testFn({ data: {} }),
+    mutationFn: () => testFn(),
     onSuccess: (r) => (r.ok ? toast.success(r.message) : toast.error(r.message)),
     onError: (e: Error) => toast.error(e.message),
   });
