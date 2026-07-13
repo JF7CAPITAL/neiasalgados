@@ -44,6 +44,134 @@ export type Database = {
         }
         Relationships: []
       }
+      anota_order_items: {
+        Row: {
+          anota_item_ref: string | null
+          created_at: string
+          id: string
+          mapeado: boolean
+          nome: string | null
+          order_id: string
+          product_id: string | null
+          quantidade: number
+        }
+        Insert: {
+          anota_item_ref?: string | null
+          created_at?: string
+          id?: string
+          mapeado?: boolean
+          nome?: string | null
+          order_id: string
+          product_id?: string | null
+          quantidade?: number
+        }
+        Update: {
+          anota_item_ref?: string | null
+          created_at?: string
+          id?: string
+          mapeado?: boolean
+          nome?: string | null
+          order_id?: string
+          product_id?: string | null
+          quantidade?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "anota_order_items_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "anota_orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "anota_order_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      anota_orders: {
+        Row: {
+          check_status: number
+          cliente: string | null
+          created_at: string
+          estoque_aplicado: boolean
+          external_order_id: string
+          id: string
+          imported_at: string
+          numero: string | null
+          payload: Json | null
+          pedido_em: string | null
+          total: number
+          updated_at: string
+        }
+        Insert: {
+          check_status?: number
+          cliente?: string | null
+          created_at?: string
+          estoque_aplicado?: boolean
+          external_order_id: string
+          id?: string
+          imported_at?: string
+          numero?: string | null
+          payload?: Json | null
+          pedido_em?: string | null
+          total?: number
+          updated_at?: string
+        }
+        Update: {
+          check_status?: number
+          cliente?: string | null
+          created_at?: string
+          estoque_aplicado?: boolean
+          external_order_id?: string
+          id?: string
+          imported_at?: string
+          numero?: string | null
+          payload?: Json | null
+          pedido_em?: string | null
+          total?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      anota_product_map: {
+        Row: {
+          anota_item_ref: string
+          created_at: string
+          id: string
+          nome: string | null
+          product_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          anota_item_ref: string
+          created_at?: string
+          id?: string
+          nome?: string | null
+          product_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          anota_item_ref?: string
+          created_at?: string
+          id?: string
+          nome?: string | null
+          product_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "anota_product_map_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       collaborators: {
         Row: {
           banco_horas: number | null
@@ -802,6 +930,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      apply_anota_order_stock: {
+        Args: { p_order: string; p_user?: string }
+        Returns: undefined
+      }
       complete_production_order: {
         Args: {
           p_obs?: string
