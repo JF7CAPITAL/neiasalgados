@@ -97,8 +97,8 @@ function AnotaPage() {
         cur.count++;
         if (!cur.product_id && it.product_id) cur.product_id = it.product_id;
       } else {
-        map.set(it.anota_item_ref, {
-          ref: it.anota_item_ref,
+        map.set(ref, {
+          ref,
           nome: it.nome,
           product_id: it.product_id,
           count: 1,
