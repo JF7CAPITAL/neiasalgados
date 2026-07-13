@@ -269,7 +269,8 @@ function statusQuery(filtro: "todos" | "analise" | "producao" | "finalizados"): 
   }
 }
 
-async function ensureRole(context: { supabase: { rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown }> }; userId: string }) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function ensureRole(context: { supabase: any; userId: string }) {
   for (const role of ROLES_PERMITIDAS) {
     const { data } = await context.supabase.rpc("has_role", { _user_id: context.userId, _role: role });
     if (data === true) return;
