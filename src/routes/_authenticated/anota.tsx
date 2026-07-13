@@ -90,7 +90,9 @@ function AnotaPage() {
   const distinctItems = useMemo(() => {
     const map = new Map<string, { ref: string; nome: string | null; product_id: string | null; count: number }>();
     for (const it of items) {
-      const cur = map.get(it.anota_item_ref);
+      const ref = it.anota_item_ref;
+      if (!ref) continue;
+      const cur = map.get(ref);
       if (cur) {
         cur.count++;
         if (!cur.product_id && it.product_id) cur.product_id = it.product_id;
