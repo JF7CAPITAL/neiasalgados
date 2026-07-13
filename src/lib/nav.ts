@@ -40,6 +40,8 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Almoxarifado", to: "/almoxarifado", icon: Warehouse, roles: ["admin", "estoque", "compras"], group: "Estoque" },
   { label: "Fornecedores", to: "/fornecedores", icon: Truck, roles: ["admin", "compras"], group: "Estoque" },
 
+  { label: "Anota AI", to: "/anota", icon: ShoppingBag, roles: ["admin", "estoque", "compras", "producao", "operacional"], group: "Integrações" },
+
   { label: "Colaboradores", to: "/colaboradores", icon: Users, roles: ["admin", "rh"], group: "Gestão" },
   { label: "Relatório de Produção", to: "/relatorio-producao", icon: LineChart, roles: ["admin", "producao", "estoque", "financeiro"], group: "Gestão" },
   { label: "Relatórios", to: "/relatorios", icon: BarChart3, roles: ["admin", "producao", "estoque", "compras", "financeiro", "rh"], group: "Gestão" },
