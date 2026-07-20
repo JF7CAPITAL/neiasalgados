@@ -382,11 +382,11 @@ export const testAnotaConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }): Promise<AnotaConnectionResult> => {
     await ensureRole(context);
-    const token = process.env.ANOTA_AI_TOKEN;
-    if (!token) {
-      return { ok: false, message: "Token do Anota AI não configurado no sistema." };
+    const auth = await getAnotaAccessToken();
+    if ("error" in auth) {
+      return { ok: false, message: auth.error };
     }
-    const result = await discoverListPath(token, "?currentpage=1");
+    const result = await discoverListPath(auth.token, "?currentpage=1");
     if ("error" in result) {
       return { ok: false, message: result.error };
     }
