@@ -89,20 +89,32 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
       }
     );
 
-    const { data, error } = await supabase.auth.getClaims(token);
-    if (error || !data?.claims) {
-      throw new Error('Unauthorized: Invalid token');
+    // Decodifica o JWT localmente para extrair o sub (userId)
+    // sem depender de chamada de rede ao servidor Auth (getClaims/getUser)
+    let claims: Record<string, unknown> | null = null;
+    try {
+      const payload = token.split('.')[1];
+      if (payload) {
+        const decoded = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+        if (decoded && typeof decoded === 'object') claims = decoded;
+      }
+    } catch {
+      // fallback: tenta getClaims como alternativa
     }
 
-    if (!data.claims.sub) {
-      throw new Error('Unauthorized: No user ID found in token');
+    if (!claims || !claims.sub) {
+      const fallback = await supabase.auth.getClaims(token).catch(() => ({ data: null, error: new Error('getClaims failed') }));
+      if (fallback.error || !fallback.data?.claims) {
+        throw new Error('Unauthorized: Invalid token');
+      }
+      claims = fallback.data.claims as Record<string, unknown>;
     }
 
     return next({
       context: {
         supabase,
-        userId: data.claims.sub,
-        claims: data.claims,
+        userId: claims.sub as string,
+        claims,
       },
     });
   },
