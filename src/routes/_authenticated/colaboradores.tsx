@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Users, Plus, Pencil, Trash2, Search, Loader2, Printer, X } from "lucide-react";
+import { Users, Plus, Pencil, Trash2, Search, Loader2, Printer } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -34,10 +34,6 @@ type Collab = {
   turno: string | null; horario: string | null; escala: string | null; observacoes: string | null;
 };
 
-type CollabDoc = {
-  id: string; nome: string;
-};
-
 const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false };
 
 function ColaboradoresPage() {
@@ -47,9 +43,6 @@ function ColaboradoresPage() {
   const [editing, setEditing] = useState<Partial<Collab> | null>(null);
   const [toDelete, setToDelete] = useState<Collab | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [uploading, setUploading] = useState(false);
-  const [docs, setDocs] = useState<CollabDoc[]>([]);
-  const [loadingDocs, setLoadingDocs] = useState(false);
   useRealtime(["collaborators"], ["collaborators"]);
 
   const { data: rows = [], isLoading } = useQuery({
@@ -115,41 +108,6 @@ function ColaboradoresPage() {
     printCollaboratorsReport(list.map((c) => ({ nome: c.nome, telefone: c.telefone ?? "", observacoes: c.observacoes ?? "" })));
   };
 
-  const loadDocs = async (collabId: string) => {
-    setLoadingDocs(true);
-    const { data } = await (supabase as any).from("collaborator_documents").select("id, nome").eq("collaborator_id", collabId);
-    setDocs(data ?? []);
-    setLoadingDocs(false);
-  };
-
-  const handleUpload = async (collabId: string, file: File) => {
-    setUploading(true);
-    try {
-      const path = `${collabId}/${Date.now()}_${file.name}`;
-      const { error: uploadError } = await (supabase.storage as any).from("colaborador_documentos").upload(path, file);
-      if (uploadError) throw uploadError;
-      const { data: { publicUrl } } = (supabase.storage as any).from("colaborador_documentos").getPublicUrl(path);
-      const { error: dbError } = await (supabase as any).from("collaborator_documents").insert({
-        collaborator_id: collabId, nome: file.name, url: publicUrl,
-      });
-      if (dbError) throw dbError;
-      await logActivity("rh", "anexou documento", collabId, { nome: file.name });
-      toast.success("Documento anexado!");
-      loadDocs(collabId);
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleDeleteDoc = async (docId: string) => {
-    const { error } = await (supabase as any).from("collaborator_documents").delete().eq("id", docId);
-    if (error) { toast.error(error.message); return; }
-    toast.success("Documento removido.");
-    setDocs((prev) => prev.filter((d) => d.id !== docId));
-  };
-
   return (
     <div className="space-y-6">
       <PageHeader title="Colaboradores" subtitle="Gestão de RH e turnos" icon={Users}
@@ -191,7 +149,7 @@ function ColaboradoresPage() {
                     <TableCell className="text-muted-foreground">{fmtDate(c.data_admissao)}</TableCell>
                     <TableCell>{c.em_turno ? "Sim" : "Não"}</TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { setEditing({ ...c }); setOpen(true); loadDocs(c.id); }}><Pencil className="size-4" /></Button>
+                      <Button variant="ghost" size="icon" onClick={() => { setEditing({ ...c }); setOpen(true); }}><Pencil className="size-4" /></Button>
                       <Button variant="ghost" size="icon" onClick={() => setToDelete(c)}><Trash2 className="size-4 text-destructive" /></Button>
                     </TableCell>
                   </TableRow>
@@ -201,7 +159,7 @@ function ColaboradoresPage() {
           </div>
         )}
 
-      <Dialog open={open} onOpenChange={(o) => { if (!o) { setOpen(false); setDocs([]); } }}>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) setOpen(false); }}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
           <DialogHeader><DialogTitle>{editing?.id ? "Editar" : "Novo"} colaborador</DialogTitle></DialogHeader>
           {editing && (
@@ -224,37 +182,6 @@ function ColaboradoresPage() {
                 <Switch checked={editing.em_turno ?? false} onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })} />
                 <Label>Em turno agora</Label>
               </div>
-
-              {/* Documentos anexados */}
-              {editing.id && (
-                <div className="col-span-2 space-y-2 rounded-lg border border-border p-3">
-                  <Label className="text-xs font-semibold">Documentos</Label>
-                  {loadingDocs ? (
-                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                  ) : docs.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">Nenhum documento anexado.</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {docs.map((d) => (
-                        <div key={d.id} className="flex items-center justify-between rounded bg-muted/50 px-2.5 py-1.5 text-sm">
-                          <span className="truncate text-muted-foreground">{d.nome}</span>
-                          <Button variant="ghost" size="icon" className="size-6" onClick={() => handleDeleteDoc(d.id)}>
-                            <X className="size-3.5" />
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <Input type="file" className="text-xs" onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file && editing.id) handleUpload(editing.id, file);
-                      e.target.value = "";
-                    }} />
-                    {uploading && <Loader2 className="size-4 animate-spin shrink-0" />}
-                  </div>
-                </div>
-              )}
 
               <DialogFooter className="col-span-2">
                 <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
