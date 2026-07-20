@@ -614,6 +614,13 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     const partes = [`${importados} novo(s)`, `${atualizados} atualizado(s)`, `${baixasAplicadas} baixa(s) de estoque`];
     if (pendentesMapeamento) partes.push(`${pendentesMapeamento} pedido(s) aguardando mapeamento`);
 
+    await supabase.from("activity_logs").insert({
+      modulo: "anota_sync",
+      acao: "sincronizou",
+      user_id: context.userId,
+      detalhes: { importados, atualizados, baixasAplicadas, pendentesMapeamento },
+    });
+
     return {
       ok: true,
       message: `Sincronização concluída: ${partes.join(", ")}.`,

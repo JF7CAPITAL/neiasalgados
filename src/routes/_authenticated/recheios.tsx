@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { UtensilsCrossed, Plus, Pencil, Trash2, Search, Loader2, ChefHat } from "lucide-react";
+import { UtensilsCrossed, Plus, Pencil, Trash2, Search, Loader2, ChefHat, Printer } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import { logActivity } from "@/lib/db";
 import { useRealtime } from "@/hooks/useRealtime";
 import { fmtNum, stockLevel } from "@/lib/format";
+import { printStockReport } from "@/lib/export";
 import { PageHeader, EmptyState } from "@/components/erp/PageHeader";
 import { StockBadge } from "@/components/erp/StatusBadge";
 import { RecipeEditor } from "@/components/erp/RecipeEditor";
@@ -86,10 +87,25 @@ function RecheiosPage() {
 
   const filtered = rows.filter((f) => [f.nome, f.codigo].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()));
 
+  const handlePrint = () => {
+    printStockReport(filtered.map((f) => ({
+      nome: f.nome,
+      atual: Number(f.quantidade_atual),
+      reservado: 0,
+      disponivel: Number(f.quantidade_atual),
+      minimo: Number(f.estoque_minimo),
+      ideal: Number(f.estoque_ideal),
+      situacao: Number(f.quantidade_atual) <= Number(f.estoque_minimo) ? "Abaixo do mín." : "OK",
+    })));
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader title="Recheios" subtitle="Produção e estoque de recheios" icon={UtensilsCrossed}
-        actions={<Button onClick={() => { setEditing({ ...empty }); setOpen(true); }}><Plus className="mr-1.5 size-4" /> Novo recheio</Button>} />
+        actions={<>
+          <Button variant="outline" size="sm" onClick={handlePrint}><Printer className="mr-1.5 size-4" /> Imprimir</Button>
+          <Button onClick={() => { setEditing({ ...empty }); setOpen(true); }}><Plus className="mr-1.5 size-4" /> Novo recheio</Button>
+        </>} />
 
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />

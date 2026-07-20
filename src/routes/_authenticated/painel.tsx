@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -32,6 +32,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useRealtime } from "@/hooks/useRealtime";
 import { PageHeader, KpiCard } from "@/components/erp/PageHeader";
 import { fmtNum, fmtDateTime, stockLevel } from "@/lib/format";
+import { getLastSync, onSync } from "@/lib/anota-sync";
 import { StockBadge } from "@/components/erp/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -64,12 +65,18 @@ function startOf(period: "hoje" | "semana" | "mes"): Date {
 }
 
 function DashboardPage() {
+  const [lastSync, setLastSync] = useState(getLastSync());
+  const [report, setReport] = useState<ReportDialog>(null);
+
+  useEffect(() => {
+    const unsub = onSync((ts) => setLastSync(ts));
+    return unsub;
+  }, []);
+
   useRealtime(
     ["products", "ingredients", "production_orders", "purchase_orders", "product_movements"],
     ["dashboard"],
   );
-
-  const [report, setReport] = useState<ReportDialog>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard"],
@@ -271,7 +278,7 @@ function DashboardPage() {
     <div className="space-y-6">
       <PageHeader
         title="Painel de Controle"
-        subtitle="Clique nos cards para ver detalhes"
+        subtitle={lastSync ? `Última sincronização Anota AI: ${fmtDateTime(lastSync)} — Clique nos cards para ver detalhes` : "Clique nos cards para ver detalhes"}
         icon={LayoutDashboard}
       />
 

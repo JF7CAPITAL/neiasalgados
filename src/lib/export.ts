@@ -83,8 +83,10 @@ function tableHtml(headers: string[], rows: (string | number)[][], align?: ("lef
 
 const TABLE_STYLE = `
   table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
-  th,td{border:1px solid #e5e7eb;padding:7px 10px;vertical-align:top;text-align:left}
-  th{background:#faf5ee;color:#57534e;font-weight:600}
+  th,td{padding:7px 10px;vertical-align:top;text-align:left;border:0}
+  th{color:#57534e;font-weight:600;border-bottom:2px solid #e5e7eb;background:transparent}
+  td{border-bottom:1px solid #f0f0f0}
+  tr:last-child td{border-bottom:0}
   @media print{body{padding:0}}
 `;
 
