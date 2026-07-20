@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ShoppingBag, RefreshCw, Plug, Loader2, Link2, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { ShoppingBag, RefreshCw, Plug, Loader2, Link2, AlertTriangle, CheckCircle2, Eye } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/_authenticated/anota")({
   component: AnotaPage,
@@ -113,6 +114,24 @@ function AnotaPage() {
 
   // Estado local dos selects de mapeamento
   const [mapDraft, setMapDraft] = useState<Record<string, string>>({});
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+
+  const { data: orderItems = [] } = useQuery({
+    queryKey: ["anota-order-items", selectedOrderId],
+    queryFn: async () => {
+      if (!selectedOrderId) return [];
+      const { data, error } = await supabase
+        .from("anota_order_items")
+        .select("nome, quantidade, mapeado")
+        .eq("order_id", selectedOrderId)
+        .order("nome");
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!selectedOrderId,
+  });
+
+  const selectedOrder = orders.find((o) => o.id === selectedOrderId);
 
   const test = useMutation({
     mutationFn: () => testFn(),
@@ -233,7 +252,14 @@ function AnotaPage() {
                 <tbody className="divide-y divide-border">
                   {orders.map((o) => (
                     <tr key={o.id} className="hover:bg-muted/30">
-                      <td className="px-4 py-3 font-medium">{o.numero ?? o.external_order_id.slice(-6)}</td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => setSelectedOrderId(o.id)}
+                          className="font-medium underline-offset-2 hover:underline cursor-pointer text-left"
+                        >
+                          {o.numero ?? o.external_order_id.slice(-6)}
+                        </button>
+                      </td>
                       <td className="px-4 py-3">{o.cliente ?? "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">{fmtDateTime(o.pedido_em ?? o.imported_at)}</td>
                       <td className="px-4 py-3">{checkBadge(o.check_status)}</td>
@@ -323,6 +349,61 @@ function AnotaPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      <Dialog open={!!selectedOrderId} onOpenChange={(open) => !open && setSelectedOrderId(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              Pedido {selectedOrder?.numero ?? selectedOrder?.external_order_id?.slice(-6) ?? ""}
+            </DialogTitle>
+          </DialogHeader>
+          {selectedOrder && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Cliente:</span>{" "}
+                  <span className="font-medium">{selectedOrder.cliente ?? "—"}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Data:</span>{" "}
+                  <span className="font-medium">{fmtDateTime(selectedOrder.pedido_em ?? selectedOrder.imported_at)}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Status:</span>{" "}
+                  {checkBadge(selectedOrder.check_status)}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Total:</span>{" "}
+                  <span className="font-medium">{fmtMoney(selectedOrder.total)}</span>
+                </div>
+              </div>
+              <div className="border-t pt-3">
+                <h4 className="mb-2 text-sm font-medium">Itens do pedido</h4>
+                {orderItems.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Nenhum item encontrado. Sincronize novamente os pedidos.</p>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2">Item</th>
+                        <th className="px-3 py-2 text-right">Qtd</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {orderItems.map((it, i) => (
+                        <tr key={i}>
+                          <td className="px-3 py-2">{it.nome ?? "—"}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{it.quantidade}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

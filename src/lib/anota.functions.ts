@@ -238,13 +238,28 @@ function extractItems(o: JsonRecord): ParsedItem[] {
   for (const raw of list) {
     const it = asRecord(raw);
     if (!it) continue;
-    const ref =
-      firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ??
-      firstString(it, ["name", "nome", "description", "title"]);
-    const nome = firstString(it, ["name", "nome", "description", "title"]);
-    const quantidade = firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
-    if (!ref) continue;
-    out.push({ ref, nome, quantidade });
+    const subItems = it.subItems;
+    if (Array.isArray(subItems) && subItems.length > 0) {
+      for (const sub of subItems) {
+        const s = asRecord(sub);
+        if (!s) continue;
+        const ref =
+          firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ??
+          firstString(s, ["name", "nome", "description", "title"]);
+        const nome = firstString(s, ["name", "nome", "description", "title"]);
+        const quantidade = firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
+        if (!ref) continue;
+        out.push({ ref, nome, quantidade });
+      }
+    } else {
+      const ref =
+        firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ??
+        firstString(it, ["name", "nome", "description", "title"]);
+      const nome = firstString(it, ["name", "nome", "description", "title"]);
+      const quantidade = firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
+      if (!ref) continue;
+      out.push({ ref, nome, quantidade });
+    }
   }
   return out;
 }
@@ -261,6 +276,7 @@ function parseOrder(o: JsonRecord): ParsedOrder | null {
     "friendly_id",
     "code",
     "sequence",
+    "shortReference",
   ]);
   const check = firstNumber(o, ["check", "status", "check_status"]) ?? 0;
   const cliente =
@@ -325,6 +341,7 @@ async function discoverListPath(
 /** Busca o detalhe completo de um pedido, tentando caminhos derivados. */
 async function fetchOrderDetail(token: string, listPath: string, id: string, pageId?: string): Promise<ParsedOrder | null> {
   const candidates = [
+    `/ping/get/${id}`,
     `${listPath}/${id}`,
     `/order/${id}`,
     `/order/pull/${id}`,
@@ -368,6 +385,31 @@ async function ensureRole(context: { supabase: any; userId: string }) {
     if (data === true) return;
   }
   throw new Error("Você não tem permissão para usar a integração Anota AI.");
+}
+
+async function insertOrderItems(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  orderId: string,
+  items: ParsedItem[],
+  mapByRef: Map<string, string | null>,
+): Promise<boolean> {
+  if (!items.length) return false;
+  let todosMapeados = true;
+  const rows = items.map((it) => {
+    const productId = mapByRef.has(it.ref) ? mapByRef.get(it.ref) ?? null : null;
+    if (!productId) todosMapeados = false;
+    return {
+      order_id: orderId,
+      anota_item_ref: it.ref,
+      nome: it.nome,
+      quantidade: it.quantidade,
+      product_id: productId,
+      mapeado: !!productId,
+    };
+  });
+  await supabase.from("anota_order_items").insert(rows);
+  return todosMapeados;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +499,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     const externalIds = discovery.orders.map((o) => o.id);
     const { data: existingRows } = await supabase
       .from("anota_orders")
-      .select("id, external_order_id, check_status, estoque_aplicado")
+      .select("id, external_order_id, check_status, estoque_aplicado, payload")
       .in("external_order_id", externalIds.length ? externalIds : ["__none__"]);
     const existing = new Map(
       (existingRows ?? []).map((r) => [r.external_order_id, r] as const),
@@ -472,6 +514,28 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       const prev = existing.get(listed.id);
 
       if (prev) {
+        if (!prev.payload) {
+          const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
+          if (detail) {
+            await supabase
+              .from("anota_orders")
+              .update({
+                numero: detail.numero,
+                check_status: detail.check,
+                total: detail.total,
+                cliente: detail.cliente,
+                pedido_em: detail.pedidoEm,
+                payload: detail.raw as never,
+              })
+              .eq("id", prev.id);
+            atualizados++;
+            await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
+            if (detail.check === 3 && !prev.estoque_aplicado) {
+              finalizadosParaBaixa.push(prev.id);
+            }
+            continue;
+          }
+        }
         // Já importado — atualiza status se mudou
         if (prev.check_status !== listed.check) {
           await supabase.from("anota_orders").update({ check_status: listed.check }).eq("id", prev.id);
@@ -505,25 +569,8 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       importados++;
 
       const items = detail?.items ?? [];
-      let todosMapeados = items.length > 0;
-      if (items.length) {
-        const rows = items.map((it) => {
-          const productId = mapByRef.has(it.ref) ? mapByRef.get(it.ref) ?? null : null;
-          if (!productId) todosMapeados = false;
-          return {
-            order_id: inserted.id,
-            anota_item_ref: it.ref,
-            nome: it.nome,
-            quantidade: it.quantidade,
-            product_id: productId,
-            mapeado: !!productId,
-          };
-        });
-        await supabase.from("anota_order_items").insert(rows);
-        if (!todosMapeados) pendentesMapeamento++;
-      } else {
-        todosMapeados = false;
-      }
+      const todosMapeados = await insertOrderItems(supabase, inserted.id, items, mapByRef);
+      if (items.length > 0 && !todosMapeados) pendentesMapeamento++;
 
       if (check === 3 && todosMapeados) {
         finalizadosParaBaixa.push(inserted.id);
