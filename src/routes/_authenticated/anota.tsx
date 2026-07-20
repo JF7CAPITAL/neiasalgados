@@ -202,6 +202,23 @@ function AnotaPage() {
         />
       </div>
 
+      <div className="rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+          <div className="space-y-1">
+            <p className="font-medium">Erro "Acesso negado" ao testar conexão?</p>
+            <p className="text-muted-foreground">
+              A API de Pedidos do Anota AI exige um <strong>token de parceiro</strong> específico (endpoint{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">api-parceiros.anota.ai/partnerauth</code>). O token
+              gerado no painel/app do restaurante <strong>não funciona</strong> aqui. Abra um chamado no suporte do
+              Anota AI pedindo para <strong>habilitar a API de Pedidos</strong> na sua loja e emitir o token de
+              integração de parceiro; depois volte aqui e atualize o valor do segredo <code>ANOTA_AI_TOKEN</code>. O ID
+              da loja não é necessário — o token de parceiro já identifica a loja.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <Tabs defaultValue="pedidos">
         <TabsList>
           <TabsTrigger value="pedidos">Pedidos</TabsTrigger>
