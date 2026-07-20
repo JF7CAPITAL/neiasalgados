@@ -18,7 +18,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 const ANOTA_BASE = "https://api-parceiros.anota.ai/partnerauth";
 
 /** Caminhos candidatos para a listagem de pedidos (PING - LIST ORDERS). */
-const LIST_PATHS = ["/order/pull", "/order/ping", "/order", "/order/list"];
+const LIST_PATHS = ["/ping/list", "/order/pull", "/order/ping", "/order", "/order/list"];
 
 /** Caminhos candidatos para autenticação OAuth (client_credentials). */
 const AUTH_PATHS = ["/auth", "/oauth/token", "/token", "/login"];
@@ -112,13 +112,15 @@ async function getAnotaAccessToken(): Promise<{ token: string } | { error: strin
 }
 
 /** Cabeçalhos padrão das requisições ao Anota AI. */
-function anotaHeaders(token: string): HeadersInit {
-  return {
+function anotaHeaders(token: string, pageId?: string): HeadersInit {
+  const headers: Record<string, string> = {
     Authorization: token,
     Accept: "application/json",
     "Content-Type": "application/json",
     "User-Agent": "NeiaSalgadosERP/1.0",
   };
+  if (pageId) headers["x-page-id"] = pageId;
+  return headers;
 }
 
 const CHECK_LABELS: Record<number, string> = {
@@ -277,8 +279,8 @@ function parseOrder(o: JsonRecord): ParsedOrder | null {
   return { externalId, numero, check, total, cliente, pedidoEm, items, raw: o };
 }
 
-async function fetchJson(url: string, token: string, method: "GET" | "POST" = "GET"): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
-  const res = await fetch(url, { method, headers: anotaHeaders(token) });
+async function fetchJson(url: string, token: string, method: "GET" | "POST" = "GET", pageId?: string): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+  const res = await fetch(url, { method, headers: anotaHeaders(token, pageId) });
   const text = await res.text();
   let json: unknown = null;
   try {
@@ -293,12 +295,13 @@ async function fetchJson(url: string, token: string, method: "GET" | "POST" = "G
 async function discoverListPath(
   token: string,
   query: string,
+  pageId?: string,
 ): Promise<{ path: string; orders: ListedOrder[] } | { error: string; status: number }> {
   let lastStatus = 0;
   let lastText = "";
   for (const path of LIST_PATHS) {
     try {
-      const { ok, status, json, text } = await fetchJson(`${ANOTA_BASE}${path}${query}`, token);
+      const { ok, status, json, text } = await fetchJson(`${ANOTA_BASE}${path}${query}`, token, "GET", pageId);
       lastStatus = status;
       lastText = text;
       if (ok && json) {
@@ -320,7 +323,7 @@ async function discoverListPath(
 }
 
 /** Busca o detalhe completo de um pedido, tentando caminhos derivados. */
-async function fetchOrderDetail(token: string, listPath: string, id: string): Promise<ParsedOrder | null> {
+async function fetchOrderDetail(token: string, listPath: string, id: string, pageId?: string): Promise<ParsedOrder | null> {
   const candidates = [
     `${listPath}/${id}`,
     `/order/${id}`,
@@ -330,7 +333,7 @@ async function fetchOrderDetail(token: string, listPath: string, id: string): Pr
   ];
   for (const c of candidates) {
     try {
-      const { ok, json } = await fetchJson(`${ANOTA_BASE}${c}`, token);
+      const { ok, json } = await fetchJson(`${ANOTA_BASE}${c}`, token, "GET", pageId);
       if (ok && json) {
         const o = unwrapOrder(json);
         if (o) {
@@ -382,11 +385,12 @@ export const testAnotaConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }): Promise<AnotaConnectionResult> => {
     await ensureRole(context);
+    const pageId = process.env.ANOTA_AI_STORE_ID;
     const auth = await getAnotaAccessToken();
     if ("error" in auth) {
       return { ok: false, message: auth.error };
     }
-    const result = await discoverListPath(auth.token, "?currentpage=1");
+    const result = await discoverListPath(auth.token, "?currentpage=1", pageId);
     if ("error" in result) {
       return { ok: false, message: result.error };
     }
@@ -426,10 +430,11 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       };
     }
     const token = auth.token;
+    const pageId = process.env.ANOTA_AI_STORE_ID;
 
     const supabase = context.supabase;
 
-    const discovery = await discoverListPath(token, statusQuery(data.filtro));
+    const discovery = await discoverListPath(token, statusQuery(data.filtro), pageId);
     if ("error" in discovery) {
       return {
         ok: false,
@@ -479,7 +484,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       }
 
       // Novo pedido — busca detalhe
-      const detail = await fetchOrderDetail(token, discovery.path, listed.id);
+      const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
       const check = detail?.check ?? listed.check;
 
       const { data: inserted, error: insErr } = await supabase
