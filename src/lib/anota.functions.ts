@@ -157,16 +157,6 @@ function firstNumber(o: JsonRecord, keys: string[]): number | null {
   return null;
 }
 
-/** Cabeçalhos padrão das requisições ao Anota AI. */
-function anotaHeaders(token: string): HeadersInit {
-  return {
-    Authorization: token,
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    "User-Agent": "NeiaSalgadosERP/1.0",
-  };
-}
-
 interface ListedOrder {
   id: string;
   check: number;
