@@ -20,7 +20,106 @@ const ANOTA_BASE = "https://api-parceiros.anota.ai/partnerauth";
 /** Caminhos candidatos para a listagem de pedidos (PING - LIST ORDERS). */
 const LIST_PATHS = ["/order/pull", "/order/ping", "/order", "/order/list"];
 
+/** Caminhos candidatos para autenticação OAuth (client_credentials). */
+const AUTH_PATHS = ["/auth", "/oauth/token", "/token", "/login"];
+
 const ROLES_PERMITIDAS = ["admin", "estoque", "compras", "producao", "operacional"] as const;
+
+interface CachedToken {
+  token: string;
+  expiresAt: number;
+}
+let tokenCache: CachedToken | null = null;
+
+/**
+ * Obtém um access token do Anota AI usando client_credentials.
+ * Tenta múltiplos endpoints e formatos de payload por defensividade.
+ * O resultado é cacheado até ~5min antes do vencimento declarado.
+ */
+async function getAnotaAccessToken(): Promise<{ token: string } | { error: string; status: number }> {
+  // Fallback: token cru salvo em ANOTA_AI_TOKEN (compat com integração anterior)
+  const legacy = process.env.ANOTA_AI_TOKEN;
+  const clientId = process.env.ANOTA_AI_CLIENT_ID;
+  const clientSecret = process.env.ANOTA_AI_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    if (legacy) return { token: legacy };
+    return { error: "Credenciais do Anota AI não configuradas (client_id / client_secret).", status: 0 };
+  }
+
+  if (tokenCache && tokenCache.expiresAt > Date.now()) {
+    return { token: tokenCache.token };
+  }
+
+  const payloads: { body: string; contentType: string }[] = [
+    { body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, grant_type: "client_credentials" }), contentType: "application/json" },
+    { body: JSON.stringify({ clientId, clientSecret }), contentType: "application/json" },
+    { body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }), contentType: "application/json" },
+    { body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: "client_credentials" }).toString(), contentType: "application/x-www-form-urlencoded" },
+  ];
+
+  let lastStatus = 0;
+  let lastText = "";
+
+  for (const path of AUTH_PATHS) {
+    for (const p of payloads) {
+      try {
+        const res = await fetch(`${ANOTA_BASE}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": p.contentType,
+            Accept: "application/json",
+            "User-Agent": "NeiaSalgadosERP/1.0",
+          },
+          body: p.body,
+        });
+        const text = await res.text();
+        lastStatus = res.status;
+        lastText = text;
+        if (!res.ok) continue;
+        let json: unknown = null;
+        try { json = JSON.parse(text); } catch { continue; }
+        const root = asRecord(json);
+        if (!root) continue;
+        const info = asRecord(root.info) ?? root;
+        const token =
+          (typeof info.access_token === "string" && info.access_token) ||
+          (typeof info.accessToken === "string" && info.accessToken) ||
+          (typeof info.token === "string" && info.token) ||
+          (typeof root.access_token === "string" && root.access_token) ||
+          (typeof root.token === "string" && root.token) ||
+          null;
+        if (!token) continue;
+        const expiresIn = firstNumber(info as JsonRecord, ["expires_in", "expiresIn", "expires"]) ?? 3600;
+        tokenCache = { token, expiresAt: Date.now() + Math.max(60, expiresIn - 300) * 1000 };
+        return { token };
+      } catch {
+        // tenta próximo
+      }
+    }
+  }
+
+  if (legacy) return { token: legacy };
+
+  const snippet = lastText.slice(0, 140).replace(/\s+/g, " ");
+  return {
+    error:
+      lastStatus === 401 || lastStatus === 403
+        ? "Credenciais do Anota AI recusadas (client_id / client_secret). Confirme que a API de Pedidos está habilitada para a loja."
+        : `Não foi possível autenticar no Anota AI (HTTP ${lastStatus}). ${snippet}`,
+    status: lastStatus,
+  };
+}
+
+/** Cabeçalhos padrão das requisições ao Anota AI. */
+function anotaHeaders(token: string): HeadersInit {
+  return {
+    Authorization: token,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "User-Agent": "NeiaSalgadosERP/1.0",
+  };
+}
 
 const CHECK_LABELS: Record<number, string> = {
   0: "Em análise",
@@ -56,16 +155,6 @@ function firstNumber(o: JsonRecord, keys: string[]): number | null {
     if (typeof v === "string" && v.trim() && !isNaN(Number(v))) return Number(v);
   }
   return null;
-}
-
-/** Cabeçalhos padrão das requisições ao Anota AI. */
-function anotaHeaders(token: string): HeadersInit {
-  return {
-    Authorization: token,
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    "User-Agent": "NeiaSalgadosERP/1.0",
-  };
 }
 
 interface ListedOrder {
@@ -293,11 +382,11 @@ export const testAnotaConnection = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }): Promise<AnotaConnectionResult> => {
     await ensureRole(context);
-    const token = process.env.ANOTA_AI_TOKEN;
-    if (!token) {
-      return { ok: false, message: "Token do Anota AI não configurado no sistema." };
+    const auth = await getAnotaAccessToken();
+    if ("error" in auth) {
+      return { ok: false, message: auth.error };
     }
-    const result = await discoverListPath(token, "?currentpage=1");
+    const result = await discoverListPath(auth.token, "?currentpage=1");
     if ("error" in result) {
       return { ok: false, message: result.error };
     }
@@ -325,17 +414,18 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
   }))
   .handler(async ({ context, data }): Promise<AnotaSyncResult> => {
     await ensureRole(context);
-    const token = process.env.ANOTA_AI_TOKEN;
-    if (!token) {
+    const auth = await getAnotaAccessToken();
+    if ("error" in auth) {
       return {
         ok: false,
-        message: "Token do Anota AI não configurado no sistema.",
+        message: auth.error,
         importados: 0,
         atualizados: 0,
         baixasAplicadas: 0,
         pendentesMapeamento: 0,
       };
     }
+    const token = auth.token;
 
     const supabase = context.supabase;
 
