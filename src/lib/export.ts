@@ -22,28 +22,26 @@ export function downloadExcel(filename: string, rows: Record<string, unknown>[],
   triggerDownload(blob, filename.endsWith(".xls") ? filename : filename + ".xls");
 }
 
-/** Renderiza HTML em um container invisível e dispara a impressão do navegador.
- *  Evita popup blockers e funciona em qualquer ambiente. */
+/** Renderiza HTML em um iframe offscreen e dispara a impressão.
+ *  Sem reflow na página visível, sem popup blocker, sem efeitos visuais. */
 function printHTML(html: string) {
-  const id = "_print_" + Date.now();
-  const style = document.createElement("style");
-  style.textContent = `
-    @media print {
-      body > *:not(#${id}) { display: none !important; }
-    }
-    @media screen {
-      #${id} { position: fixed; top: -9999px; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
-    }
-  `;
-  document.head.appendChild(style);
-  const div = document.createElement("div");
-  div.id = id;
-  div.innerHTML = html;
-  document.body.appendChild(div);
-  const clean = () => { div.remove(); style.remove(); };
-  window.addEventListener("afterprint", clean, { once: true });
-  setTimeout(() => { if (document.getElementById(id)) clean(); }, 10_000);
-  setTimeout(() => window.print(), 300);
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.top = "-9999px";
+  iframe.style.left = "-9999px";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "none";
+  document.body.appendChild(iframe);
+  const doc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!doc) { iframe.remove(); return; }
+  doc.open();
+  doc.write(html);
+  doc.close();
+  setTimeout(() => {
+    iframe.contentWindow?.print();
+    setTimeout(() => iframe.remove(), 1000);
+  }, 300);
 }
 
 function pageWrap(title: string, bodyHtml: string): string {
@@ -83,10 +81,8 @@ function tableHtml(headers: string[], rows: (string | number)[][], align?: ("lef
 
 const TABLE_STYLE = `
   table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
-  th,td{padding:7px 10px;vertical-align:top;text-align:left;border:0}
-  th{color:#57534e;font-weight:600;border-bottom:2px solid #e5e7eb;background:transparent}
-  td{border-bottom:1px solid #f0f0f0}
-  tr:last-child td{border-bottom:0}
+  th,td{padding:6px 8px;vertical-align:top;text-align:left}
+  th{color:#57534e;font-weight:600}
   @media print{body{padding:0}}
 `;
 
