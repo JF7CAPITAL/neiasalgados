@@ -36,12 +36,16 @@ export function KpiCard({
   hint,
   icon: Icon,
   tone = "default",
+  onClick,
+  printIcon,
 }: {
   label: string;
   value: ReactNode;
   hint?: string;
   icon?: React.ComponentType<{ className?: string }>;
   tone?: "default" | "success" | "warning" | "danger" | "info";
+  onClick?: () => void;
+  printIcon?: ReactNode;
 }) {
   const tones: Record<string, string> = {
     default: "text-primary bg-primary/15",
@@ -51,14 +55,23 @@ export function KpiCard({
     info: "text-info bg-info/15",
   };
   return (
-    <div className="rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40">
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-card p-4 transition-colors",
+        onClick ? "cursor-pointer hover:border-primary/60 hover:shadow-sm" : "hover:border-primary/40",
+      )}
+      onClick={onClick}
+    >
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-        {Icon && (
-          <span className={cn("flex size-8 items-center justify-center rounded-lg", tones[tone])}>
-            <Icon className="size-4" />
-          </span>
-        )}
+        <div className="flex items-center gap-1.5">
+          {printIcon}
+          {Icon && (
+            <span className={cn("flex size-8 items-center justify-center rounded-lg", tones[tone])}>
+              <Icon className="size-4" />
+            </span>
+          )}
+        </div>
       </div>
       <div className="mt-3 font-display text-3xl font-semibold tabular">{value}</div>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}

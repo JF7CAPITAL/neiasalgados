@@ -37,7 +37,17 @@ type PurchOrder = {
 };
 type NewPO = { ingredient_id: string; quantidade: number; supplier_id: string | null; preco: number; prioridade: string; obs: string };
 
+type NewProdOrder = {
+  product_id: string;
+  quantidade: number;
+  massadas: number;
+  prioridade: string;
+  tipo_massa: string;
+  observacoes: string;
+};
+
 const emptyPO: NewPO = { ingredient_id: "", quantidade: 0, supplier_id: null, preco: 0, prioridade: "media", obs: "" };
+const emptyProdO: NewProdOrder = { product_id: "", quantidade: 0, massadas: 1, prioridade: "media", tipo_massa: "frito", observacoes: "" };
 
 function OrdensPage() {
   const qc = useQueryClient();
@@ -45,6 +55,7 @@ function OrdensPage() {
   const [complete, setComplete] = useState<{ order: ProdOrder; produzida: number; perdas: number; obs: string } | null>(null);
   const [receive, setReceive] = useState<{ order: PurchOrder; qtd: number; preco: number } | null>(null);
   const [newPO, setNewPO] = useState<NewPO | null>(null);
+  const [newProdO, setNewProdO] = useState<NewProdOrder | null>(null);
   useRealtime(["production_orders", "purchase_orders"], ["orders"]);
 
   const { data, isLoading } = useQuery({
@@ -61,6 +72,8 @@ function OrdensPage() {
       return {
         prod: (prod.data ?? []) as ProdOrder[],
         purch: (purch.data ?? []) as PurchOrder[],
+        products: (prods.data ?? []) as { id: string; nome: string }[],
+        fillings: (fills.data ?? []) as { id: string; nome: string }[],
         ingredients: (ings.data ?? []) as { id: string; nome: string; unidade: string; preco_medio: number; supplier_id: string | null }[],
         suppliers: (sups.data ?? []) as { id: string; nome: string }[],
         names: {
@@ -127,6 +140,28 @@ function OrdensPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const createProdO = useMutation({
+    mutationFn: async (p: NewProdOrder) => {
+      if (!p.product_id) throw new Error("Selecione o produto.");
+      if (!p.quantidade || p.quantidade <= 0) throw new Error("Informe a quantidade.");
+      const { error } = await supabase.from("production_orders").insert({
+        product_id: p.product_id,
+        quantidade_necessaria: p.quantidade,
+        massadas: p.massadas,
+        kind: "producao",
+        prioridade: p.prioridade as "baixa" | "media" | "alta" | "urgente",
+        tipo_massa: p.tipo_massa === "frito" ? "frito" : "assado",
+        observacoes: p.observacoes || null,
+        auto_gerada: false,
+        status: "pendente",
+      });
+      if (error) throw error;
+      await logActivity("ordens", "criou ordem de produção manual", "", { produto: p.product_id, qtd: p.quantidade });
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orders"] }); toast.success("Ordem de produção criada!"); setNewProdO(null); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   if (isLoading || !data) return <div className="h-64 animate-pulse rounded-xl border border-border bg-card" />;
 
   const nm = (id: string | null | undefined) => (id && data.names[id]) || "—";
@@ -175,7 +210,10 @@ function OrdensPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Ordens de Serviço" subtitle="Produção, recheios e compras — central única" icon={ClipboardList}
-        actions={<Button onClick={() => setNewPO({ ...emptyPO })}><Plus className="mr-1.5 size-4" /> Nova ordem de compra</Button>} />
+        actions={<>
+          <Button onClick={() => setNewProdO({ ...emptyProdO })}><Plus className="mr-1.5 size-4" /> Nova ordem de produção</Button>
+          <Button variant="outline" onClick={() => setNewPO({ ...emptyPO })}><Plus className="mr-1.5 size-4" /> Nova ordem de compra</Button>
+        </>} />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
@@ -357,6 +395,62 @@ function OrdensPage() {
                 <Button variant="outline" onClick={() => setNewPO(null)}>Cancelar</Button>
                 <Button onClick={() => createPO.mutate(newPO)} disabled={createPO.isPending || !newPO.ingredient_id}>
                   {createPO.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Criar ordem
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!newProdO} onOpenChange={(o) => !o && setNewProdO(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Nova ordem de produção</DialogTitle></DialogHeader>
+          {newProdO && (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Produto (salgado)</Label>
+                <Select value={newProdO.product_id} onValueChange={(v) => setNewProdO({ ...newProdO, product_id: v })}>
+                  <SelectTrigger><SelectValue placeholder="Selecionar produto..." /></SelectTrigger>
+                  <SelectContent>
+                    {data.products.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.nome}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><Label className="text-xs">Quantidade necessária</Label><Input type="number" value={newProdO.quantidade} onChange={(e) => setNewProdO({ ...newProdO, quantidade: Number(e.target.value) })} /></div>
+                <div className="space-y-1.5"><Label className="text-xs">Massadas</Label><Input type="number" step="any" value={newProdO.massadas} onChange={(e) => setNewProdO({ ...newProdO, massadas: Number(e.target.value) })} /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Tipo de massa</Label>
+                  <Select value={newProdO.tipo_massa} onValueChange={(v) => setNewProdO({ ...newProdO, tipo_massa: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="frito">Frito</SelectItem>
+                      <SelectItem value="assado">Assado</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Prioridade</Label>
+                  <Select value={newProdO.prioridade} onValueChange={(v) => setNewProdO({ ...newProdO, prioridade: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="baixa">Baixa</SelectItem>
+                      <SelectItem value="media">Média</SelectItem>
+                      <SelectItem value="alta">Alta</SelectItem>
+                      <SelectItem value="urgente">Urgente</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-1.5"><Label className="text-xs">Observações</Label><Textarea value={newProdO.observacoes} onChange={(e) => setNewProdO({ ...newProdO, observacoes: e.target.value })} /></div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setNewProdO(null)}>Cancelar</Button>
+                <Button onClick={() => createProdO.mutate(newProdO)} disabled={createProdO.isPending || !newProdO.product_id}>
+                  {createProdO.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Criar ordem
                 </Button>
               </DialogFooter>
             </div>

@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Boxes, Search, ArrowRightLeft, Loader2 } from "lucide-react";
+import { Boxes, Search, ArrowRightLeft, Loader2, Printer } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import { logActivity } from "@/lib/db";
 import { useRealtime } from "@/hooks/useRealtime";
 import { fmtNum, stockLevel } from "@/lib/format";
+import { printStockReport } from "@/lib/export";
 import { PageHeader, EmptyState } from "@/components/erp/PageHeader";
 import { StockBadge } from "@/components/erp/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -63,9 +64,22 @@ function EstoquePage() {
 
   const filtered = rows.filter((p) => p.nome.toLowerCase().includes(search.toLowerCase()));
 
+  const handlePrint = () => {
+    printStockReport(filtered.map((p) => ({
+      nome: p.nome,
+      atual: Number(p.quantidade_atual),
+      reservado: Number(p.quantidade_reservada),
+      disponivel: Number(p.quantidade_atual) - Number(p.quantidade_reservada),
+      minimo: Number(p.estoque_minimo),
+      ideal: Number(p.estoque_ideal),
+      situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
+    })));
+  };
+
   return (
     <div className="space-y-6">
-      <PageHeader title="Estoque de Acabados" subtitle="Saldos, reservas e movimentações" icon={Boxes} />
+      <PageHeader title="Estoque de Acabados" subtitle="Saldos, reservas e movimentações" icon={Boxes}
+        actions={<Button variant="outline" size="sm" onClick={handlePrint}><Printer className="mr-1.5 size-4" /> PDF</Button>} />
 
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />

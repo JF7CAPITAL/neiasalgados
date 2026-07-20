@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -11,6 +12,7 @@ import {
   TrendingDown,
   Users,
   PackageCheck,
+  Printer,
 } from "lucide-react";
 import {
   BarChart,
@@ -29,11 +31,29 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { useRealtime } from "@/hooks/useRealtime";
 import { PageHeader, KpiCard } from "@/components/erp/PageHeader";
-import { fmtNum } from "@/lib/format";
+import { fmtNum, fmtDateTime, stockLevel } from "@/lib/format";
+import { StockBadge } from "@/components/erp/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  printStockReport,
+  printBelowMinimumReport,
+  printConsumptionReport,
+  printProdOrdersReport,
+  printPurchaseOrdersReport,
+  printColabsTurnoReport,
+} from "@/lib/export";
 
 export const Route = createFileRoute("/_authenticated/painel")({
   component: DashboardPage,
 });
+
+type ReportDialog = {
+  title: string;
+  table: React.ReactNode;
+  onPrint: () => void;
+} | null;
 
 function startOf(period: "hoje" | "semana" | "mes"): Date {
   const d = new Date();
@@ -49,16 +69,24 @@ function DashboardPage() {
     ["dashboard"],
   );
 
+  const [report, setReport] = useState<ReportDialog>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard"],
     queryFn: async () => {
       const [products, ingredients, prodOrders, purchOrders, movements, collabs] = await Promise.all([
-        supabase.from("products").select("id, nome, quantidade_atual, estoque_minimo, estoque_ideal").is("deleted_at", null),
-        supabase.from("ingredients").select("id, quantidade_atual, estoque_minimo").is("deleted_at", null),
-        supabase.from("production_orders").select("id, status, quantidade_produzida, fim, kind").is("deleted_at", null),
-        supabase.from("purchase_orders").select("id, status").is("deleted_at", null),
-        supabase.from("product_movements").select("id, tipo, quantidade, created_at, product_id").order("created_at", { ascending: false }).limit(500),
-        supabase.from("collaborators").select("id, em_turno").is("deleted_at", null),
+        supabase.from("products").select("id, nome, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal").is("deleted_at", null),
+        supabase.from("ingredients").select("id, nome, quantidade_atual, estoque_minimo, unidade").is("deleted_at", null),
+        supabase.from("production_orders").select("id, numero, kind, status, quantidade_necessaria, quantidade_produzida, quantidade_ideal, massadas, tipo_massa, prioridade, product_id, filling_id, fim, created_at").is("deleted_at", null),
+        supabase.from("purchase_orders").select("id, numero, status, prioridade, quantidade_necessaria, preco_medio, ingredient_id, supplier_id, observacoes, created_at").is("deleted_at", null),
+        supabase.from("product_movements").select("id, product_id, tipo, quantidade, created_at").order("created_at", { ascending: false }).limit(500),
+        supabase.from("collaborators").select("id, nome, cargo, turno, em_turno").is("deleted_at", null),
+      ]);
+      const [pnames, inames, fnames, snames] = await Promise.all([
+        supabase.from("products").select("id, nome"),
+        supabase.from("ingredients").select("id, nome"),
+        supabase.from("fillings").select("id, nome"),
+        supabase.from("suppliers").select("id, nome"),
       ]);
       return {
         products: products.data ?? [],
@@ -67,6 +95,12 @@ function DashboardPage() {
         purchOrders: purchOrders.data ?? [],
         movements: movements.data ?? [],
         collabs: collabs.data ?? [],
+        names: {
+          ...Object.fromEntries((pnames.data ?? []).map((p: { id: string; nome: string }) => [p.id, p.nome])),
+          ...Object.fromEntries((inames.data ?? []).map((i: { id: string; nome: string }) => [i.id, i.nome])),
+          ...Object.fromEntries((fnames.data ?? []).map((f: { id: string; nome: string }) => [f.id, f.nome])),
+          ...Object.fromEntries((snames.data ?? []).map((s: { id: string; nome: string }) => [s.id, s.nome])),
+        } as Record<string, string>,
       };
     },
   });
@@ -84,26 +118,24 @@ function DashboardPage() {
     );
   }
 
-  const { products, ingredients, prodOrders, purchOrders, movements, collabs } = data;
+  const { products, ingredients, prodOrders, purchOrders, movements, collabs, names } = data;
+
+  const nm = (id: string | null | undefined) => (id && names[id]) || "—";
 
   const estoqueTotal = products.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-  const emProducao = prodOrders
-    .filter((o) => o.status === "em_andamento")
-    .length;
-  const projetado =
-    estoqueTotal +
-    prodOrders
-      .filter((o) => o.status === "pendente" || o.status === "em_andamento")
-      .reduce((s) => s, 0);
+  const produtosAbaixo = products.filter((p) => p.estoque_minimo > 0 && Number(p.quantidade_atual) <= Number(p.estoque_minimo));
+  const insumosAbaixo = ingredients.filter((i) => i.estoque_minimo > 0 && Number(i.quantidade_atual) <= Number(i.estoque_minimo));
 
-  const produtosAbaixo = products.filter((p) => p.estoque_minimo > 0 && p.quantidade_atual <= p.estoque_minimo).length;
-  const insumosAbaixo = ingredients.filter((i) => i.estoque_minimo > 0 && i.quantidade_atual <= i.estoque_minimo).length;
+  const ordensPendentes = prodOrders.filter((o) => o.status === "pendente");
+  const ordensAndamento = prodOrders.filter((o) => o.status === "em_andamento");
+  const ordensConcluidas = prodOrders.filter((o) => o.status === "concluida");
+  const comprasPendentes = purchOrders.filter((o) => o.status === "pendente");
+  const colabsTurno = collabs.filter((c) => c.em_turno);
+  const emProducao = ordensAndamento.length;
 
-  const ordensPendentes = prodOrders.filter((o) => o.status === "pendente").length;
-  const ordensAndamento = emProducao;
-  const ordensConcluidas = prodOrders.filter((o) => o.status === "concluida").length;
-  const comprasPendentes = purchOrders.filter((o) => o.status === "pendente").length;
-  const colabsTurno = collabs.filter((c) => c.em_turno).length;
+  const projetado = estoqueTotal + prodOrders
+    .filter((o) => o.status === "pendente" || o.status === "em_andamento")
+    .reduce((s) => s, 0);
 
   const consumoDesde = (period: "hoje" | "semana" | "mes") => {
     const from = startOf(period);
@@ -124,7 +156,7 @@ function DashboardPage() {
     .slice(0, 8)
     .map((p) => ({ nome: p.nome.length > 12 ? p.nome.slice(0, 12) + "…" : p.nome, estoque: Number(p.quantidade_atual) }));
 
-  // Chart: last 7 days consumption
+  // Chart: last 7 days
   const dias: { dia: string; consumo: number; producao: number }[] = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
@@ -142,38 +174,210 @@ function DashboardPage() {
   }
 
   const statusPie = [
-    { name: "Pendentes", value: ordensPendentes, color: "oklch(0.82 0.15 80)" },
-    { name: "Em andamento", value: ordensAndamento, color: "oklch(0.7 0.13 235)" },
-    { name: "Concluídas", value: ordensConcluidas, color: "oklch(0.72 0.16 155)" },
+    { name: "Pendentes", value: ordensPendentes.length, color: "oklch(0.82 0.15 80)" },
+    { name: "Em andamento", value: emProducao, color: "oklch(0.7 0.13 235)" },
+    { name: "Concluídas", value: ordensConcluidas.length, color: "oklch(0.72 0.16 155)" },
   ].filter((s) => s.value > 0);
+
+  const closeReport = () => setReport(null);
+
+  const pStock = () => {
+    const rows = products.map((p) => ({
+      nome: p.nome,
+      atual: Number(p.quantidade_atual),
+      reservado: Number(p.quantidade_reservada),
+      disponivel: Number(p.quantidade_atual) - Number(p.quantidade_reservada),
+      minimo: Number(p.estoque_minimo),
+      ideal: Number(p.estoque_ideal),
+      situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
+    }));
+    printStockReport(rows);
+  };
+
+  const pBelowMin = () => printBelowMinimumReport(produtosAbaixo.map((p) => ({ nome: p.nome, atual: Number(p.quantidade_atual), minimo: Number(p.estoque_minimo) })));
+
+  const pConsumoHoje = () => {
+    const from = startOf("hoje");
+    const rows = movements
+      .filter((m) => (m.tipo === "saida" || m.tipo === "perda") && new Date(m.created_at) >= from)
+      .map((m) => ({ produto: nm(m.product_id), quantidade: Number(m.quantidade), horario: fmtDateTime(m.created_at) }));
+    printConsumptionReport("Consumo Hoje", rows);
+  };
+
+  const pOP = (title: string, list: typeof prodOrders) => {
+    printProdOrdersReport(list.map((o) => ({
+      numero: o.numero, item: nm(o.product_id ?? o.filling_id),
+      tipo: o.kind + (o.tipo_massa ? ` · ${o.tipo_massa}` : ""),
+      necessaria: Number(o.quantidade_necessaria),
+      produzida: o.quantidade_produzida != null ? fmtNum(o.quantidade_produzida) : "—",
+      prioridade: o.prioridade, status: o.status,
+    })));
+  };
+
+  const pComprasPendentes = () => {
+    printPurchaseOrdersReport(comprasPendentes.map((o) => ({
+      numero: o.numero, insumo: nm(o.ingredient_id), fornecedor: nm(o.supplier_id),
+      quantidade: Number(o.quantidade_necessaria), valor: String(o.preco_medio * o.quantidade_necessaria),
+      prioridade: o.prioridade, status: o.status,
+    })));
+  };
+
+  const pColabsTurno = () => printColabsTurnoReport(colabsTurno.map((c) => ({ nome: c.nome, cargo: c.cargo ?? "", turno: c.turno ?? "" })));
+
+  const ProdTable = ({ list }: { list: typeof products }) => (
+    <Table>
+      <TableHeader><TableRow>
+        <TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead>
+        <TableHead className="text-right">Reservado</TableHead><TableHead className="text-right">Disponível</TableHead>
+        <TableHead>Mínimo</TableHead><TableHead>Ideal</TableHead><TableHead>Situação</TableHead>
+      </TableRow></TableHeader>
+      <TableBody>
+        {list.map((p) => {
+          const disp = Number(p.quantidade_atual) - Number(p.quantidade_reservada);
+          return (
+            <TableRow key={p.id}>
+              <TableCell className="font-medium">{p.nome}</TableCell>
+              <TableCell className="text-right tabular">{fmtNum(p.quantidade_atual)}</TableCell>
+              <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.quantidade_reservada)}</TableCell>
+              <TableCell className="text-right tabular font-medium">{fmtNum(disp)}</TableCell>
+              <TableCell>{fmtNum(p.estoque_minimo)}</TableCell>
+              <TableCell>{fmtNum(p.estoque_ideal)}</TableCell>
+              <TableCell><StockBadge level={stockLevel(Number(p.quantidade_atual), Number(p.estoque_minimo), Number(p.estoque_ideal))} /></TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+
+  // Reusable dialog for any report
+  const ReportDialog = ({ title, table, onPrint }: NonNullable<ReportDialog>) => (
+    <Dialog open={true} onOpenChange={(o) => !o && closeReport()}>
+      <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+        <DialogHeader>
+          <div className="flex items-center justify-between">
+            <DialogTitle>{title}</DialogTitle>
+            <Button variant="outline" size="sm" onClick={onPrint}>
+              <Printer className="mr-1.5 size-4" /> Imprimir / PDF
+            </Button>
+          </div>
+        </DialogHeader>
+        <div className="overflow-x-auto">{table}</div>
+      </DialogContent>
+    </Dialog>
+  );
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Painel de Controle"
-        subtitle="Indicadores da fábrica em tempo real"
+        subtitle="Clique nos cards para ver detalhes"
         icon={LayoutDashboard}
       />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Estoque de salgados" value={fmtNum(estoqueTotal)} hint="unidades em estoque" icon={Boxes} />
-        <KpiCard label="Estoque projetado" value={fmtNum(projetado)} hint="com ordens abertas" icon={PackageCheck} tone="info" />
-        <KpiCard label="Produtos abaixo do mín." value={fmtNum(produtosAbaixo)} hint="requer produção" icon={AlertTriangle} tone={produtosAbaixo ? "danger" : "success"} />
-        <KpiCard label="Insumos abaixo do mín." value={fmtNum(insumosAbaixo)} hint="requer compra" icon={Warehouse} tone={insumosAbaixo ? "danger" : "success"} />
+        <KpiCard label="Estoque de salgados" value={fmtNum(estoqueTotal)} hint="unidades em estoque" icon={Boxes}
+          onClick={() => setReport({ title: "Estoque de Salgados", table: <ProdTable list={products} />, onPrint: pStock })} />
+        <KpiCard label="Estoque projetado" value={fmtNum(projetado)} hint="com ordens abertas" icon={PackageCheck} tone="info"
+          onClick={() => setReport({ title: "Estoque Projetado", table: <ProdTable list={products} />, onPrint: pStock })} />
+        <KpiCard label="Produtos abaixo do mín." value={fmtNum(produtosAbaixo.length)} hint="requer produção" icon={AlertTriangle} tone={produtosAbaixo.length ? "danger" : "success"}
+          onClick={() => setReport({
+            title: "Produtos Abaixo do Mínimo",
+            table: produtosAbaixo.length
+              ? <Table><TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader><TableBody>{produtosAbaixo.map((p) => (<TableRow key={p.id}><TableCell className="font-medium">{p.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(p.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(p.estoque_minimo)}</TableCell></TableRow>))}</TableBody></Table>
+              : <p className="py-8 text-center text-muted-foreground">Nenhum produto abaixo do mínimo.</p>,
+            onPrint: pBelowMin,
+          })} />
+        <KpiCard label="Insumos abaixo do mín." value={fmtNum(insumosAbaixo.length)} hint="requer compra" icon={Warehouse} tone={insumosAbaixo.length ? "danger" : "success"}
+          onClick={() => setReport({
+            title: "Insumos Abaixo do Mínimo",
+            table: insumosAbaixo.length
+              ? <Table><TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader><TableBody>{insumosAbaixo.map((i) => (<TableRow key={i.id}><TableCell className="font-medium">{i.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(i.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(i.estoque_minimo)}</TableCell></TableRow>))}</TableBody></Table>
+              : <p className="py-8 text-center text-muted-foreground">Nenhum insumo abaixo do mínimo.</p>,
+            onPrint: () => {}, // no dedicated print for ingredients yet
+          })} />
       </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="OP pendentes" value={fmtNum(ordensPendentes)} icon={ClipboardList} tone="warning" />
-        <KpiCard label="OP em andamento" value={fmtNum(ordensAndamento)} icon={Factory} tone="info" />
-        <KpiCard label="OP concluídas" value={fmtNum(ordensConcluidas)} icon={PackageCheck} tone="success" />
-        <KpiCard label="Compras pendentes" value={fmtNum(comprasPendentes)} icon={ShoppingCart} tone="warning" />
+        <KpiCard label="OP pendentes" value={fmtNum(ordensPendentes.length)} icon={ClipboardList} tone="warning"
+          onClick={() => setReport({
+            title: "Ordens de Produção Pendentes",
+            table: ordensPendentes.length
+              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Necessário</TableHead><TableHead>Prioridade</TableHead></TableRow></TableHeader><TableBody>{ordensPendentes.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria)}</TableCell><TableCell>{o.prioridade}</TableCell></TableRow>))}</TableBody></Table>
+              : <p className="py-8 text-center text-muted-foreground">Nenhuma OP pendente.</p>,
+            onPrint: () => pOP("OP Pendentes", ordensPendentes),
+          })} />
+        <KpiCard label="OP em andamento" value={fmtNum(emProducao)} icon={Factory} tone="info"
+          onClick={() => setReport({
+            title: "Ordens em Andamento",
+            table: ordensAndamento.length
+              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Necessário</TableHead><TableHead>Prioridade</TableHead></TableRow></TableHeader><TableBody>{ordensAndamento.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria)}</TableCell><TableCell>{o.prioridade}</TableCell></TableRow>))}</TableBody></Table>
+              : <p className="py-8 text-center text-muted-foreground">Nenhuma OP em andamento.</p>,
+            onPrint: () => pOP("OP em Andamento", ordensAndamento),
+          })} />
+        <KpiCard label="OP concluídas" value={fmtNum(ordensConcluidas.length)} icon={PackageCheck} tone="success"
+          onClick={() => setReport({
+            title: "Ordens Concluídas",
+            table: ordensConcluidas.length
+              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{ordensConcluidas.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table>
+              : <p className="py-8 text-center text-muted-foreground">Nenhuma OP concluída.</p>,
+            onPrint: () => pOP("OP Concluídas", ordensConcluidas),
+          })} />
+        <KpiCard label="Compras pendentes" value={fmtNum(comprasPendentes.length)} icon={ShoppingCart} tone="warning"
+          onClick={() => setReport({
+            title: "Compras Pendentes",
+            table: comprasPendentes.length
+              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Insumo</TableHead><TableHead className="text-right">Necessário</TableHead><TableHead>Prioridade</TableHead></TableRow></TableHeader><TableBody>{comprasPendentes.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.ingredient_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria, 2)}</TableCell><TableCell>{o.prioridade}</TableCell></TableRow>))}</TableBody></Table>
+              : <p className="py-8 text-center text-muted-foreground">Nenhuma compra pendente.</p>,
+            onPrint: pComprasPendentes,
+          })} />
       </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Produzido hoje" value={fmtNum(producaoDesde("hoje"))} hint="unidades" icon={Factory} tone="success" />
-        <KpiCard label="Produzido na semana" value={fmtNum(producaoDesde("semana"))} icon={Factory} tone="success" />
-        <KpiCard label="Consumo hoje" value={fmtNum(consumoDesde("hoje"))} hint="saídas + perdas" icon={TrendingDown} tone="danger" />
-        <KpiCard label="Colaboradores em turno" value={fmtNum(colabsTurno)} icon={Users} tone="info" />
+        <KpiCard label="Produzido hoje" value={fmtNum(producaoDesde("hoje"))} hint="unidades" icon={Factory} tone="success"
+          onClick={() => setReport({
+            title: "Produção de Hoje",
+            table: (() => {
+              const from = startOf("hoje");
+              const hoje = prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= from && o.kind === "producao");
+              return hoje.length
+                ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{hoje.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table>
+                : <p className="py-8 text-center text-muted-foreground">Nada produzido hoje.</p>;
+            })(),
+            onPrint: () => pOP("Produzido Hoje", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("hoje") && o.kind === "producao")),
+          })} />
+        <KpiCard label="Produzido na semana" value={fmtNum(producaoDesde("semana"))} icon={Factory} tone="success"
+          onClick={() => setReport({
+            title: "Produção da Semana",
+            table: (() => {
+              const from = startOf("semana");
+              const week = prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= from && o.kind === "producao");
+              return week.length
+                ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{week.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table>
+                : <p className="py-8 text-center text-muted-foreground">Nada produzido na semana.</p>;
+            })(),
+            onPrint: () => pOP("Produzido na Semana", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("semana") && o.kind === "producao")),
+          })} />
+        <KpiCard label="Consumo hoje" value={fmtNum(consumoDesde("hoje"))} hint="saídas + perdas" icon={TrendingDown} tone="danger"
+          onClick={() => setReport({
+            title: "Consumo Hoje",
+            table: (() => {
+              const from = startOf("hoje");
+              const hoje = movements.filter((m) => (m.tipo === "saida" || m.tipo === "perda") && new Date(m.created_at) >= from);
+              return hoje.length
+                ? <Table><TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Quantidade</TableHead><TableHead>Horário</TableHead></TableRow></TableHeader><TableBody>{hoje.map((m, i) => (<TableRow key={m.id || i}><TableCell className="font-medium">{nm(m.product_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(m.quantidade)}</TableCell><TableCell className="text-xs text-muted-foreground">{fmtDateTime(m.created_at)}</TableCell></TableRow>))}</TableBody></Table>
+                : <p className="py-8 text-center text-muted-foreground">Nenhum consumo hoje.</p>;
+            })(),
+            onPrint: pConsumoHoje,
+          })} />
+        <KpiCard label="Colaboradores em turno" value={fmtNum(colabsTurno.length)} icon={Users} tone="info"
+          onClick={() => setReport({
+            title: "Colaboradores em Turno",
+            table: colabsTurno.length
+              ? <Table><TableHeader><TableRow><TableHead>Nome</TableHead><TableHead>Cargo</TableHead><TableHead>Turno</TableHead></TableRow></TableHeader><TableBody>{colabsTurno.map((c) => (<TableRow key={c.id}><TableCell className="font-medium">{c.nome}</TableCell><TableCell>{c.cargo || "—"}</TableCell><TableCell>{c.turno || "—"}</TableCell></TableRow>))}</TableBody></Table>
+              : <p className="py-8 text-center text-muted-foreground">Nenhum colaborador em turno.</p>,
+            onPrint: pColabsTurno,
+          })} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -248,6 +452,8 @@ function DashboardPage() {
           <p className="py-16 text-center text-sm text-muted-foreground">Cadastre produtos para ver o estoque.</p>
         )}
       </div>
+
+      {report && <ReportDialog {...report} />}
     </div>
   );
 }

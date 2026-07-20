@@ -16,84 +16,113 @@ export function downloadCSV(filename: string, rows: Record<string, unknown>[], h
   triggerDownload(blob, filename.endsWith(".csv") ? filename : filename + ".csv");
 }
 
-/** Excel opens CSV natively; we export .xls-compatible CSV with BOM for pt-BR. */
 export function downloadExcel(filename: string, rows: Record<string, unknown>[], headers?: { key: string; label: string }[]) {
   const csv = toCSV(rows, headers);
   const blob = new Blob([csv], { type: "application/vnd.ms-excel;charset=utf-8;" });
   triggerDownload(blob, filename.endsWith(".xls") ? filename : filename + ".xls");
 }
 
-export function printReport(title: string, rows: Record<string, unknown>[], headers: { key: string; label: string }[]) {
-  const w = window.open("", "_blank");
-  if (!w) return;
-  const th = headers.map((h) => `<th>${h.label}</th>`).join("");
-  const trs = rows
-    .map((r) => `<tr>${headers.map((h) => `<td>${r[h.key] ?? ""}</td>`).join("")}</tr>`)
-    .join("");
-  w.document.write(`
-    <html><head><title>${title}</title>
-    <style>
-      body{font-family:system-ui,sans-serif;padding:24px;color:#111}
-      h1{font-size:20px;margin-bottom:4px}
-      p{color:#666;font-size:12px;margin-top:0}
-      table{width:100%;border-collapse:collapse;margin-top:16px;font-size:12px}
-      th,td{border:1px solid #ddd;padding:6px 8px;text-align:left}
-      th{background:#f3f4f6}
-      @media print{button{display:none}}
-    </style></head>
-    <body>
-      <h1>${title}</h1>
-      <p>Gerado em ${new Date().toLocaleString("pt-BR")} — Neia Salgados</p>
-      <button onclick="window.print()">Imprimir / PDF</button>
-      <table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>
-    </body></html>`);
-  w.document.close();
+/** Renderiza HTML em um container invisível e dispara a impressão do navegador.
+ *  Evita popup blockers e funciona em qualquer ambiente. */
+function printHTML(html: string) {
+  const id = "_print_" + Date.now();
+  const style = document.createElement("style");
+  style.textContent = `
+    @media print {
+      body > *:not(#${id}) { display: none !important; }
+    }
+    @media screen {
+      #${id} { position: fixed; top: -9999px; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+    }
+  `;
+  document.head.appendChild(style);
+  const div = document.createElement("div");
+  div.id = id;
+  div.innerHTML = html;
+  document.body.appendChild(div);
+  const clean = () => { div.remove(); style.remove(); };
+  window.addEventListener("afterprint", clean, { once: true });
+  setTimeout(() => { if (document.getElementById(id)) clean(); }, 10_000);
+  setTimeout(() => window.print(), 300);
 }
 
-/** Opens a formatted single-order document ready to view, print or save as PDF. */
+function pageWrap(title: string, bodyHtml: string): string {
+  return `
+    <div style="font-family:system-ui,sans-serif;padding:40px;color:#1a1a1a;max-width:900px;margin:0 auto">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #b45309;padding-bottom:16px;margin-bottom:20px">
+        <div style="font-size:22px;font-weight:800;color:#b45309;letter-spacing:.5px">
+          Neia Salgados<small style="display:block;font-size:11px;font-weight:500;color:#888;text-transform:uppercase;letter-spacing:2px">Fábrica de Salgados</small>
+        </div>
+        <div style="text-align:right">
+          <h1 style="font-size:18px;margin:0;color:#111">${escHtml(title)}</h1>
+        </div>
+      </div>
+      ${bodyHtml}
+      <div style="margin-top:32px;font-size:11px;color:#999;border-top:1px solid #eee;padding-top:12px">
+        Documento gerado em ${new Date().toLocaleString("pt-BR")} — Neia Salgados ERP
+      </div>
+    </div>`;
+}
+
+function escHtml(v: unknown): string {
+  return String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
+}
+
+function tableHtml(headers: string[], rows: (string | number)[][], align?: ("left" | "right")[]): string {
+  const th = headers.map((h, i) => `<th style="text-align:${align?.[i] === "right" ? "right" : "left"}">${escHtml(h)}</th>`).join("");
+  const body = rows.length
+    ? rows.map((row) =>
+        `<tr>${row.map((cell, i) => `<td style="text-align:${align?.[i] === "right" ? "right" : "left"}">${escHtml(cell)}</td>`).join("")}</tr>`
+      ).join("")
+    : `<tr><td colspan="${headers.length}" style="text-align:center;color:#999;padding:14px">Sem dados.</td></tr>`;
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px">
+    <thead><tr>${th}</tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+const TABLE_STYLE = `
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+  th,td{border:1px solid #e5e7eb;padding:7px 10px;vertical-align:top;text-align:left}
+  th{background:#faf5ee;color:#57534e;font-weight:600}
+  @media print{body{padding:0}}
+`;
+
+// ─── Report: Simple table ────────────────────────────────────────
+export function printReport(title: string, rows: Record<string, unknown>[], headers: { key: string; label: string }[]) {
+  const th = headers.map((h) => `<th>${escHtml(h.label)}</th>`).join("");
+  const trs = rows.map((r) => `<tr>${headers.map((h) => `<td>${escHtml(r[h.key])}</td>`).join("")}</tr>`).join("");
+  const html = pageWrap(title, `
+    <p style="color:#666;font-size:12px;margin-top:0">Gerado em ${new Date().toLocaleString("pt-BR")}</p>
+    <style>${TABLE_STYLE}</style>
+    <table style="margin-top:16px"><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`);
+  printHTML(html);
+}
+
+// ─── Documento de ordem (produção / compra) ──────────────────────
 export function printOrderDoc(opts: {
   docTitle: string;
   numero: number | string;
   fields: { label: string; value: string }[];
-  autoPrint?: boolean;
 }) {
-  const w = window.open("", "_blank");
-  if (!w) return;
   const rows = opts.fields
-    .map((f) => `<tr><th>${f.label}</th><td>${f.value ?? "—"}</td></tr>`)
+    .map((f) => `<tr><th>${escHtml(f.label)}</th><td>${escHtml(f.value ?? "—")}</td></tr>`)
     .join("");
-  w.document.write(`
-    <html><head><title>${opts.docTitle} #${opts.numero}</title>
+  const html = pageWrap(opts.docTitle + " #" + opts.numero, `
     <style>
-      *{box-sizing:border-box}
-      body{font-family:system-ui,sans-serif;padding:40px;color:#1a1a1a;max-width:760px;margin:0 auto}
+      ${TABLE_STYLE}
+      th{width:38%;color:#57534e;font-weight:600}
       .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #b45309;padding-bottom:16px;margin-bottom:24px}
-      .brand{font-size:22px;font-weight:800;color:#b45309;letter-spacing:.5px}
-      .brand small{display:block;font-size:11px;font-weight:500;color:#888;text-transform:uppercase;letter-spacing:2px}
-      .doc{text-align:right}
-      .doc h1{font-size:18px;margin:0;color:#111}
-      .doc .num{font-size:26px;font-weight:800;color:#b45309}
-      table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
-      th,td{border:1px solid #e5e7eb;padding:9px 12px;text-align:left;vertical-align:top}
-      th{background:#faf5ee;width:38%;color:#57534e;font-weight:600}
-      .foot{margin-top:32px;font-size:11px;color:#999;border-top:1px solid #eee;padding-top:12px}
-      .actions{margin-bottom:20px}
-      .actions button{background:#b45309;color:#fff;border:0;border-radius:6px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer}
-      @media print{.actions{display:none}body{padding:0}}
-    </style></head>
-    <body>
-      <div class="actions"><button onclick="window.print()">Imprimir / Salvar PDF</button></div>
-      <div class="head">
-        <div class="brand">Neia Salgados<small>Fábrica de Salgados</small></div>
-        <div class="doc"><h1>${opts.docTitle}</h1><div class="num">#${opts.numero}</div></div>
-      </div>
-      <table><tbody>${rows}</tbody></table>
-      <div class="foot">Documento gerado em ${new Date().toLocaleString("pt-BR")} — Neia Salgados ERP</div>
-    </body></html>`);
-  w.document.close();
-  if (opts.autoPrint) setTimeout(() => w.print(), 400);
+      .num{font-size:26px;font-weight:800;color:#b45309}
+    </style>
+    <div class="head">
+      <div><h1 style="margin:0">${opts.docTitle}</h1><div class="num">#${opts.numero}</div></div>
+    </div>
+    <table><tbody>${rows}</tbody></table>`);
+  printHTML(html);
 }
 
+// ─── Relatório de produção (completo) ────────────────────────────
 export interface ReportSection {
   title: string;
   headers: string[];
@@ -101,80 +130,137 @@ export interface ReportSection {
   align?: ("left" | "right")[];
 }
 
-/** Relatório completo (período + cards + tabelas) no layout de marca Neia Salgados. */
 export function printProductionReport(opts: {
   periodo: string;
   resumo: { label: string; value: string }[];
   sections: ReportSection[];
 }) {
-  const w = window.open("", "_blank");
-  if (!w) return;
-  const esc = (v: unknown) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
-
   const cards = opts.resumo
-    .map((r) => `<div class="card"><span class="lbl">${esc(r.label)}</span><span class="val">${esc(r.value)}</span></div>`)
+    .map((r) => `<div style="flex:1;min-width:150px;border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#faf5ee">
+      <span style="display:block;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#8a7a68">${escHtml(r.label)}</span>
+      <span style="display:block;font-size:20px;font-weight:800;color:#b45309;margin-top:4px">${escHtml(r.value)}</span>
+    </div>`)
     .join("");
 
   const sections = opts.sections
     .map((s) => {
-      const th = s.headers
-        .map((h, i) => `<th style="text-align:${s.align?.[i] === "right" ? "right" : "left"}">${esc(h)}</th>`)
-        .join("");
-      const body = s.rows.length
-        ? s.rows
-            .map(
-              (row) =>
-                `<tr>${row
-                  .map((cell, i) => `<td style="text-align:${s.align?.[i] === "right" ? "right" : "left"}">${esc(cell)}</td>`)
-                  .join("")}</tr>`,
-            )
-            .join("")
-        : `<tr><td colspan="${s.headers.length}" class="empty">Sem dados no período.</td></tr>`;
-      return `<h2>${esc(s.title)}</h2><table><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table>`;
+      const tbl = tableHtml(s.headers, s.rows, s.align);
+      return `<h2 style="font-size:14px;color:#b45309;margin:26px 0 6px;border-bottom:1px solid #eee;padding-bottom:4px">${escHtml(s.title)}</h2>${tbl}`;
     })
     .join("");
 
-  w.document.write(`
-    <html><head><title>Relatório de Produção — Neia Salgados</title>
-    <style>
-      *{box-sizing:border-box}
-      body{font-family:system-ui,sans-serif;padding:40px;color:#1a1a1a;max-width:900px;margin:0 auto}
-      .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #b45309;padding-bottom:16px;margin-bottom:20px}
-      .brand{font-size:22px;font-weight:800;color:#b45309;letter-spacing:.5px}
-      .brand small{display:block;font-size:11px;font-weight:500;color:#888;text-transform:uppercase;letter-spacing:2px}
-      .doc{text-align:right}
-      .doc h1{font-size:18px;margin:0;color:#111}
-      .doc .num{font-size:13px;color:#666}
-      .cards{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 8px}
-      .card{flex:1;min-width:150px;border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#faf5ee}
-      .card .lbl{display:block;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#8a7a68}
-      .card .val{display:block;font-size:20px;font-weight:800;color:#b45309;margin-top:4px}
-      h2{font-size:14px;color:#b45309;margin:26px 0 6px;border-bottom:1px solid #eee;padding-bottom:4px}
-      table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
-      th,td{border:1px solid #e5e7eb;padding:7px 10px;vertical-align:top}
-      th{background:#faf5ee;color:#57534e;font-weight:600}
-      .empty{text-align:center;color:#999;padding:14px}
-      .foot{margin-top:32px;font-size:11px;color:#999;border-top:1px solid #eee;padding-top:12px}
-      .actions{margin-bottom:20px}
-      .actions button{background:#b45309;color:#fff;border:0;border-radius:6px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer}
-      @media print{.actions{display:none}body{padding:0}}
-    </style></head>
-    <body>
-      <div class="actions"><button onclick="window.print()">Imprimir / Salvar PDF</button></div>
-      <div class="head">
-        <div class="brand">Neia Salgados<small>Fábrica de Salgados</small></div>
-        <div class="doc"><h1>Relatório de Produção</h1><div class="num">${esc(opts.periodo)}</div></div>
-      </div>
-      <div class="cards">${cards}</div>
-      ${sections}
-      <div class="foot">Documento gerado em ${new Date().toLocaleString("pt-BR")} — Neia Salgados ERP</div>
-    </body></html>`);
-  w.document.close();
+  const html = pageWrap("Relatório de Produção", `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">${escHtml(opts.periodo)}</p>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 8px">${cards}</div>
+    ${sections}`);
+  printHTML(html);
 }
 
+// ─── Relatório de estoque de salgados ────────────────────────────
+export function printStockReport(products: { nome: string; atual: number; reservado: number; disponivel: number; minimo: number; ideal: number; situacao: string }[]) {
+  const html = pageWrap("Estoque de Salgados", `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">Total de ${products.length} produtos</p>
+    ${tableHtml(
+      ["Produto", "Atual", "Reservado", "Disponível", "Mínimo", "Ideal", "Situação"],
+      products.map((p) => [p.nome, String(p.atual), String(p.reservado), String(p.disponivel), String(p.minimo), String(p.ideal), p.situacao]),
+      ["left", "right", "right", "right", "right", "right", "left"],
+    )}`);
+  printHTML(html);
+}
 
+// ─── Relatório de produtos abaixo do mínimo ──────────────────────
+export function printBelowMinimumReport(products: { nome: string; atual: number; minimo: number }[]) {
+  const html = pageWrap("Produtos Abaixo do Mínimo", `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">${products.length} produto(s) com estoque crítico</p>
+    ${tableHtml(
+      ["Produto", "Estoque Atual", "Mínimo"],
+      products.map((p) => [p.nome, String(p.atual), String(p.minimo)]),
+      ["left", "right", "right"],
+    )}`);
+  printHTML(html);
+}
 
+// ─── Relatório de consumo ────────────────────────────────────────
+export function printConsumptionReport(title: string, rows: { produto: string; quantidade: number; horario?: string }[]) {
+  const html = pageWrap(title, `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">Total de ${rows.length} registro(s)</p>
+    ${tableHtml(
+      ["Produto", "Quantidade", ...(rows[0]?.horario ? ["Horário"] : [])],
+      rows.map((r) => [r.produto, String(r.quantidade), ...(r.horario ? [r.horario] : [])]),
+      ["left", "right", "left"],
+    )}`);
+  printHTML(html);
+}
 
+// ─── Relatório de ordens de produção ─────────────────────────────
+export function printProdOrdersReport(orders: { numero: number; item: string; tipo: string; necessaria: number; produzida: number | string; prioridade: string; status: string }[]) {
+  const total = orders.reduce((s, o) => s + Number(o.necessaria), 0);
+  const html = pageWrap("Ordens de Produção", `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">${orders.length} ordem(ns) · ${total} unidades necessárias</p>
+    ${tableHtml(
+      ["Nº", "Item", "Tipo", "Necessário", "Produzido", "Prioridade", "Status"],
+      orders.map((o) => [String(o.numero), o.item, o.tipo, String(o.necessaria), String(o.produzida), o.prioridade, o.status]),
+      ["left", "left", "left", "right", "right", "left", "left"],
+    )}`);
+  printHTML(html);
+}
+
+// ─── Relatório de colaboradores (selecionáveis) ──────────────────
+export function printCollaboratorsReport(collabs: { nome: string; telefone: string; observacoes: string }[]) {
+  const html = pageWrap("Colaboradores", `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">${collabs.length} colaborador(es)</p>
+    ${tableHtml(
+      ["Nome", "Telefone", "Observações"],
+      collabs.map((c) => [c.nome, c.telefone || "—", c.observacoes || "—"]),
+    )}`);
+  printHTML(html);
+}
+
+// ─── Relatório de OP pendentes / em andamento / concluídas ──────
+export function printOPStatusReport(title: string, orders: { numero: number; item: string; status: string }[]) {
+  const html = pageWrap(title, `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">${orders.length} ordem(ns)</p>
+    ${tableHtml(
+      ["Nº", "Item", "Status"],
+      orders.map((o) => [String(o.numero), o.item, o.status]),
+    )}`);
+  printHTML(html);
+}
+
+// ─── Relatório de compras pendentes ──────────────────────────────
+export function printPurchaseOrdersReport(orders: { numero: number; insumo: string; fornecedor: string; quantidade: number; valor: string; prioridade: string; status: string }[]) {
+  const total = orders.reduce((s, o) => s + o.quantidade, 0);
+  const html = pageWrap("Compras Pendentes", `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">${orders.length} ordem(ns) · ${total} unidades</p>
+    ${tableHtml(
+      ["Nº", "Insumo", "Fornecedor", "Quantidade", "Valor", "Prioridade", "Status"],
+      orders.map((o) => [String(o.numero), o.insumo, o.fornecedor, String(o.quantidade), o.valor, o.prioridade, o.status]),
+      ["left", "left", "left", "right", "right", "left", "left"],
+    )}`);
+  printHTML(html);
+}
+
+// ─── Relatório de colaboradores em turno ─────────────────────────
+export function printColabsTurnoReport(collabs: { nome: string; cargo: string; turno: string }[]) {
+  const html = pageWrap("Colaboradores em Turno", `
+    <style>${TABLE_STYLE}</style>
+    <p style="color:#666;font-size:12px">${collabs.length} colaborador(es) em turno</p>
+    ${tableHtml(
+      ["Nome", "Cargo", "Turno"],
+      collabs.map((c) => [c.nome, c.cargo || "—", c.turno || "—"]),
+    )}`);
+  printHTML(html);
+}
+
+// ─── Interno ─────────────────────────────────────────────────────
 function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
