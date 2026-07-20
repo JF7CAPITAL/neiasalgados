@@ -1,70 +1,39 @@
-# Integração Anota AI → Neia Salgados
+# Por que a conexão está falhando
 
-Conectar o Anota AI ao seu sistema para **puxar os pedidos/vendas** e **dar baixa no estoque** de produtos acabados, acionado por um **botão "Sincronizar"** (sem webhook). Fluxo somente de entrada (Anota AI → seu sistema).
+O erro **"Acesso negado pelo Anota AI"** que você recebeu é o retorno HTTP 401/403 da API. Combinando isso com as suas respostas, o problema **não é no código** — é o tipo de token.
 
-## Como vai funcionar
+- O token que você tem foi gerado no **painel do restaurante / app**. Esse token serve para o painel operar sua loja, mas **não autentica na API de Pedidos de parceiros** (`api-parceiros.anota.ai/partnerauth`), que é a única que expõe os pedidos para sistemas externos.
+- A **API de Pedidos** precisa ser **habilitada pelo suporte do Anota AI** para a sua loja. Sem isso, qualquer chamada retorna acesso negado, mesmo com token válido em outro contexto.
+- **ID da loja não resolve sozinho** — a autenticação é feita pelo token de parceiro, que já identifica a loja. Só o ID sem o token correto continuaria dando o mesmo erro.
 
-```text
-[Botão Sincronizar]
-   → busca lista de pedidos no Anota AI (polling)
-   → para cada pedido novo/atualizado, busca o detalhe completo
-   → grava o pedido no seu banco (sem duplicar)
-   → quando o pedido está FINALIZADO, gera "saída" de estoque
-      de cada produto acabado vendido (baixa automática)
-```
+Ou seja: **não falta nada no sistema** — falta liberar o acesso do lado do Anota AI.
 
-- O **token fica guardado como segredo** no backend (nunca no navegador, nunca no código). Toda chamada ao Anota AI acontece no servidor.
-- A baixa de estoque só ocorre para pedidos **finalizados** (status 3). Pedidos **cancelados/negados** (4/5) não dão baixa. Isso evita descontar venda que não aconteceu.
-- Reprocessar/sincronizar de novo **não duplica** baixa: cada pedido é registrado uma única vez.
+# O que você precisa fazer no Anota AI
 
-## Mapeamento item ↔ produto
+1. Abrir chamado no suporte do Anota AI (chat do painel ou e-mail comercial) pedindo:
+   > "Solicito habilitar a **API de Pedidos (partnerauth)** para a minha loja e a emissão do **token de integração de parceiro** para uso em sistema externo de controle de estoque."
+2. Informar o CNPJ/loja e confirmar que o uso é **somente leitura de pedidos** (polling).
+3. O suporte devolve um **token novo** (diferente do que está salvo hoje) e confirma que a loja está ativa no portal de integração.
 
-Para dar baixa certa, cada item do cardápio do Anota AI precisa apontar para um **produto** do seu sistema. Duas formas, usadas em conjunto:
-1. **Automático** pelo `external_id` do cardápio (quando o item do Anota AI já traz o id do produto).
-2. **Manual** por uma tela de mapeamento no sistema, onde você liga "nome do item no Anota AI" → "produto".
+# O que eu faço quando você tiver o token novo
 
-Itens sem mapeamento entram numa lista de **pendências** (o pedido é gravado, mas o item fica marcado como "não mapeado" até você resolver — nenhuma baixa é feita às cegas).
+1. Você abre a aba **Anota AI** no sistema, clica em **"Atualizar token"** (o formulário seguro reabre) e cola o novo valor.
+2. Clica em **Testar conexão** — deve responder "Conexão estabelecida" e mostrar a quantidade de pedidos disponíveis.
+3. Clica em **Sincronizar pedidos** para importar o histórico inicial e fazer o mapeamento item → produto.
 
-## O que aparece no sistema
+# Pequena melhoria opcional no sistema
 
-Nova aba **"Anota AI"** (menu, grupo de integrações/estoque) com:
-- **Status da conexão** + botão "Testar conexão".
-- **Botão "Sincronizar pedidos"** (com filtro de status: análise / produção / finalizados).
-- **Lista de pedidos importados**: número, data/hora, valor, status, itens e se a baixa de estoque foi aplicada.
-- **Tela de mapeamento** item Anota AI → produto, com destaque para pendências.
+Enquanto isso, posso deixar a aba Anota AI mais informativa para diagnóstico futuro:
 
-## Observação importante sobre insumos/recheio
+- Mostrar no card de status uma **mensagem de ajuda** quando o erro for 401/403 explicando que provavelmente é o tipo do token / loja não ativada (evita confusão da próxima vez).
+- Adicionar um campo **opcional** "ID da loja" na tela de configuração — não é usado pelo `partnerauth`, mas fica registrado para referência e para uma futura API do Anota AI que exija esse dado.
+- Botão de **"Rotacionar token"** mais visível (hoje só é possível pelo fluxo padrão de segredos).
 
-A baixa será de **produto acabado** (a venda consome o salgado pronto). O consumo de **insumos e recheio** já é registrado no momento da **produção** (ordens de produção), então não é descontado de novo na venda — senão contaria o consumo duas vezes. O impacto das vendas no seu planejamento de produção continua visível pelo saldo dos produtos e pelo Relatório de Produção.
-
----
+Se você quiser, incluo essas melhorias nesta rodada. Se preferir só destravar a conexão primeiro, você segue com o passo 1 (suporte Anota AI) e depois voltamos aqui para colar o token novo — nenhum código precisa mudar para isso.
 
 ## Detalhes técnicos
 
-**Segredo**
-- `ANOTA_AI_TOKEN` guardado via formulário seguro (add_secret) no início da construção.
-
-**Banco de dados (migração)**
-- `anota_orders`: pedidos importados — `external_order_id` (único), `numero`, `check_status`, `total`, `cliente`, `payload` (jsonb), `estoque_aplicado` (bool), timestamps. Idempotência pelo `external_order_id`.
-- `anota_order_items`: itens de cada pedido — referência ao pedido, nome/idexterno do item, quantidade, `product_id` mapeado (nullable), `mapeado` (bool).
-- `anota_product_map`: `anota_item_ref` (id externo ou nome) → `product_id`. Fonte do mapeamento manual.
-- GRANTs para `authenticated` + `service_role`, RLS habilitado, políticas para usuários autenticados com papéis admin/estoque/compras/operacional (via `has_role`).
-- Função `apply_anota_order_stock(order_id)` (SECURITY DEFINER): insere `product_movements` tipo `saida` para cada item mapeado do pedido finalizado e marca `estoque_aplicado=true`. Reaproveita o trigger `fn_product_movement_apply` existente (que já atualiza saldo).
-
-**Servidor (TanStack server functions, `src/lib/anota.functions.ts`)**
-- `testAnotaConnection` — valida o token contra o endpoint de listagem.
-- `syncAnotaOrders` — chama `GET https://api-parceiros.anota.ai/partnerauth` (list orders, paginado), busca detalhes dos novos, grava `anota_orders`/`anota_order_items`, resolve mapeamento por `external_id`, e chama `apply_anota_order_stock` para os finalizados mapeados.
-- `saveAnotaMapping` — salva mapeamentos manuais e re-tenta aplicar baixa em pedidos pendentes.
-- Todas com `requireSupabaseAuth` + verificação de papel; token lido de `process.env.ANOTA_AI_TOKEN` dentro do handler. Erros do provedor são tratados e retornados de forma amigável.
-
-**Frontend**
-- Rota `src/routes/_authenticated/anota.tsx` com a aba, tabela de pedidos, botão sincronizar e tela de mapeamento (TanStack Query + `useServerFn`).
-- Novo item em `src/lib/nav.ts`.
-
-**Fora de escopo (não faremos agora)**
-- Enviar dados de volta ao Anota AI (cardápio, disponibilidade).
-- Webhook automático (fica como evolução futura; hoje é botão).
-- Aceitar/recusar/mudar status do pedido dentro do seu sistema.
-
-## Ação de segurança recomendada
-Como o token passou pelo chat, recomendo **rotacioná-lo no portal do Anota AI** depois que a integração estiver funcionando, e colar o novo valor no formulário seguro.
+- Base atual: `https://api-parceiros.anota.ai/partnerauth` com header `Authorization: <token>` (sem "Bearer"), conforme documentação da API de Pedidos.
+- Código relevante: `src/lib/anota.functions.ts` (`discoverListPath` já testa 4 caminhos e devolve 401/403 amigável) e `src/routes/_authenticated/anota.tsx` (UI de teste/sync).
+- Segredo `ANOTA_AI_TOKEN` já está salvo — trocar valor via `update_secret` quando o novo token chegar.
+- Sem alteração de banco: as tabelas `anota_orders`, `anota_order_items`, `anota_product_map` e a função `apply_anota_order_stock` continuam válidas.
