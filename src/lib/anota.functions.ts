@@ -381,8 +381,19 @@ function statusQuery(filtro: "todos" | "analise" | "producao" | "finalizados"): 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function ensureRole(context: { supabase: any; userId: string }) {
   for (const role of ROLES_PERMITIDAS) {
-    const { data } = await context.supabase.rpc("has_role", { _user_id: context.userId, _role: role });
-    if (data === true) return;
+    try {
+      const { data } = await context.supabase.rpc("has_role", { _user_id: context.userId, _role: role });
+      if (data === true) return;
+    } catch {
+      // fallback: consulta direta na tabela se a RPC falhar
+      const { data: rows } = await context.supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", context.userId)
+        .eq("role", role)
+        .maybeSingle();
+      if (rows) return;
+    }
   }
   throw new Error("Você não tem permissão para usar a integração Anota AI.");
 }
