@@ -414,17 +414,18 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
   }))
   .handler(async ({ context, data }): Promise<AnotaSyncResult> => {
     await ensureRole(context);
-    const token = process.env.ANOTA_AI_TOKEN;
-    if (!token) {
+    const auth = await getAnotaAccessToken();
+    if ("error" in auth) {
       return {
         ok: false,
-        message: "Token do Anota AI não configurado no sistema.",
+        message: auth.error,
         importados: 0,
         atualizados: 0,
         baixasAplicadas: 0,
         pendentesMapeamento: 0,
       };
     }
+    const token = auth.token;
 
     const supabase = context.supabase;
 
