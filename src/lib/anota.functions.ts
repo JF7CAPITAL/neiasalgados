@@ -261,24 +261,38 @@ function cleanItemName(nome: string | null): string | null {
   return n;
 }
 
+/** Nomes de campos que indicam que um objeto é um contêiner
+ *  (categoria/grupo/subgrupo/combo) com itens aninhados. */
+const CONTAINER_FIELDS = [
+  "subItems", "subitems", "sub_itens",
+  "items", "products", "produtos",
+  "subgroups", "subGroups", "subgrupos",
+  "combo", "comboItems", "combo_itens",
+  "options", "choices",
+];
+
 function extractItem(raw: unknown): ParsedItem[] {
   const it = asRecord(raw);
   if (!it) return [];
-  const subItems = it.subItems;
-  if (Array.isArray(subItems) && subItems.length > 0) {
-    const result: ParsedItem[] = [];
-    for (const sub of subItems) {
-      const s = asRecord(sub);
-      if (!s) continue;
-      const clean = cleanItemName(firstString(s, ["name", "nome", "description", "title"]));
-      const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
-      const nome = firstString(s, ["name", "nome", "description", "title"]);
-      const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
-      if (!ref) continue;
-      result.push({ ref, nome, quantidade });
+  // Se o objeto for um contêiner com arrays de itens, extrai apenas os filhos
+  for (const key of CONTAINER_FIELDS) {
+    const arr = it[key];
+    if (Array.isArray(arr) && arr.length > 0) {
+      const result: ParsedItem[] = [];
+      for (const sub of arr) {
+        const s = asRecord(sub);
+        if (!s) continue;
+        const clean = cleanItemName(firstString(s, ["name", "nome", "description", "title"]));
+        const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
+        const nome = firstString(s, ["name", "nome", "description", "title"]);
+        const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
+        if (!ref) continue;
+        result.push({ ref, nome, quantidade });
+      }
+      return result;
     }
-    return result;
   }
+  // Item plano (sem filhos) — extrai diretamente
   const clean = cleanItemName(firstString(it, ["name", "nome", "description", "title"]));
   const ref = firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
   if (!ref) return [];
