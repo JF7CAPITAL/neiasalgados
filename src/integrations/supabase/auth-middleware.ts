@@ -32,8 +32,8 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
 export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server(
   async ({ next }) => {
     
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
+    const SUPABASE_URL = (process.env.SUPABASE_URL ?? '').trim();
+    const SUPABASE_PUBLISHABLE_KEY = (process.env.SUPABASE_PUBLISHABLE_KEY ?? '').trim();
 
     if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
       const missing = [
@@ -43,6 +43,25 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
       const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Connect Supabase in Lovable Cloud.`;
       console.error(`[Supabase] ${message}`);
       throw new Error(message);
+    }
+
+    // Testa conectividade com o Supabase antes de prosseguir
+    try {
+      const ctrl = new AbortController();
+      const timeoutId = setTimeout(() => ctrl.abort(), 8_000);
+      const testRes = await fetch(`${SUPABASE_URL}/rest/v1/`, {
+        method: 'GET',
+        headers: { apikey: SUPABASE_PUBLISHABLE_KEY },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!testRes.ok && testRes.status !== 404) {
+        console.warn(`[Supabase] health check respondeu ${testRes.status}`);
+      }
+    } catch (connErr) {
+      const detail = connErr instanceof Error ? `${connErr.name}: ${connErr.message}` : String(connErr);
+      console.error(`[Supabase] Não foi possível conectar em ${SUPABASE_URL}: ${detail}`);
+      throw new Error(`Supabase inacessível do servidor: ${detail}. Verifique se a URL e a chave estão corretas no Vercel e se a rede permite a conexão.`);
     }
     
     const request = getRequest();
@@ -71,11 +90,11 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
     }
 
     const supabase = createClient<Database>(
-      SUPABASE_URL!,
-      SUPABASE_PUBLISHABLE_KEY!,
+      SUPABASE_URL,
+      SUPABASE_PUBLISHABLE_KEY,
       {
         global: {
-          fetch: createSupabaseFetch(SUPABASE_PUBLISHABLE_KEY!),
+          fetch: createSupabaseFetch(SUPABASE_PUBLISHABLE_KEY),
           headers: {
             Authorization: `Bearer ${token}`,
           },
