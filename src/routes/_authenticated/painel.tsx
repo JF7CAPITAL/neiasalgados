@@ -13,6 +13,7 @@ import {
   Users,
   PackageCheck,
   Printer,
+  CalendarClock,
 } from "lucide-react";
 import {
   BarChart,
@@ -74,20 +75,21 @@ function DashboardPage() {
   }, []);
 
   useRealtime(
-    ["products", "ingredients", "production_orders", "purchase_orders", "product_movements"],
+    ["products", "ingredients", "production_orders", "purchase_orders", "product_movements", "anota_orders"],
     ["dashboard"],
   );
 
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard"],
     queryFn: async () => {
-      const [products, ingredients, prodOrders, purchOrders, movements, collabs] = await Promise.all([
+      const [products, ingredients, prodOrders, purchOrders, movements, collabs, agendados] = await Promise.all([
         supabase.from("products").select("id, nome, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal").is("deleted_at", null),
         supabase.from("ingredients").select("id, nome, quantidade_atual, estoque_minimo, unidade").is("deleted_at", null),
         supabase.from("production_orders").select("id, numero, kind, status, quantidade_necessaria, quantidade_produzida, quantidade_ideal, massadas, tipo_massa, prioridade, product_id, filling_id, fim, created_at").is("deleted_at", null),
         supabase.from("purchase_orders").select("id, numero, status, prioridade, quantidade_necessaria, preco_medio, ingredient_id, supplier_id, observacoes, created_at").is("deleted_at", null),
         supabase.from("product_movements").select("id, product_id, tipo, quantidade, created_at").order("created_at", { ascending: false }).limit(500),
         supabase.from("collaborators").select("id, nome, cargo, turno, em_turno").is("deleted_at", null),
+        supabase.from("anota_orders").select("id, numero, external_order_id, cliente, data_agendada, check_status").eq("agendado", true).is("data_agendada", "not", null).order("data_agendada", { ascending: true }),
       ]);
       const [pnames, inames, fnames, snames] = await Promise.all([
         supabase.from("products").select("id, nome"),
@@ -95,6 +97,18 @@ function DashboardPage() {
         supabase.from("fillings").select("id, nome"),
         supabase.from("suppliers").select("id, nome"),
       ]);
+
+      // Buscar itens dos pedidos agendados
+      const agendadosIds = (agendados.data ?? []).map((a: { id: string }) => a.id);
+      let agendadoItems: { nome: string | null; quantidade: number; mapeado: boolean; product_id: string | null; order_id: string }[] = [];
+      if (agendadosIds.length > 0) {
+        const { data: items } = await supabase
+          .from("anota_order_items")
+          .select("nome, quantidade, mapeado, product_id, order_id")
+          .in("order_id", agendadosIds);
+        agendadoItems = (items ?? []) as typeof agendadoItems;
+      }
+
       return {
         products: products.data ?? [],
         ingredients: ingredients.data ?? [],
@@ -102,6 +116,8 @@ function DashboardPage() {
         purchOrders: purchOrders.data ?? [],
         movements: movements.data ?? [],
         collabs: collabs.data ?? [],
+        agendados: agendados.data ?? [],
+        agendadoItems,
         names: {
           ...Object.fromEntries((pnames.data ?? []).map((p: { id: string; nome: string }) => [p.id, p.nome])),
           ...Object.fromEntries((inames.data ?? []).map((i: { id: string; nome: string }) => [i.id, i.nome])),
@@ -125,13 +141,18 @@ function DashboardPage() {
     );
   }
 
-  const { products, ingredients, prodOrders, purchOrders, movements, collabs, names } = data;
+  const { products, ingredients, prodOrders, purchOrders, movements, collabs, names, agendados, agendadoItems } = data;
 
   const nm = (id: string | null | undefined) => (id && names[id]) || "—";
 
   const estoqueTotal = products.reduce((s, p) => s + Number(p.quantidade_atual), 0);
   const produtosAbaixo = products.filter((p) => p.estoque_minimo > 0 && Number(p.quantidade_atual) <= Number(p.estoque_minimo));
   const insumosAbaixo = ingredients.filter((i) => i.estoque_minimo > 0 && Number(i.quantidade_atual) <= Number(i.estoque_minimo));
+
+  // Pedidos agendados
+  const agendadoCount = agendados.length;
+  const agendadoTotalItens = (agendadoItems ?? []).reduce((s, i) => s + Number(i.quantidade), 0);
+  const produtosComImpacto = [...new Set((agendadoItems ?? []).filter((i) => i.mapeado).map((i) => i.product_id))].filter(Boolean).length;
 
   const ordensPendentes = prodOrders.filter((o) => o.status === "pendente");
   const ordensAndamento = prodOrders.filter((o) => o.status === "em_andamento");
@@ -386,6 +407,60 @@ function DashboardPage() {
             onPrint: pColabsTurno,
           })} />
       </div>
+
+      {/* Pedidos agendados */}
+      {agendadoCount > 0 && (
+        <div className="rounded-xl border border-border bg-card p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="font-display text-base font-semibold">
+              <CalendarClock className="mr-2 inline size-5 text-warning" />
+              Pedidos Agendados ({agendadoCount})
+            </h3>
+            <span className="text-sm text-muted-foreground">
+              {fmtNum(agendadoTotalItens)} itens · {produtosComImpacto} produto(s) com impacto
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Pedido</TableHead>
+                  <TableHead>Cliente</TableHead>
+                  <TableHead>Data agendada</TableHead>
+                  <TableHead className="text-right">Total itens</TableHead>
+                  <TableHead>Itens / Impacto no estoque</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {agendados.map((o: { id: string; numero: string | null; external_order_id: string; cliente: string | null; data_agendada: string | null }) => {
+                  const orderItems = (agendadoItems ?? []).filter((i) => i.order_id === o.id);
+                  const mappedItems = orderItems.filter((i) => i.mapeado);
+                  return (
+                    <TableRow key={o.id}>
+                      <TableCell className="font-medium tabular-nums">{o.numero ?? o.external_order_id.slice(-6)}</TableCell>
+                      <TableCell className="text-muted-foreground">{o.cliente ?? "—"}</TableCell>
+                      <TableCell>{o.data_agendada ? new Date(o.data_agendada).toLocaleDateString("pt-BR") : "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums">{fmtNum(orderItems.reduce((s: number, i: { quantidade: number }) => s + Number(i.quantidade), 0))}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1.5">
+                          {mappedItems.length > 0 ? mappedItems.slice(0, 5).map((it: { nome: string | null; quantidade: number }, idx: number) => (
+                            <span key={idx} className="inline-flex items-center gap-1 rounded-md bg-warning/10 px-2 py-0.5 text-xs text-warning">
+                              {it.nome ?? "?"} ×{it.quantidade}
+                            </span>
+                          )) : <span className="text-xs text-muted-foreground">Nenhum item mapeado</span>}
+                          {mappedItems.length > 5 && (
+                            <span className="text-xs text-muted-foreground">+{mappedItems.length - 5} mais</span>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="rounded-xl border border-border bg-card p-5 lg:col-span-2">

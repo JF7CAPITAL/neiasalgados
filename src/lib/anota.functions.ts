@@ -131,6 +131,7 @@ const CHECK_LABELS: Record<number, string> = {
   4: "Cancelado",
   5: "Negado",
   6: "Cancelamento solicitado",
+  7: "Agendado",
 };
 
 export const ANOTA_CHECK_LABELS = CHECK_LABELS;
@@ -207,6 +208,8 @@ interface ParsedOrder {
   cliente: string | null;
   pedidoEm: string | null;
   items: ParsedItem[];
+  agendado: boolean;
+  dataAgendada: string | null;
   raw: unknown;
 }
 
@@ -291,11 +294,19 @@ function parseOrder(o: JsonRecord): ParsedOrder | null {
   const items = extractItems(o);
   let total = firstNumber(o, ["total", "total_price", "totalPrice", "price", "value", "valor", "amount"]) ?? 0;
   if (!total && items.length) {
-    // fallback: soma dos itens (quando houver preço por item no payload)
     total = 0;
   }
 
-  return { externalId, numero, check, total, cliente, pedidoEm, items, raw: o };
+  // Detectar data de agendamento
+  const agendadoDate =
+    firstString(o, ["scheduled_date", "scheduledDate", "scheduled_at", "scheduledAt", "schedule_date", "scheduleDate",
+      "delivery_date", "deliveryDate", "delivery_at", "deliveryAt",
+      "pickup_estimated", "pickupEstimated", "pickup_date", "pickupDate",
+      "schedule_for", "scheduleFor"]);
+  const dataAgendada = agendadoDate ? agendadoDate.slice(0, 10) : null;
+  const agendado = dataAgendada !== null;
+
+  return { externalId, numero, check, total, cliente, pedidoEm, items, agendado, dataAgendada, raw: o };
 }
 
 async function fetchJson(url: string, token: string, method: "GET" | "POST" = "GET", pageId?: string): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
@@ -368,7 +379,7 @@ async function fetchOrderDetail(token: string, listPath: string, id: string, pag
   return null;
 }
 
-function statusQuery(filtro: "todos" | "analise" | "producao" | "finalizados"): string {
+function statusQuery(filtro: "todos" | "analise" | "producao" | "finalizados" | "agendados"): string {
   switch (filtro) {
     case "analise":
       return "?inAnalysis=true&currentpage=1";
@@ -376,6 +387,8 @@ function statusQuery(filtro: "todos" | "analise" | "producao" | "finalizados"): 
       return "?inProduction=true&currentpage=1";
     case "finalizados":
       return "?inFinished=true&currentpage=1";
+    case "agendados":
+      return "?scheduled=true&currentpage=1";
     default:
       return "?currentpage=1";
   }
@@ -477,7 +490,7 @@ export interface AnotaSyncResult {
 /** Sincroniza pedidos do Anota AI: importa novos, atualiza status e dá baixa nos finalizados mapeados. */
 export const syncAnotaOrders = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input: { filtro?: "todos" | "analise" | "producao" | "finalizados" }) => ({
+  .inputValidator((input: { filtro?: "todos" | "analise" | "producao" | "finalizados" | "agendados" }) => ({
     filtro: input?.filtro ?? "todos",
   }))
   .handler(async ({ context, data }): Promise<AnotaSyncResult> => {
@@ -522,7 +535,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     const externalIds = discovery.orders.map((o) => o.id);
     const { data: existingRows, error: existingErr } = await supabase
       .from("anota_orders")
-      .select("id, external_order_id, check_status, estoque_aplicado, payload")
+      .select("id, external_order_id, check_status, estoque_aplicado, payload, agendado")
       .in("external_order_id", externalIds.length ? externalIds : ["__none__"]);
     if (existingErr) console.error("[syncAnotaOrders] existing query error:", existingErr);
     const existing = new Map(
@@ -550,12 +563,14 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
                 cliente: detail.cliente,
                 pedido_em: detail.pedidoEm,
                 payload: detail.raw as never,
+                agendado: detail.agendado,
+                data_agendada: detail.dataAgendada,
               })
               .eq("id", prev.id);
             if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
             atualizados++;
             await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
-            if (detail.check === 3 && !prev.estoque_aplicado) {
+            if (detail.check === 3 && !prev.estoque_aplicado && !detail.agendado) {
               finalizadosParaBaixa.push(prev.id);
             }
             continue;
@@ -567,7 +582,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           if (updStatusErr) console.error("[syncAnotaOrders] update status error:", updStatusErr);
           atualizados++;
         }
-        if (listed.check === 3 && !prev.estoque_aplicado) {
+        if (listed.check === 3 && !prev.estoque_aplicado && !prev.agendado) {
           finalizadosParaBaixa.push(prev.id);
         }
         continue;
@@ -587,6 +602,8 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           cliente: detail?.cliente ?? null,
           pedido_em: detail?.pedidoEm ?? null,
           payload: (detail?.raw ?? null) as never,
+          agendado: detail?.agendado ?? false,
+          data_agendada: detail?.dataAgendada ?? null,
         })
         .select("id")
         .single();
@@ -598,7 +615,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       const todosMapeados = await insertOrderItems(supabase, inserted.id, items, mapByRef);
       if (items.length > 0 && !todosMapeados) pendentesMapeamento++;
 
-      if (check === 3) {
+      if (check === 3 && !detail?.agendado) {
         finalizadosParaBaixa.push(inserted.id);
       }
     }
@@ -625,6 +642,9 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       });
       if (!rpcErr) baixasAplicadas++;
     }
+
+    // Atualiza reserva de estoque com base nos pedidos agendados
+    await supabase.rpc("update_reserved_from_scheduled");
 
     const partes = [`${importados} novo(s)`, `${atualizados} atualizado(s)`, `${baixasAplicadas} baixa(s) de estoque`];
     if (pendentesMapeamento) partes.push(`${pendentesMapeamento} pedido(s) aguardando mapeamento`);
@@ -718,6 +738,9 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
       if (!error) baixasAplicadas++;
     }
 
+    // Atualiza reserva de estoque com base nos pedidos agendados
+    await supabase.rpc("update_reserved_from_scheduled");
+
     return {
       ok: true,
       message:
@@ -726,4 +749,111 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
           : "Mapeamento salvo com sucesso.",
       baixasAplicadas,
     };
+  });
+
+// ---------------------------------------------------------------------------
+// Pedidos agendados
+// ---------------------------------------------------------------------------
+
+export interface ProcessScheduledResult {
+  ok: boolean;
+  message: string;
+  ordensCriadas: { produto: string; quantidade: number; ordemId: string }[];
+}
+
+/** Processa pedidos agendados que vencem amanhã e cria ordens de produção urgentes se necessário. */
+export const processScheduledOrders = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<ProcessScheduledResult> => {
+    await ensureRole(context);
+    const supabase = context.supabase;
+
+    const { data, error } = await supabase.rpc("process_scheduled_orders");
+
+    if (error) {
+      console.error("[processScheduledOrders] RPC error:", error);
+      return { ok: false, message: `Erro ao processar agendados: ${error.message}`, ordensCriadas: [] };
+    }
+
+    const ordensCriadas = (data ?? []).map((r: { produto_nome: string; quantidade_necessaria: number; ordem_id: string }) => ({
+      produto: r.produto_nome,
+      quantidade: Math.ceil(r.quantidade_necessaria),
+      ordemId: r.ordem_id,
+    }));
+
+    await supabase.rpc("update_reserved_from_scheduled");
+
+    const message = ordensCriadas.length > 0
+      ? `${ordensCriadas.length} ordem(ns) de produção urgente criada(s) para atender pedidos agendados.`
+      : "Nenhum pedido agendado requer produção adicional.";
+
+    return { ok: true, message, ordensCriadas };
+  });
+
+export interface ScheduledOrderImpact {
+  id: string;
+  numero: string | null;
+  external_order_id: string;
+  cliente: string | null;
+  data_agendada: string | null;
+  items: { nome: string | null; quantidade: number; produto_nome: string | null; produto_id: string | null }[];
+  total_itens: number;
+}
+
+/** Retorna todos os pedidos agendados com seus itens e impacto no estoque. */
+export const getScheduledOrders = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<{ orders: ScheduledOrderImpact[] }> => {
+    const supabase = context.supabase;
+
+    const { data: orders, error: oErr } = await supabase
+      .from("anota_orders")
+      .select("id, numero, external_order_id, cliente, data_agendada, pedido_em")
+      .eq("agendado", true)
+      .is("data_agendada", "not", null)
+      .order("data_agendada", { ascending: true });
+
+    if (oErr) {
+      console.error("[getScheduledOrders] query error:", oErr);
+      return { orders: [] };
+    }
+
+    const result: ScheduledOrderImpact[] = [];
+    for (const o of orders ?? []) {
+      const { data: items } = await supabase
+        .from("anota_order_items")
+        .select("nome, quantidade, mapeado, product_id")
+        .eq("order_id", o.id);
+
+      const mappedItems = (items ?? []).filter((i) => i.mapeado);
+      const productIds = mappedItems.map((i) => i.product_id).filter(Boolean);
+
+      if (productIds.length > 0) {
+        const { data: prods } = await supabase
+          .from("products")
+          .select("id, nome, quantidade_atual, estoque_minimo, quantidade_reservada")
+          .in("id", productIds);
+
+        const prodMap = new Map((prods ?? []).map((p) => [p.id, p]));
+        const enriched = mappedItems.map((it) => ({
+          nome: it.nome,
+          quantidade: Number(it.quantidade),
+          produto_nome: prodMap.get(it.product_id)?.nome ?? null,
+          produto_id: it.product_id,
+        }));
+        result.push({
+          ...o,
+          items: enriched,
+          total_itens: mappedItems.reduce((s, it) => s + Number(it.quantidade), 0),
+        });
+      } else {
+        result.push({
+          ...o,
+          items: [],
+          total_itens: 0,
+        });
+      }
+    }
+
+    return { orders: result };
   });

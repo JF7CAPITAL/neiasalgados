@@ -24,7 +24,7 @@ export const Route = createFileRoute("/_authenticated/anota")({
   component: AnotaPage,
 });
 
-type Filtro = "todos" | "analise" | "producao" | "finalizados";
+type Filtro = "todos" | "analise" | "producao" | "finalizados" | "agendados";
 
 const CHECK_TONE: Record<number, "default" | "secondary" | "destructive" | "outline"> = {
   0: "outline",
@@ -34,6 +34,7 @@ const CHECK_TONE: Record<number, "default" | "secondary" | "destructive" | "outl
   4: "destructive",
   5: "destructive",
   6: "destructive",
+  7: "outline",
 };
 
 function checkBadge(check: number) {
@@ -55,7 +56,7 @@ function AnotaPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("anota_orders")
-        .select("id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at")
+        .select("id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, agendado, data_agendada")
         .order("imported_at", { ascending: false })
         .limit(300);
       if (error) throw error;
@@ -194,6 +195,7 @@ function AnotaPage() {
                 <SelectItem value="analise">Em análise</SelectItem>
                 <SelectItem value="producao">Em produção</SelectItem>
                 <SelectItem value="finalizados">Finalizados</SelectItem>
+                <SelectItem value="agendados">Agendados</SelectItem>
               </SelectContent>
             </Select>
             <Button onClick={() => sync.mutate()} disabled={sync.isPending}>
@@ -245,6 +247,7 @@ function AnotaPage() {
                     <th className="px-4 py-3">Cliente</th>
                     <th className="px-4 py-3">Data</th>
                     <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Agendado</th>
                     <th className="px-4 py-3 text-right">Total</th>
                     <th className="px-4 py-3 text-center">Estoque</th>
                   </tr>
@@ -263,6 +266,15 @@ function AnotaPage() {
                       <td className="px-4 py-3">{o.cliente ?? "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">{fmtDateTime(o.pedido_em ?? o.imported_at)}</td>
                       <td className="px-4 py-3">{checkBadge(o.check_status)}</td>
+                      <td className="px-4 py-3">
+                        {o.agendado ? (
+                          <span className="text-xs text-muted-foreground">
+                            {o.data_agendada ? new Date(o.data_agendada).toLocaleDateString("pt-BR") : "Sim"}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
                       <td className="px-4 py-3 text-center">
                         {o.estoque_aplicado ? (
@@ -376,6 +388,16 @@ function AnotaPage() {
                   <span className="text-muted-foreground">Total:</span>{" "}
                   <span className="font-medium">{fmtMoney(selectedOrder.total)}</span>
                 </div>
+                {selectedOrder.agendado && (
+                  <div>
+                    <span className="text-muted-foreground">Agendado para:</span>{" "}
+                    <span className="font-medium">
+                      {selectedOrder.data_agendada
+                        ? new Date(selectedOrder.data_agendada).toLocaleDateString("pt-BR")
+                        : "Data não informada"}
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="border-t pt-3">
                 <h4 className="mb-2 text-sm font-medium">Itens do pedido</h4>
