@@ -557,34 +557,38 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       const prev = existing.get(listed.id);
 
       if (prev) {
-        if (!prev.payload) {
-          const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
-          if (detail) {
-            const { error: updErr } = await supabase
-              .from("anota_orders")
-              .update({
-                numero: detail.numero,
-                check_status: detail.check,
-                total: detail.total,
-                cliente: detail.cliente,
-                pedido_em: detail.pedidoEm,
-                payload: detail.raw as never,
-              })
-              .eq("id", prev.id);
-            if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
-            atualizados++;
-            await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
-            if (detail.check === 1 && !prev.estoque_aplicado) {
-              finalizadosParaBaixa.push(prev.id);
-            }
-            continue;
+        // Sempre busca o detalhe atualizado para garantir itens/quantidades corretas
+        const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
+        if (detail) {
+          const { error: updErr } = await supabase
+            .from("anota_orders")
+            .update({
+              numero: detail.numero,
+              check_status: detail.check,
+              total: detail.total,
+              cliente: detail.cliente,
+              pedido_em: detail.pedidoEm,
+              payload: detail.raw as never,
+            })
+            .eq("id", prev.id);
+          if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
+          else atualizados++;
+          await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
+          // Se já tinha estoque aplicado, reseta para re-aplicar com quantidades corrigidas
+          if (prev.estoque_aplicado) {
+            await supabase.from("product_movements").delete().eq("ref_order_id", prev.id).eq("destino", "Anota AI");
+            await supabase.from("anota_orders").update({ estoque_aplicado: false }).eq("id", prev.id);
           }
+          if (detail.check === 1) {
+            finalizadosParaBaixa.push(prev.id);
+          }
+          continue;
         }
-        // Já importado — atualiza status se mudou
+        // fallback: lista — atualiza status se mudou
         if (prev.check_status !== listed.check) {
           const { error: updStatusErr } = await supabase.from("anota_orders").update({ check_status: listed.check }).eq("id", prev.id);
           if (updStatusErr) console.error("[syncAnotaOrders] update status error:", updStatusErr);
-          atualizados++;
+          else atualizados++;
         }
         if (listed.check === 1 && !prev.estoque_aplicado) {
           finalizadosParaBaixa.push(prev.id);
