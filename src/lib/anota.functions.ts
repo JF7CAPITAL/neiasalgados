@@ -241,11 +241,12 @@ function resolveQuantidade(apiQtd: number | null, nome: string | null): number {
   return unid;
 }
 
-function extractItem(raw: unknown): ParsedItem | null {
+function extractItem(raw: unknown): ParsedItem[] {
   const it = asRecord(raw);
-  if (!it) return null;
+  if (!it) return [];
   const subItems = it.subItems;
   if (Array.isArray(subItems) && subItems.length > 0) {
+    const result: ParsedItem[] = [];
     for (const sub of subItems) {
       const s = asRecord(sub);
       if (!s) continue;
@@ -253,15 +254,15 @@ function extractItem(raw: unknown): ParsedItem | null {
       const nome = firstString(s, ["name", "nome", "description", "title"]);
       const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
       if (!ref) continue;
-      return { ref, nome, quantidade };
+      result.push({ ref, nome, quantidade });
     }
-    return null;
+    return result;
   }
   const ref = firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? firstString(it, ["name", "nome", "description", "title"]);
-  if (!ref) return null;
+  if (!ref) return [];
   const nome = firstString(it, ["name", "nome", "description", "title"]);
   const quantidade = resolveQuantidade(firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
-  return { ref, nome, quantidade };
+  return [{ ref, nome, quantidade }];
 }
 
 function extractItems(o: JsonRecord): ParsedItem[] {
@@ -276,9 +277,10 @@ function extractItems(o: JsonRecord): ParsedItem[] {
   const out: ParsedItem[] = [];
   for (const list of arrays) {
     for (const raw of list) {
-      const item = extractItem(raw);
-      if (!item || out.some((p) => p.ref === item.ref)) continue;
-      out.push(item);
+      const items = extractItem(raw);
+      for (const item of items) {
+        if (!out.some((p) => p.ref === item.ref)) out.push(item);
+      }
     }
   }
   return out;
