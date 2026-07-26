@@ -225,32 +225,40 @@ function unwrapOrder(json: unknown): JsonRecord | null {
 }
 
 /** Extrai a quantidade real multiplicando o campo qtd da API pelo número
- *  embutido no nome (ex: "50 Pastelzinho De Queijo" qtd:1 → 50×1=50,
- *  "50 Mini Coxinhas" qtd:2 → 50×2=100, "Empada de Frango 50 UNID." → 50). */
+ *  embutido no nome (ex: "1x 50 unidades de pastelzinhos" qtd:1 → 50×1=50,
+ *  "50 Pastelzinho De Queijo" qtd:1 → 50, "50 Mini Coxinhas De Frango" qtd:2 → 100,
+ *  "Pastelzinho de Carne (25)" → 25, "Empada de Frango 50 UNID." → 50). */
 function resolveQuantidade(apiQtd: number | null, nome: string | null): number {
   const raw = apiQtd ?? 1;
   if (!nome) return raw;
-  let unid = raw;
-  const lead = nome.trim().match(/^(\d+)\s/);
-  if (lead) {
-    unid = parseInt(lead[1], 10) * raw;
-  } else {
-    const trail = nome.trim().match(/(\d+)\s*UNID/);
-    if (trail) unid = parseInt(trail[1], 10) * raw;
-  }
-  return unid;
+  const n = nome.trim();
+  const xunid = n.match(/^\d+x\s+(\d+)\s+unidades/i);
+  if (xunid) return parseInt(xunid[1], 10) * raw;
+  const lead = n.match(/^(\d+)\s/);
+  if (lead) return parseInt(lead[1], 10) * raw;
+  const trail = n.match(/(\d+)\s*UNID/);
+  if (trail) return parseInt(trail[1], 10) * raw;
+  const paren = n.match(/\((\d+)\)\s*$/);
+  if (paren) return parseInt(paren[1], 10) * raw;
+  return raw;
 }
 
-/** Remove prefixos numéricos (ex: "50 Enroladinho…" → "Enroladinho…")
- *  e sufixos "UNID" (ex: "Empada de Frango 50 UNID." → "Empada de Frango")
- *  para que o ref usado no mapeamento corresponda ao nome limpo do produto. */
+/** Remove prefixos/sufixos numéricos do nome do produto para usar como ref
+ *  no mapeamento. Ex: "1x 50 unidades de pastelzinhos" → "pastelzinhos",
+ *  "50 Enroladinho…" → "Enroladinho…", "Empada de Frango 50 UNID." → "Empada de Frango",
+ *  "Pastelzinho de Carne (25)" → "Pastelzinho de Carne". */
 function cleanItemName(nome: string | null): string | null {
   if (!nome) return null;
-  const lead = nome.trim().match(/^\d+\s+(.+)/);
+  const n = nome.trim();
+  const xunid = n.match(/^\d+x\s+\d+\s+unidades\s+de\s+(.+)/i);
+  if (xunid) return xunid[1].trim();
+  const lead = n.match(/^\d+\s+(.+)/);
   if (lead) return lead[1].trim();
-  const trail = nome.trim().match(/^(.+?)\s*\d+\s*UNID/);
+  const trail = n.match(/^(.+?)\s*\d+\s*UNID/);
   if (trail) return trail[1].trim();
-  return nome.trim();
+  const paren = n.match(/^(.+?)\s*\(\d+\)\s*$/);
+  if (paren) return paren[1].trim();
+  return n;
 }
 
 function extractItem(raw: unknown): ParsedItem[] {
