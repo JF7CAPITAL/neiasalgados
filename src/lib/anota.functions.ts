@@ -224,15 +224,21 @@ function unwrapOrder(json: unknown): JsonRecord | null {
   return root;
 }
 
-/** Extrai a quantidade real de um item, corrigindo quando o campo quantidade
- *  é 1 mas o nome do produto já embute o total (ex: "50 Pastelzinho De Queijo"). */
+/** Extrai a quantidade real multiplicando o campo qtd da API pelo número
+ *  embutido no nome (ex: "50 Pastelzinho De Queijo" qtd:1 → 50×1=50,
+ *  "50 Mini Coxinhas" qtd:2 → 50×2=100, "Empada de Frango 50 UNID." → 50). */
 function resolveQuantidade(apiQtd: number | null, nome: string | null): number {
   const raw = apiQtd ?? 1;
-  if (raw === 1 && nome) {
-    const m = nome.trim().match(/^(\d+)\s/);
-    if (m) return parseInt(m[1], 10);
+  if (!nome) return raw;
+  let unid = raw;
+  const lead = nome.trim().match(/^(\d+)\s/);
+  if (lead) {
+    unid = parseInt(lead[1], 10) * raw;
+  } else {
+    const trail = nome.trim().match(/(\d+)\s*UNID/);
+    if (trail) unid = parseInt(trail[1], 10) * raw;
   }
-  return raw;
+  return unid;
 }
 
 function extractItem(raw: unknown): ParsedItem | null {
