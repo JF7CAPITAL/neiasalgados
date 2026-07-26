@@ -45,23 +45,34 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
       throw new Error(message);
     }
 
-    // Testa conectividade com o Supabase antes de prosseguir
+    // Diagnóstico de conectividade
+    const netErrors: string[] = [];
+
+    const ctrl1 = new AbortController();
+    const t1 = setTimeout(() => ctrl1.abort(), 5_000);
     try {
-      const ctrl = new AbortController();
-      const timeoutId = setTimeout(() => ctrl.abort(), 8_000);
-      const testRes = await fetch(`${SUPABASE_URL}/rest/v1/`, {
+      await fetch('https://api.github.com', { method: 'HEAD', signal: ctrl1.signal });
+    } catch (e) {
+      netErrors.push(`github: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    clearTimeout(t1);
+
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), 5_000);
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/`, {
         method: 'GET',
         headers: { apikey: SUPABASE_PUBLISHABLE_KEY },
-        signal: ctrl.signal,
+        signal: ctrl2.signal,
       });
-      clearTimeout(timeoutId);
-      if (!testRes.ok && testRes.status !== 404) {
-        console.warn(`[Supabase] health check respondeu ${testRes.status}`);
-      }
-    } catch (connErr) {
-      const detail = connErr instanceof Error ? `${connErr.name}: ${connErr.message}` : String(connErr);
-      console.error(`[Supabase] Não foi possível conectar em ${SUPABASE_URL}: ${detail}`);
-      throw new Error(`Supabase inacessível do servidor: ${detail}. Verifique se a URL e a chave estão corretas no Vercel e se a rede permite a conexão.`);
+    } catch (e) {
+      netErrors.push(`supabase: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    clearTimeout(t2);
+
+    if (netErrors.length > 0) {
+      console.error(`[Supabase] Diagnóstico de rede: ${netErrors.join(' | ')}`);
+      throw new Error(`Falha de rede no servidor Vercel:\n${netErrors.join('\n')}`);
     }
     
     const request = getRequest();
