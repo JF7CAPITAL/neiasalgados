@@ -12,4 +12,9 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Preset obrigatório para deploy no Vercel — o padrão (cloudflare-module) quebra
+  // as server functions (createServerFn) e impede sincronização e salvamento de mapeamento.
+  nitro: {
+    preset: "vercel",
+  },
 });
