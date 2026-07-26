@@ -281,18 +281,23 @@ function extractItem(raw: unknown): ParsedItem[] {
 
 function extractItems(o: JsonRecord): ParsedItem[] {
   const out: ParsedItem[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
+
+  function accum(ref: string, nome: string | null, qtd: number): void {
+    const idx = seen.get(ref);
+    if (idx !== undefined) {
+      out[idx] = { ref, nome, quantidade: out[idx].quantidade + qtd };
+    } else {
+      seen.set(ref, out.length);
+      out.push({ ref, nome, quantidade: qtd });
+    }
+  }
 
   function walk(value: unknown): void {
     if (Array.isArray(value)) {
       for (const el of value) {
         const items = extractItem(el);
-        for (const item of items) {
-          if (!seen.has(item.ref)) {
-            seen.add(item.ref);
-            out.push(item);
-          }
-        }
+        for (const item of items) accum(item.ref, item.nome, item.quantidade);
         const obj = asRecord(el);
         if (obj) {
           for (const key of Object.keys(obj)) {
