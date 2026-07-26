@@ -566,7 +566,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
             if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
             atualizados++;
             await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
-            if ([1, 3].includes(detail.check) && !prev.estoque_aplicado) {
+            if (detail.check === 1 && !prev.estoque_aplicado) {
               finalizadosParaBaixa.push(prev.id);
             }
             continue;
@@ -578,7 +578,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           if (updStatusErr) console.error("[syncAnotaOrders] update status error:", updStatusErr);
           atualizados++;
         }
-        if ([1, 3].includes(listed.check) && !prev.estoque_aplicado) {
+        if (listed.check === 1 && !prev.estoque_aplicado) {
           finalizadosParaBaixa.push(prev.id);
         }
         continue;
@@ -609,7 +609,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       const todosMapeados = await insertOrderItems(supabase, inserted.id, items, mapByRef);
       if (items.length > 0 && !todosMapeados) pendentesMapeamento++;
 
-      if ([1, 3].includes(check)) {
+      if (check === 1) {
         finalizadosParaBaixa.push(inserted.id);
       }
     }

@@ -86,7 +86,7 @@ function DashboardPage() {
         supabase.from("ingredients").select("id, nome, quantidade_atual, estoque_minimo, unidade").is("deleted_at", null),
         supabase.from("production_orders").select("id, numero, kind, status, quantidade_necessaria, quantidade_produzida, quantidade_ideal, massadas, tipo_massa, prioridade, product_id, filling_id, fim, created_at").is("deleted_at", null),
         supabase.from("purchase_orders").select("id, numero, status, prioridade, quantidade_necessaria, preco_medio, ingredient_id, supplier_id, observacoes, created_at").is("deleted_at", null),
-        supabase.from("product_movements").select("id, product_id, tipo, quantidade, created_at").order("created_at", { ascending: false }).limit(500),
+        supabase.from("product_movements").select("id, product_id, tipo, quantidade, destino, created_at").order("created_at", { ascending: false }).limit(500),
         supabase.from("collaborators").select("id, nome, cargo, turno, em_turno").is("deleted_at", null),
       ]);
       const [pnames, inames, fnames, snames] = await Promise.all([
@@ -147,7 +147,7 @@ function DashboardPage() {
   const consumoDesde = (period: "hoje" | "semana" | "mes") => {
     const from = startOf(period);
     return movements
-      .filter((m) => (m.tipo === "saida" || m.tipo === "perda") && new Date(m.created_at) >= from)
+      .filter((m) => m.tipo === "saida" && m.destino === "Anota AI" && new Date(m.created_at) >= from)
       .reduce((s, m) => s + Number(m.quantidade), 0);
   };
   const producaoDesde = (period: "hoje" | "semana" | "mes") => {
@@ -206,7 +206,7 @@ function DashboardPage() {
   const pConsumoHoje = () => {
     const from = startOf("hoje");
     const rows = movements
-      .filter((m) => (m.tipo === "saida" || m.tipo === "perda") && new Date(m.created_at) >= from)
+      .filter((m) => m.tipo === "saida" && m.destino === "Anota AI" && new Date(m.created_at) >= from)
       .map((m) => ({ produto: nm(m.product_id), quantidade: Number(m.quantidade), horario: fmtDateTime(m.created_at) }));
     printConsumptionReport("Consumo Hoje", rows);
   };
@@ -365,12 +365,12 @@ function DashboardPage() {
             })(),
             onPrint: () => pOP("Produzido na Semana", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("semana") && o.kind === "producao")),
           })} />
-        <KpiCard label="Consumo hoje" value={fmtNum(consumoDesde("hoje"))} hint="saídas + perdas" icon={TrendingDown} tone="danger"
+        <KpiCard label="Consumo hoje" value={fmtNum(consumoDesde("hoje"))} hint="produção Anota AI" icon={TrendingDown} tone="danger"
           onClick={() => setReport({
             title: "Consumo Hoje",
             table: (() => {
               const from = startOf("hoje");
-              const hoje = movements.filter((m) => (m.tipo === "saida" || m.tipo === "perda") && new Date(m.created_at) >= from);
+              const hoje = movements.filter((m) => m.tipo === "saida" && m.destino === "Anota AI" && new Date(m.created_at) >= from);
               return hoje.length
                 ? <Table><TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Quantidade</TableHead><TableHead>Horário</TableHead></TableRow></TableHeader><TableBody>{hoje.map((m, i) => (<TableRow key={m.id || i}><TableCell className="font-medium">{nm(m.product_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(m.quantidade)}</TableCell><TableCell className="text-xs text-muted-foreground">{fmtDateTime(m.created_at)}</TableCell></TableRow>))}</TableBody></Table>
                 : <p className="py-8 text-center text-muted-foreground">Nenhum consumo hoje.</p>;
