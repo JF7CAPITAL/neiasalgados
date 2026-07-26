@@ -422,7 +422,10 @@ async function insertOrderItems(
       mapeado: !!productId,
     };
   });
-  await supabase.from("anota_order_items").insert(rows);
+  const { error: insErr } = await supabase.from("anota_order_items").insert(rows);
+  if (insErr) {
+    console.error("[insertOrderItems] insert error:", insErr);
+  }
   return todosMapeados;
 }
 
@@ -503,7 +506,8 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     }
 
     // Mapeamento item -> produto
-    const { data: mapRows } = await supabase.from("anota_product_map").select("anota_item_ref, product_id");
+    const { data: mapRows, error: mapErr } = await supabase.from("anota_product_map").select("anota_item_ref, product_id");
+    if (mapErr) console.error("[syncAnotaOrders] map query error:", mapErr);
     const mapByRef = new Map<string, string | null>();
     for (const m of mapRows ?? []) {
       mapByRef.set(m.anota_item_ref, m.product_id);
@@ -511,10 +515,11 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
 
     // Pedidos já existentes
     const externalIds = discovery.orders.map((o) => o.id);
-    const { data: existingRows } = await supabase
+    const { data: existingRows, error: existingErr } = await supabase
       .from("anota_orders")
       .select("id, external_order_id, check_status, estoque_aplicado, payload")
       .in("external_order_id", externalIds.length ? externalIds : ["__none__"]);
+    if (existingErr) console.error("[syncAnotaOrders] existing query error:", existingErr);
     const existing = new Map(
       (existingRows ?? []).map((r) => [r.external_order_id, r] as const),
     );
@@ -531,7 +536,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         if (!prev.payload) {
           const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
           if (detail) {
-            await supabase
+            const { error: updErr } = await supabase
               .from("anota_orders")
               .update({
                 numero: detail.numero,
@@ -542,6 +547,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
                 payload: detail.raw as never,
               })
               .eq("id", prev.id);
+            if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
             atualizados++;
             await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
             if (detail.check === 3 && !prev.estoque_aplicado) {
@@ -552,7 +558,8 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         }
         // Já importado — atualiza status se mudou
         if (prev.check_status !== listed.check) {
-          await supabase.from("anota_orders").update({ check_status: listed.check }).eq("id", prev.id);
+          const { error: updStatusErr } = await supabase.from("anota_orders").update({ check_status: listed.check }).eq("id", prev.id);
+          if (updStatusErr) console.error("[syncAnotaOrders] update status error:", updStatusErr);
           atualizados++;
         }
         if (listed.check === 3 && !prev.estoque_aplicado) {
@@ -654,30 +661,49 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
 
     for (const m of data.mappings) {
       if (!m.anota_item_ref) continue;
-      await supabase
+
+      const { error: upsertErr } = await supabase
         .from("anota_product_map")
         .upsert(
           { anota_item_ref: m.anota_item_ref, nome: m.nome ?? null, product_id: m.product_id },
           { onConflict: "anota_item_ref" },
         );
 
-      // Atualiza os itens de pedidos já importados
-      await supabase
+      if (upsertErr) {
+        console.error("[saveAnotaMapping] upsert error:", upsertErr);
+        return { ok: false, message: `Erro ao salvar mapeamento: ${upsertErr.message}`, baixasAplicadas: 0 };
+      }
+
+      const { error: updateErr } = await supabase
         .from("anota_order_items")
         .update({ product_id: m.product_id, mapeado: !!m.product_id })
         .eq("anota_item_ref", m.anota_item_ref);
+
+      if (updateErr) {
+        console.error("[saveAnotaMapping] update items error:", updateErr);
+        return { ok: false, message: `Erro ao atualizar itens: ${updateErr.message}`, baixasAplicadas: 0 };
+      }
     }
 
     // Reaplica baixa para pedidos finalizados agora completamente mapeados
-    const { data: pendentes } = await supabase
+    const { data: pendentes, error: pendentesErr } = await supabase
       .from("anota_orders")
       .select("id")
       .eq("check_status", 3)
       .eq("estoque_aplicado", false);
 
+    if (pendentesErr) {
+      console.error("[saveAnotaMapping] query pendentes error:", pendentesErr);
+      return { ok: false, message: `Erro ao buscar pedidos pendentes: ${pendentesErr.message}`, baixasAplicadas: 0 };
+    }
+
     let baixasAplicadas = 0;
     for (const ord of pendentes ?? []) {
-      const { data: itens } = await supabase.from("anota_order_items").select("mapeado").eq("order_id", ord.id);
+      const { data: itens, error: itensErr } = await supabase.from("anota_order_items").select("mapeado").eq("order_id", ord.id);
+      if (itensErr) {
+        console.error("[saveAnotaMapping] query itens error:", itensErr);
+        continue;
+      }
       const completos = (itens ?? []).length > 0 && (itens ?? []).every((i) => i.mapeado);
       if (!completos) continue;
       const { error } = await supabase.rpc("apply_anota_order_stock", { p_order: ord.id, p_user: context.userId });
