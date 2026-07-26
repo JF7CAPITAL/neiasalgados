@@ -280,23 +280,37 @@ function extractItem(raw: unknown): ParsedItem[] {
 }
 
 function extractItems(o: JsonRecord): ParsedItem[] {
-  const arrays: unknown[][] = [];
-  for (const key of Object.keys(o)) {
-    const v = o[key];
-    if (Array.isArray(v) && v.length && key !== "payments" && key !== "additionalFees") {
-      arrays.push(v);
-    }
-  }
-  if (!arrays.length) return [];
   const out: ParsedItem[] = [];
-  for (const list of arrays) {
-    for (const raw of list) {
-      const items = extractItem(raw);
-      for (const item of items) {
-        if (!out.some((p) => p.ref === item.ref)) out.push(item);
+  const seen = new Set<string>();
+
+  function walk(value: unknown): void {
+    if (Array.isArray(value)) {
+      for (const el of value) {
+        const items = extractItem(el);
+        for (const item of items) {
+          if (!seen.has(item.ref)) {
+            seen.add(item.ref);
+            out.push(item);
+          }
+        }
+        const obj = asRecord(el);
+        if (obj) {
+          for (const key of Object.keys(obj)) {
+            if (key === "payments" || key === "additionalFees") continue;
+            walk(obj[key]);
+          }
+        }
+      }
+    } else if (typeof value === "object" && value !== null) {
+      const obj = value as Record<string, unknown>;
+      for (const key of Object.keys(obj)) {
+        if (key === "payments" || key === "additionalFees") continue;
+        walk(obj[key]);
       }
     }
   }
+
+  walk(o);
   return out;
 }
 
