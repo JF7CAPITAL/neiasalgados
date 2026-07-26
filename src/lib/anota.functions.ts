@@ -224,6 +224,17 @@ function unwrapOrder(json: unknown): JsonRecord | null {
   return root;
 }
 
+/** Extrai a quantidade real de um item, corrigindo quando o campo quantidade
+ *  é 1 mas o nome do produto já embute o total (ex: "50 Pastelzinho De Queijo"). */
+function resolveQuantidade(apiQtd: number | null, nome: string | null): number {
+  const raw = apiQtd ?? 1;
+  if (raw === 1 && nome) {
+    const m = nome.trim().match(/^(\d+)\s/);
+    if (m) return parseInt(m[1], 10);
+  }
+  return raw;
+}
+
 function extractItem(raw: unknown): ParsedItem | null {
   const it = asRecord(raw);
   if (!it) return null;
@@ -234,7 +245,7 @@ function extractItem(raw: unknown): ParsedItem | null {
       if (!s) continue;
       const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? firstString(s, ["name", "nome", "description", "title"]);
       const nome = firstString(s, ["name", "nome", "description", "title"]);
-      const quantidade = firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
+      const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
       if (!ref) continue;
       return { ref, nome, quantidade };
     }
@@ -243,7 +254,7 @@ function extractItem(raw: unknown): ParsedItem | null {
   const ref = firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? firstString(it, ["name", "nome", "description", "title"]);
   if (!ref) return null;
   const nome = firstString(it, ["name", "nome", "description", "title"]);
-  const quantidade = firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
+  const quantidade = resolveQuantidade(firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
   return { ref, nome, quantidade };
 }
 
