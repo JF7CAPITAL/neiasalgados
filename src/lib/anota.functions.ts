@@ -224,41 +224,44 @@ function unwrapOrder(json: unknown): JsonRecord | null {
   return root;
 }
 
+function extractItem(raw: unknown): ParsedItem | null {
+  const it = asRecord(raw);
+  if (!it) return null;
+  const subItems = it.subItems;
+  if (Array.isArray(subItems) && subItems.length > 0) {
+    for (const sub of subItems) {
+      const s = asRecord(sub);
+      if (!s) continue;
+      const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? firstString(s, ["name", "nome", "description", "title"]);
+      const nome = firstString(s, ["name", "nome", "description", "title"]);
+      const quantidade = firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
+      if (!ref) continue;
+      return { ref, nome, quantidade };
+    }
+    return null;
+  }
+  const ref = firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? firstString(it, ["name", "nome", "description", "title"]);
+  if (!ref) return null;
+  const nome = firstString(it, ["name", "nome", "description", "title"]);
+  const quantidade = firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
+  return { ref, nome, quantidade };
+}
+
 function extractItems(o: JsonRecord): ParsedItem[] {
-  const arrays = [o.items, o.products, o.baskets, o.itens, o.cart, o.produtos];
-  let list: unknown[] | null = null;
-  for (const a of arrays) {
-    if (Array.isArray(a) && a.length) {
-      list = a;
-      break;
+  const arrays: unknown[][] = [];
+  for (const key of Object.keys(o)) {
+    const v = o[key];
+    if (Array.isArray(v) && v.length && key !== "payments" && key !== "additionalFees") {
+      arrays.push(v);
     }
   }
-  if (!list) return [];
+  if (!arrays.length) return [];
   const out: ParsedItem[] = [];
-  for (const raw of list) {
-    const it = asRecord(raw);
-    if (!it) continue;
-    const subItems = it.subItems;
-    if (Array.isArray(subItems) && subItems.length > 0) {
-      for (const sub of subItems) {
-        const s = asRecord(sub);
-        if (!s) continue;
-        const ref =
-          firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ??
-          firstString(s, ["name", "nome", "description", "title"]);
-        const nome = firstString(s, ["name", "nome", "description", "title"]);
-        const quantidade = firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
-        if (!ref) continue;
-        out.push({ ref, nome, quantidade });
-      }
-    } else {
-      const ref =
-        firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ??
-        firstString(it, ["name", "nome", "description", "title"]);
-      const nome = firstString(it, ["name", "nome", "description", "title"]);
-      const quantidade = firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]) ?? 1;
-      if (!ref) continue;
-      out.push({ ref, nome, quantidade });
+  for (const list of arrays) {
+    for (const raw of list) {
+      const item = extractItem(raw);
+      if (!item || out.some((p) => p.ref === item.ref)) continue;
+      out.push(item);
     }
   }
   return out;
@@ -409,6 +412,8 @@ async function insertOrderItems(
   mapByRef: Map<string, string | null>,
 ): Promise<boolean> {
   if (!items.length) return false;
+  // Remove itens antigos antes de reinserir para evitar duplicatas
+  await supabase.from("anota_order_items").delete().eq("order_id", orderId);
   let todosMapeados = true;
   const rows = items.map((it) => {
     const productId = mapByRef.has(it.ref) ? mapByRef.get(it.ref) ?? null : null;
@@ -593,21 +598,24 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       const todosMapeados = await insertOrderItems(supabase, inserted.id, items, mapByRef);
       if (items.length > 0 && !todosMapeados) pendentesMapeamento++;
 
-      if (check === 3 && todosMapeados) {
+      if (check === 3) {
         finalizadosParaBaixa.push(inserted.id);
       }
     }
 
-    // Aplica baixa de estoque nos finalizados mapeados
+    // Aplica baixa de estoque nos finalizados
+    // O RPC já filtra apenas itens com mapeado=true AND product_id IS NOT NULL AND quantidade > 0
     let baixasAplicadas = 0;
     for (const orderId of finalizadosParaBaixa) {
-      // Confirma que todos os itens estão mapeados antes de dar baixa
       const { data: itens } = await supabase
         .from("anota_order_items")
         .select("mapeado")
         .eq("order_id", orderId);
-      const completos = (itens ?? []).length > 0 && (itens ?? []).every((i) => i.mapeado);
-      if (!completos) {
+      if (!itens || itens.length === 0) {
+        continue;
+      }
+      const temMapeado = itens.some((i) => i.mapeado);
+      if (!temMapeado) {
         pendentesMapeamento++;
         continue;
       }
@@ -704,8 +712,8 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
         console.error("[saveAnotaMapping] query itens error:", itensErr);
         continue;
       }
-      const completos = (itens ?? []).length > 0 && (itens ?? []).every((i) => i.mapeado);
-      if (!completos) continue;
+      const temMapeado = (itens ?? []).some((i) => i.mapeado);
+      if (!temMapeado) continue;
       const { error } = await supabase.rpc("apply_anota_order_stock", { p_order: ord.id, p_user: context.userId });
       if (!error) baixasAplicadas++;
     }
