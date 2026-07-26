@@ -241,6 +241,18 @@ function resolveQuantidade(apiQtd: number | null, nome: string | null): number {
   return unid;
 }
 
+/** Remove prefixos numéricos (ex: "50 Enroladinho…" → "Enroladinho…")
+ *  e sufixos "UNID" (ex: "Empada de Frango 50 UNID." → "Empada de Frango")
+ *  para que o ref usado no mapeamento corresponda ao nome limpo do produto. */
+function cleanItemName(nome: string | null): string | null {
+  if (!nome) return null;
+  const lead = nome.trim().match(/^\d+\s+(.+)/);
+  if (lead) return lead[1].trim();
+  const trail = nome.trim().match(/^(.+?)\s*\d+\s*UNID/);
+  if (trail) return trail[1].trim();
+  return nome.trim();
+}
+
 function extractItem(raw: unknown): ParsedItem[] {
   const it = asRecord(raw);
   if (!it) return [];
@@ -250,7 +262,8 @@ function extractItem(raw: unknown): ParsedItem[] {
     for (const sub of subItems) {
       const s = asRecord(sub);
       if (!s) continue;
-      const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? firstString(s, ["name", "nome", "description", "title"]);
+      const clean = cleanItemName(firstString(s, ["name", "nome", "description", "title"]));
+      const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
       const nome = firstString(s, ["name", "nome", "description", "title"]);
       const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
       if (!ref) continue;
@@ -258,7 +271,8 @@ function extractItem(raw: unknown): ParsedItem[] {
     }
     return result;
   }
-  const ref = firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? firstString(it, ["name", "nome", "description", "title"]);
+  const clean = cleanItemName(firstString(it, ["name", "nome", "description", "title"]));
+  const ref = firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
   if (!ref) return [];
   const nome = firstString(it, ["name", "nome", "description", "title"]);
   const quantidade = resolveQuantidade(firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
