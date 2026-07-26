@@ -684,11 +684,8 @@ CREATE TABLE public.anota_orders (
   estoque_aplicado boolean NOT NULL DEFAULT false,
   imported_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  agendado boolean NOT NULL DEFAULT false,
-  data_agendada date
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_anota_orders_agendado ON public.anota_orders(agendado, data_agendada) WHERE agendado = true;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.anota_orders TO authenticated;
 GRANT ALL ON public.anota_orders TO service_role;
 ALTER TABLE public.anota_orders ENABLE ROW LEVEL SECURITY;
@@ -768,84 +765,3 @@ BEGIN
 
   UPDATE public.anota_orders SET estoque_aplicado = true WHERE id = p_order;
 END; $function$;
-
--- ===================================================================
--- MIGRATION 5: Pedidos agendados e auto-produção
--- ===================================================================
-
--- Processa pedidos agendados que vencem amanhã e cria ordens de produção
--- quando o volume compromete o estoque mínimo.
-CREATE OR REPLACE FUNCTION public.process_scheduled_orders()
-RETURNS TABLE(produto_nome text, quantidade_necessaria numeric, ordem_id uuid)
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path TO 'public'
-AS $function$
-DECLARE
-  rec record;
-  total_necessario numeric;
-  disponivel numeric;
-  p_id uuid;
-BEGIN
-  FOR rec IN
-    SELECT
-      a.id AS agendado_id,
-      a.external_order_id,
-      a.data_agendada,
-      p.id AS product_id,
-      p.nome,
-      p.quantidade_atual,
-      p.estoque_minimo,
-      SUM(oi.quantidade) AS qtd_agendada
-    FROM public.anota_orders a
-    JOIN public.anota_order_items oi ON oi.order_id = a.id
-    JOIN public.products p ON p.id = oi.product_id
-    WHERE a.agendado = true
-      AND a.data_agendada = CURRENT_DATE + 1
-      AND oi.mapeado = true
-      AND oi.product_id IS NOT NULL
-      AND oi.quantidade > 0
-    GROUP BY a.id, a.external_order_id, a.data_agendada, p.id, p.nome, p.quantidade_atual, p.estoque_minimo
-  LOOP
-    -- Se após atender o agendado o estoque ficar abaixo do mínimo, cria OP urgente
-    disponivel := rec.quantidade_atual - rec.qtd_agendada;
-    IF disponivel < rec.estoque_minimo THEN
-      total_necessario := rec.qtd_agendada + GREATEST(0, rec.estoque_minimo - disponivel);
-      INSERT INTO public.production_orders
-        (kind, product_id, quantidade_necessaria, quantidade_atual, quantidade_ideal, prioridade, status, auto_gerada, observacoes, previsao)
-      VALUES
-        ('producao', rec.product_id, total_necessario, rec.quantidade_atual, total_necessario, 'urgente', 'pendente', true,
-         'Auto: pedido agendado ' || rec.external_order_id || ' em ' || rec.data_agendada,
-         rec.data_agendada)
-      RETURNING id INTO p_id;
-
-      produto_nome := rec.nome;
-      quantidade_necessaria := total_necessario;
-      ordem_id := p_id;
-      RETURN NEXT;
-    END IF;
-  END LOOP;
-END; $function$;
-GRANT EXECUTE ON FUNCTION public.process_scheduled_orders() TO authenticated;
-
--- Atualiza quantidade_reservada nos produtos somando pedidos agendados
-CREATE OR REPLACE FUNCTION public.update_reserved_from_scheduled()
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path TO 'public'
-AS $function$
-BEGIN
-  UPDATE public.products p
-  SET quantidade_reservada = (
-    SELECT COALESCE(SUM(oi.quantidade), 0)
-    FROM public.anota_orders a
-    JOIN public.anota_order_items oi ON oi.order_id = a.id
-    WHERE a.agendado = true
-      AND oi.product_id = p.id
-      AND oi.mapeado = true
-      AND oi.quantidade > 0
-  )
-  WHERE p.deleted_at IS NULL;
-END; $function$;
-GRANT EXECUTE ON FUNCTION public.update_reserved_from_scheduled() TO authenticated;

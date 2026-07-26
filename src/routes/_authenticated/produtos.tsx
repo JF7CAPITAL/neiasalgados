@@ -41,7 +41,6 @@ type Product = {
   peso_massa: number;
   status: boolean;
   quantidade_atual: number;
-  quantidade_reservada: number;
   estoque_minimo: number;
   estoque_ideal: number;
   estoque_maximo: number;
@@ -147,7 +146,6 @@ function ProdutosPage() {
                 <TableHead>Categoria</TableHead>
                 <TableHead>Tipo</TableHead>
                 <TableHead className="text-right">Estoque</TableHead>
-                <TableHead className="text-right">Reservado</TableHead>
                 <TableHead className="text-right">Mín/Ideal</TableHead>
                 <TableHead>Situação</TableHead>
                 <TableHead className="w-24 text-right">Ações</TableHead>
@@ -165,7 +163,6 @@ function ProdutosPage() {
                     <TableCell className="text-muted-foreground">{p.categoria || "—"}</TableCell>
                     <TableCell className="capitalize">{p.tipo}</TableCell>
                     <TableCell className="text-right tabular font-medium">{fmtNum(p.quantidade_atual)}</TableCell>
-                    <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.quantidade_reservada)}</TableCell>
                     <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.estoque_minimo)} / {fmtNum(p.estoque_ideal)}</TableCell>
                     <TableCell><StockBadge level={lvl} /></TableCell>
                     <TableCell className="text-right">
