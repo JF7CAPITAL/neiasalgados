@@ -46,8 +46,16 @@ type NewProdOrder = {
   observacoes: string;
 };
 
+type NewFillingOrder = {
+  filling_id: string;
+  quantidade: number;
+  prioridade: string;
+  observacoes: string;
+};
+
 const emptyPO: NewPO = { ingredient_id: "", quantidade: 0, supplier_id: null, preco: 0, prioridade: "media", obs: "" };
 const emptyProdO: NewProdOrder = { product_id: "", quantidade: 0, massadas: 1, prioridade: "media", tipo_massa: "frito", observacoes: "" };
+const emptyFillingO: NewFillingOrder = { filling_id: "", quantidade: 0, prioridade: "media", observacoes: "" };
 
 function OrdensPage() {
   const qc = useQueryClient();
@@ -56,6 +64,7 @@ function OrdensPage() {
   const [receive, setReceive] = useState<{ order: PurchOrder; qtd: number; preco: number } | null>(null);
   const [newPO, setNewPO] = useState<NewPO | null>(null);
   const [newProdO, setNewProdO] = useState<NewProdOrder | null>(null);
+  const [newFillingO, setNewFillingO] = useState<NewFillingOrder | null>(null);
   useRealtime(["production_orders", "purchase_orders"], ["orders"]);
 
   const { data, isLoading } = useQuery({
@@ -162,6 +171,27 @@ function OrdensPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const createFillingO = useMutation({
+    mutationFn: async (p: NewFillingOrder) => {
+      if (!p.filling_id) throw new Error("Selecione o recheio.");
+      if (!p.quantidade || p.quantidade <= 0) throw new Error("Informe a quantidade.");
+      const { error } = await supabase.from("production_orders").insert({
+        filling_id: p.filling_id,
+        quantidade_necessaria: p.quantidade,
+        massadas: 1,
+        kind: "recheio",
+        prioridade: p.prioridade as "baixa" | "media" | "alta" | "urgente",
+        tipo_massa: null,
+        observacoes: p.observacoes || null,
+        auto_gerada: false,
+        status: "pendente",
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orders"] }); toast.success("Ordem de produção de recheio criada!"); setNewFillingO(null); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   if (isLoading || !data) return <div className="h-64 animate-pulse rounded-xl border border-border bg-card" />;
 
   const nm = (id: string | null | undefined) => (id && data.names[id]) || "—";
@@ -212,6 +242,7 @@ function OrdensPage() {
       <PageHeader title="Ordens de Serviço" subtitle="Produção, recheios e compras — central única" icon={ClipboardList}
         actions={<>
           <Button onClick={() => setNewProdO({ ...emptyProdO })}><Plus className="mr-1.5 size-4" /> Nova ordem de produção</Button>
+          <Button variant="outline" onClick={() => setNewFillingO({ ...emptyFillingO })}><Plus className="mr-1.5 size-4" /> Nova ordem de recheio</Button>
           <Button variant="outline" onClick={() => setNewPO({ ...emptyPO })}><Plus className="mr-1.5 size-4" /> Nova ordem de compra</Button>
         </>} />
 
@@ -451,6 +482,49 @@ function OrdensPage() {
                 <Button variant="outline" onClick={() => setNewProdO(null)}>Cancelar</Button>
                 <Button onClick={() => createProdO.mutate(newProdO)} disabled={createProdO.isPending || !newProdO.product_id}>
                   {createProdO.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Criar ordem
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!newFillingO} onOpenChange={(o) => !o && setNewFillingO(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Nova ordem de produção — Recheio</DialogTitle></DialogHeader>
+          {newFillingO && (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Recheio</Label>
+                <Select value={newFillingO.filling_id} onValueChange={(v) => setNewFillingO({ ...newFillingO, filling_id: v })}>
+                  <SelectTrigger><SelectValue placeholder="Selecionar recheio..." /></SelectTrigger>
+                  <SelectContent>
+                    {data.fillings.map((f) => (
+                      <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><Label className="text-xs">Quantidade necessária</Label><Input type="number" value={newFillingO.quantidade} onChange={(e) => setNewFillingO({ ...newFillingO, quantidade: Number(e.target.value) })} /></div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Prioridade</Label>
+                  <Select value={newFillingO.prioridade} onValueChange={(v) => setNewFillingO({ ...newFillingO, prioridade: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="baixa">Baixa</SelectItem>
+                      <SelectItem value="media">Média</SelectItem>
+                      <SelectItem value="alta">Alta</SelectItem>
+                      <SelectItem value="urgente">Urgente</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-1.5"><Label className="text-xs">Observações</Label><Textarea value={newFillingO.observacoes} onChange={(e) => setNewFillingO({ ...newFillingO, observacoes: e.target.value })} /></div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setNewFillingO(null)}>Cancelar</Button>
+                <Button onClick={() => createFillingO.mutate(newFillingO)} disabled={createFillingO.isPending || !newFillingO.filling_id}>
+                  {createFillingO.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Criar ordem
                 </Button>
               </DialogFooter>
             </div>
