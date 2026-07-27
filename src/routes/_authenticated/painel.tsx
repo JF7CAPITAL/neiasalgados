@@ -81,13 +81,15 @@ function DashboardPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard"],
     queryFn: async () => {
-      const [products, ingredients, prodOrders, purchOrders, movements, collabs] = await Promise.all([
+      const hoje = startOf("hoje").toISOString();
+      const [products, ingredients, prodOrders, purchOrders, movements, collabs, anotaOrders] = await Promise.all([
         supabase.from("products").select("id, nome, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal").is("deleted_at", null),
         supabase.from("ingredients").select("id, nome, quantidade_atual, estoque_minimo, unidade").is("deleted_at", null),
         supabase.from("production_orders").select("id, numero, kind, status, quantidade_necessaria, quantidade_produzida, quantidade_ideal, massadas, tipo_massa, prioridade, product_id, filling_id, fim, created_at").is("deleted_at", null),
         supabase.from("purchase_orders").select("id, numero, status, prioridade, quantidade_necessaria, preco_medio, ingredient_id, supplier_id, observacoes, created_at").is("deleted_at", null),
-        supabase.from("product_movements").select("id, product_id, tipo, quantidade, destino, created_at").order("created_at", { ascending: false }).limit(500),
+        supabase.from("product_movements").select("id, product_id, tipo, quantidade, destino, created_at, ref_order_id").order("created_at", { ascending: false }).limit(500),
         supabase.from("collaborators").select("id, nome, cargo, turno, em_turno").is("deleted_at", null),
+        supabase.from("anota_orders").select("id, created_at").gte("created_at", hoje),
       ]);
       const [pnames, inames, fnames, snames] = await Promise.all([
         supabase.from("products").select("id, nome"),
@@ -95,6 +97,7 @@ function DashboardPage() {
         supabase.from("fillings").select("id, nome"),
         supabase.from("suppliers").select("id, nome"),
       ]);
+      const ordensHoje = new Set((anotaOrders.data ?? []).map((o: { id: string }) => o.id));
       return {
         products: products.data ?? [],
         ingredients: ingredients.data ?? [],
@@ -102,6 +105,7 @@ function DashboardPage() {
         purchOrders: purchOrders.data ?? [],
         movements: movements.data ?? [],
         collabs: collabs.data ?? [],
+        ordensHoje,
         names: {
           ...Object.fromEntries((pnames.data ?? []).map((p: { id: string; nome: string }) => [p.id, p.nome])),
           ...Object.fromEntries((inames.data ?? []).map((i: { id: string; nome: string }) => [i.id, i.nome])),
@@ -125,7 +129,7 @@ function DashboardPage() {
     );
   }
 
-  const { products, ingredients, prodOrders, purchOrders, movements, collabs, names } = data;
+  const { products, ingredients, prodOrders, purchOrders, movements, collabs, names, ordensHoje } = data;
 
   const nm = (id: string | null | undefined) => (id && names[id]) || "—";
 
@@ -144,10 +148,15 @@ function DashboardPage() {
     .filter((o) => o.status === "pendente" || o.status === "em_andamento")
     .reduce((s) => s, 0);
 
-  const consumoDesde = (period: "hoje" | "semana" | "mes") => {
+  const isConsumoAnota = (m: typeof movements[0], period: "hoje" | "semana" | "mes") => {
+    if (m.tipo !== "saida" || m.destino !== "Anota AI") return false;
     const from = startOf(period);
+    if (period === "hoje" && m.ref_order_id && ordensHoje.has(m.ref_order_id)) return true;
+    return new Date(m.created_at) >= from;
+  };
+  const consumoDesde = (period: "hoje" | "semana" | "mes") => {
     return movements
-      .filter((m) => m.tipo === "saida" && m.destino === "Anota AI" && new Date(m.created_at) >= from)
+      .filter((m) => isConsumoAnota(m, period))
       .reduce((s, m) => s + Number(m.quantidade), 0);
   };
   const producaoDesde = (period: "hoje" | "semana" | "mes") => {
@@ -204,9 +213,8 @@ function DashboardPage() {
   const pBelowMin = () => printBelowMinimumReport(produtosAbaixo.map((p) => ({ nome: p.nome, atual: Number(p.quantidade_atual), minimo: Number(p.estoque_minimo) })));
 
   const pConsumoHoje = () => {
-    const from = startOf("hoje");
     const rows = movements
-      .filter((m) => m.tipo === "saida" && m.destino === "Anota AI" && new Date(m.created_at) >= from)
+      .filter((m) => isConsumoAnota(m, "hoje"))
       .map((m) => ({ produto: nm(m.product_id), quantidade: Number(m.quantidade), horario: fmtDateTime(m.created_at) }));
     printConsumptionReport("Consumo Hoje", rows);
   };
@@ -369,8 +377,7 @@ function DashboardPage() {
           onClick={() => setReport({
             title: "Consumo Hoje",
             table: (() => {
-              const from = startOf("hoje");
-              const hoje = movements.filter((m) => m.tipo === "saida" && m.destino === "Anota AI" && new Date(m.created_at) >= from);
+              const hoje = movements.filter((m) => isConsumoAnota(m, "hoje"));
               return hoje.length
                 ? <Table><TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Quantidade</TableHead><TableHead>Horário</TableHead></TableRow></TableHeader><TableBody>{hoje.map((m, i) => (<TableRow key={m.id || i}><TableCell className="font-medium">{nm(m.product_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(m.quantidade)}</TableCell><TableCell className="text-xs text-muted-foreground">{fmtDateTime(m.created_at)}</TableCell></TableRow>))}</TableBody></Table>
                 : <p className="py-8 text-center text-muted-foreground">Nenhum consumo hoje.</p>;
