@@ -630,12 +630,13 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
           else atualizados++;
           await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
-          // Só recria movimentos se o status mudou, para preservar a data original do consumo
+          // Só apaga movimentos antigos se o status mudou, para preservar a data original
           if (statusChanged && prev.estoque_aplicado) {
             await supabase.from("product_movements").delete().eq("ref_order_id", prev.id).eq("destino", "Anota AI");
             await supabase.from("anota_orders").update({ estoque_aplicado: false }).eq("id", prev.id);
           }
-          if (detail.check === 1 && (statusChanged || !prev.estoque_aplicado)) {
+          // apply_anota_order_stock internamente verifica estoque_aplicado e retorna se já foi aplicado
+          if (detail.check === 1) {
             finalizadosParaBaixa.push(prev.id);
           }
           continue;
