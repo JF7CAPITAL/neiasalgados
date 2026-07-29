@@ -347,7 +347,7 @@ function DashboardPage() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Pedidos agendados" value={fmtNum(scheduledOrders?.length ?? 0)} hint={`${fmtNum(totalScheduledImpact)} itens no total`} icon={CalendarDays} tone="info"
-          action={<Switch checked={verAgendados} onCheckedChange={setVerAgendados} />}
+          action={<div onClick={(e) => e.stopPropagation()}><Switch checked={verAgendados} onCheckedChange={setVerAgendados} /></div>}
           onClick={() => {
             if (!scheduledOrders?.length) return;
             const rows = products
