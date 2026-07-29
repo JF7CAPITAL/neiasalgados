@@ -38,6 +38,7 @@ export function KpiCard({
   tone = "default",
   onClick,
   printIcon,
+  action,
 }: {
   label: string;
   value: ReactNode;
@@ -46,6 +47,7 @@ export function KpiCard({
   tone?: "default" | "success" | "warning" | "danger" | "info";
   onClick?: () => void;
   printIcon?: ReactNode;
+  action?: ReactNode;
 }) {
   const tones: Record<string, string> = {
     default: "text-primary bg-primary/15",
@@ -65,6 +67,7 @@ export function KpiCard({
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
         <div className="flex items-center gap-1.5">
+          {action}
           {printIcon}
           {Icon && (
             <span className={cn("flex size-8 items-center justify-center rounded-lg", tones[tone])}>

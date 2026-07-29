@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ShoppingBag, RefreshCw, Plug, Loader2, Link2, AlertTriangle, CheckCircle2, Eye } from "lucide-react";
+import { ShoppingBag, RefreshCw, Plug, Loader2, Link2, AlertTriangle, CheckCircle2, Eye, CalendarDays, Search, Filter, Clock } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -26,7 +26,24 @@ export const Route = createFileRoute("/_authenticated/anota")({
 
 type Filtro = "todos" | "analise" | "producao" | "finalizados";
 
+function diasAte(dataStr: string): string {
+  const data = new Date(dataStr);
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  data.setHours(0, 0, 0, 0);
+  const diff = Math.round((data.getTime() - hoje.getTime()) / (1000 * 60 * 60 * 24));
+  if (diff === 0) return "D+0";
+  if (diff > 0) return `D+${diff}`;
+  return `D${diff}`;
+}
+
+function getScheduledDate(payload: any): string | null {
+  if (!payload) return null;
+  return payload.preparationStartDateTime || payload.schedule_order?.date || null;
+}
+
 const CHECK_TONE: Record<number, "default" | "secondary" | "destructive" | "outline"> = {
+  [ -2 ]: "outline",
   0: "outline",
   1: "secondary",
   2: "secondary",
@@ -36,7 +53,11 @@ const CHECK_TONE: Record<number, "default" | "secondary" | "destructive" | "outl
   6: "destructive",
 };
 
-function checkBadge(check: number) {
+function checkBadge(check: number, scheduledDate?: string | null) {
+  if (check === -2) {
+    const label = scheduledDate ? `Agendamento ${diasAte(scheduledDate)}` : "Agendamento";
+    return <Badge variant="outline" className="text-info border-info/30 bg-info/15">{label}</Badge>;
+  }
   return (
     <Badge variant={CHECK_TONE[check] ?? "outline"}>{ANOTA_CHECK_LABELS[check] ?? `Status ${check}`}</Badge>
   );
@@ -45,6 +66,8 @@ function checkBadge(check: number) {
 function AnotaPage() {
   const qc = useQueryClient();
   const [filtro, setFiltro] = useState<Filtro>("todos");
+  const [buscaData, setBuscaData] = useState(new Date().toISOString().split("T")[0]);
+  const [buscaStatus, setBuscaStatus] = useState<"todos" | "producao" | "finalizados">("todos");
 
   const testFn = useServerFn(testAnotaConnection);
   const syncFn = useServerFn(syncAnotaOrders);
@@ -69,6 +92,40 @@ function AnotaPage() {
       const { data, error } = await supabase
         .from("anota_order_items")
         .select("anota_item_ref, nome, product_id, mapeado");
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: scheduledWithPayload = [] } = useQuery({
+    queryKey: ["anota-scheduled"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("anota_orders")
+        .select("id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, payload")
+        .eq("check_status", -2)
+        .order("imported_at", { ascending: false });
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: buscaResults = [] } = useQuery({
+    queryKey: ["anota-busca", buscaData, buscaStatus],
+    queryFn: async () => {
+      const from = new Date(buscaData);
+      from.setHours(0, 0, 0, 0);
+      const to = new Date(from);
+      to.setDate(to.getDate() + 1);
+      let query = supabase
+        .from("anota_orders")
+        .select("id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at")
+        .gte("imported_at", from.toISOString())
+        .lt("imported_at", to.toISOString())
+        .order("imported_at", { ascending: false });
+      if (buscaStatus === "producao") query = query.eq("check_status", 1);
+      else if (buscaStatus === "finalizados") query = query.eq("check_status", 3);
+      const { data, error } = await query;
       if (error) throw error;
       return data;
     },
@@ -146,6 +203,8 @@ function AnotaPage() {
       else toast.error(r.message);
       qc.invalidateQueries({ queryKey: ["anota-orders"] });
       qc.invalidateQueries({ queryKey: ["anota-items"] });
+      qc.invalidateQueries({ queryKey: ["anota-scheduled"] });
+      qc.invalidateQueries({ queryKey: ["anota-busca"] });
       qc.invalidateQueries({ queryKey: ["stock"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
@@ -168,10 +227,16 @@ function AnotaPage() {
       setMapDraft({});
       qc.invalidateQueries({ queryKey: ["anota-orders"] });
       qc.invalidateQueries({ queryKey: ["anota-items"] });
+      qc.invalidateQueries({ queryKey: ["anota-scheduled"] });
       qc.invalidateQueries({ queryKey: ["stock"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  const hojeInicio = new Date();
+  hojeInicio.setHours(0, 0, 0, 0);
+  const hojeOrders = orders.filter((o) => new Date(o.imported_at) >= hojeInicio);
+  const agendadosCount = scheduledWithPayload.length;
 
   return (
     <div className="space-y-6">
@@ -223,17 +288,21 @@ function AnotaPage() {
 
       <Tabs defaultValue="pedidos">
         <TabsList>
-          <TabsTrigger value="pedidos">Pedidos</TabsTrigger>
+          <TabsTrigger value="pedidos">Pedidos{hojeOrders.length ? ` (${hojeOrders.length})` : ""}</TabsTrigger>
+          <TabsTrigger value="agendados">
+            Agendados{agendadosCount ? ` (${agendadosCount})` : ""}
+          </TabsTrigger>
+          <TabsTrigger value="buscar">Buscar pedidos</TabsTrigger>
           <TabsTrigger value="mapeamento">
             Mapeamento{pendentes ? ` (${pendentes})` : ""}
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="pedidos" className="pt-4">
-          {orders.length === 0 ? (
+          {hojeOrders.length === 0 ? (
             <EmptyState
-              title="Nenhum pedido importado"
-              description="Clique em 'Sincronizar pedidos' para buscar as vendas do Anota AI."
+              title="Nenhum pedido hoje"
+              description="Os pedidos sincronizados hoje aparecerão aqui."
               icon={ShoppingBag}
             />
           ) : (
@@ -250,7 +319,126 @@ function AnotaPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {orders.map((o) => (
+                  {hojeOrders.map((o) => (
+                    <tr key={o.id} className="hover:bg-muted/30">
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => setSelectedOrderId(o.id)}
+                          className="font-medium underline-offset-2 hover:underline cursor-pointer text-left"
+                        >
+                          {o.numero ?? o.external_order_id.slice(-6)}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3">{o.cliente ?? "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{fmtDateTime(o.pedido_em ?? o.imported_at)}</td>
+                      <td className="px-4 py-3">{o.check_status === -2 ? checkBadge(-2, getScheduledDate(o as any)) : checkBadge(o.check_status)}</td>
+                      <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
+                      <td className="px-4 py-3 text-center">
+                        {o.estoque_aplicado ? (
+                          <CheckCircle2 className="mx-auto size-4 text-success" />
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="agendados" className="pt-4">
+          {agendadosCount === 0 ? (
+            <EmptyState
+              title="Nenhum pedido agendado"
+              description="Pedidos com check_status = -2 (agendados) aparecerão aqui."
+              icon={CalendarDays}
+            />
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3">Pedido</th>
+                    <th className="px-4 py-3">Cliente</th>
+                    <th className="px-4 py-3">Agendado para</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {scheduledWithPayload.map((o: any) => {
+                    const scheduledDate = getScheduledDate(o.payload);
+                    return (
+                      <tr key={o.id} className="hover:bg-muted/30">
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setSelectedOrderId(o.id)}
+                            className="font-medium underline-offset-2 hover:underline cursor-pointer text-left"
+                          >
+                            {o.numero ?? o.external_order_id.slice(-6)}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3">{o.cliente ?? "—"}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{scheduledDate ? fmtDateTime(scheduledDate) : "—"}</td>
+                        <td className="px-4 py-3">{checkBadge(-2, scheduledDate)}</td>
+                        <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="buscar" className="pt-4">
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <CalendarDays className="size-4 text-muted-foreground" />
+              <input
+                type="date"
+                value={buscaData}
+                onChange={(e) => setBuscaData(e.target.value)}
+                className="rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Filter className="size-4 text-muted-foreground" />
+              <Select value={buscaStatus} onValueChange={(v) => setBuscaStatus(v as any)}>
+                <SelectTrigger className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todos</SelectItem>
+                  <SelectItem value="producao">Em produção</SelectItem>
+                  <SelectItem value="finalizados">Finalizados</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          {buscaResults.length === 0 ? (
+            <EmptyState
+              title="Nenhum pedido encontrado"
+              description={`Nenhum pedido sincronizado em ${new Date(buscaData).toLocaleDateString("pt-BR")}.`}
+              icon={Search}
+            />
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3">Pedido</th>
+                    <th className="px-4 py-3">Cliente</th>
+                    <th className="px-4 py-3">Data</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Total</th>
+                    <th className="px-4 py-3 text-center">Estoque</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {buscaResults.map((o: any) => (
                     <tr key={o.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <button

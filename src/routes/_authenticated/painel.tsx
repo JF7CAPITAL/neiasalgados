@@ -13,7 +13,10 @@ import {
   Users,
   PackageCheck,
   Printer,
+  CalendarDays,
+  ArrowRight,
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import {
   BarChart,
   Bar,
@@ -31,7 +34,7 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { useRealtime } from "@/hooks/useRealtime";
 import { PageHeader, KpiCard } from "@/components/erp/PageHeader";
-import { fmtNum, fmtDateTime, stockLevel } from "@/lib/format";
+import { fmtNum, fmtDateTime, fmtMoney, stockLevel } from "@/lib/format";
 import { getLastSync, onSync } from "@/lib/anota-sync";
 import { StockBadge } from "@/components/erp/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -67,6 +70,8 @@ function startOf(period: "hoje" | "semana" | "mes"): Date {
 function DashboardPage() {
   const [lastSync, setLastSync] = useState(getLastSync());
   const [report, setReport] = useState<ReportDialog>(null);
+  const [verAgendados, setVerAgendados] = useState(false);
+  const [agendamentoReport, setAgendamentoReport] = useState<ReportDialog>(null);
 
   useEffect(() => {
     const unsub = onSync((ts) => setLastSync(ts));
@@ -98,6 +103,21 @@ function DashboardPage() {
         supabase.from("suppliers").select("id, nome"),
       ]);
       const ordensHoje = new Set((anotaOrders.data ?? []).map((o: { id: string }) => o.id));
+      const scheduledR = await supabase
+        .from("anota_orders")
+        .select("id, numero, cliente, total, payload")
+        .eq("check_status", -2);
+      const scheduledOrders = scheduledR.data ?? [];
+      let scheduledItems: any[] = [];
+      if (scheduledOrders.length > 0) {
+        const itemsR = await supabase
+          .from("anota_order_items")
+          .select("order_id, nome, quantidade, product_id, mapeado")
+          .in("order_id", scheduledOrders.map((o) => o.id))
+          .eq("mapeado", true)
+          .not("product_id", "is", null);
+        scheduledItems = itemsR.data ?? [];
+      }
       return {
         products: products.data ?? [],
         ingredients: ingredients.data ?? [],
@@ -112,6 +132,8 @@ function DashboardPage() {
           ...Object.fromEntries((fnames.data ?? []).map((f: { id: string; nome: string }) => [f.id, f.nome])),
           ...Object.fromEntries((snames.data ?? []).map((s: { id: string; nome: string }) => [s.id, s.nome])),
         } as Record<string, string>,
+        scheduledOrders,
+        scheduledItems,
       };
     },
   });
@@ -130,6 +152,16 @@ function DashboardPage() {
   }
 
   const { products, ingredients, prodOrders, purchOrders, movements, collabs, names, ordensHoje } = data;
+  const scheduledOrders: any[] = (data as any).scheduledOrders ?? [];
+  const scheduledItems: any[] = (data as any).scheduledItems ?? [];
+
+  const scheduledImpact = new Map<string, number>();
+  for (const item of scheduledItems) {
+    const pid = item.product_id as string;
+    if (!pid) continue;
+    scheduledImpact.set(pid, (scheduledImpact.get(pid) ?? 0) + Number(item.quantidade));
+  }
+  const totalScheduledImpact = Array.from(scheduledImpact.values()).reduce((s, v) => s + v, 0);
 
   const nm = (id: string | null | undefined) => (id && names[id]) || "—";
 
@@ -195,7 +227,7 @@ function DashboardPage() {
     { name: "Concluídas", value: ordensConcluidas.length, color: "oklch(0.72 0.16 155)" },
   ].filter((s) => s.value > 0);
 
-  const closeReport = () => setReport(null);
+  const closeReport = () => { setReport(null); setAgendamentoReport(null); };
 
   const pStock = () => {
     const rows = products.map((p) => ({
@@ -291,7 +323,7 @@ function DashboardPage() {
       />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Estoque de salgados" value={fmtNum(estoqueTotal)} hint="unidades em estoque" icon={Boxes}
+        <KpiCard label="Estoque de salgados" value={fmtNum(verAgendados ? estoqueTotal - totalScheduledImpact : estoqueTotal)} hint={verAgendados ? `${fmtNum(totalScheduledImpact)} unidades em agendamentos` : "unidades em estoque"} icon={Boxes} tone={verAgendados ? "warning" : "default"}
           onClick={() => setReport({ title: "Estoque de Salgados", table: <ProdTable list={products} />, onPrint: pStock })} />
         <KpiCard label="Estoque projetado" value={fmtNum(projetado)} hint="com ordens abertas" icon={PackageCheck} tone="info"
           onClick={() => setReport({ title: "Estoque Projetado", table: <ProdTable list={products} />, onPrint: pStock })} />
@@ -314,6 +346,68 @@ function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <KpiCard label="Pedidos agendados" value={fmtNum(scheduledOrders?.length ?? 0)} hint={`${fmtNum(totalScheduledImpact)} itens no total`} icon={CalendarDays} tone="info"
+          action={<Switch checked={verAgendados} onCheckedChange={setVerAgendados} />}
+          onClick={() => {
+            if (!scheduledOrders?.length) return;
+            const rows = products
+              .map((p) => ({
+                produto: p.nome,
+                atual: Number(p.quantidade_atual),
+                impacto: scheduledImpact.get(p.id) ?? 0,
+                saldo: Number(p.quantidade_atual) - (scheduledImpact.get(p.id) ?? 0),
+              }))
+              .filter((r) => r.impacto > 0);
+            setAgendamentoReport({
+              title: "Pedidos Agendados — Impacto no Estoque",
+              table: (
+                <div className="space-y-6">
+                  <div>
+                    <h4 className="mb-2 text-sm font-medium">Impacto por produto</h4>
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr><th className="px-3 py-2">Produto</th><th className="px-3 py-2 text-right">Estoque atual</th><th className="px-3 py-2 text-right">Agendado</th><th className="px-3 py-2 text-right">Saldo final</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {rows.map((r, i) => (
+                          <tr key={i}>
+                            <td className="px-3 py-2 font-medium">{r.produto}</td>
+                            <td className="px-3 py-2 text-right tabular">{fmtNum(r.atual)}</td>
+                            <td className="px-3 py-2 text-right tabular text-destructive">{fmtNum(r.impacto)}</td>
+                            <td className="px-3 py-2 text-right tabular font-semibold">{fmtNum(r.saldo)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div>
+                    <h4 className="mb-2 text-sm font-medium">Pedidos agendados</h4>
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr><th className="px-3 py-2">Cliente</th><th className="px-3 py-2">Data/Hora</th><th className="px-3 py-2 text-right">Total</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {(scheduledOrders ?? []).map((o: any, i: number) => {
+                          const pay = o.payload ?? {};
+                          const prepDate = pay.preparationStartDateTime || pay.schedule_order?.date || null;
+                          const orderItems = (scheduledItems ?? []).filter((it: any) => it.order_id === o.id);
+                          return (
+                            <tr key={o.id || i}>
+                              <td className="px-3 py-2 font-medium">{o.cliente ?? "—"}</td>
+                              <td className="px-3 py-2 text-muted-foreground">{prepDate ? fmtDateTime(prepDate) : "—"}</td>
+                              <td className="px-3 py-2 text-right tabular">{fmtMoney(o.total)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ),
+              onPrint: () => {},
+            });
+          }}
+        />
         <KpiCard label="OP pendentes" value={fmtNum(ordensPendentes.length)} icon={ClipboardList} tone="warning"
           onClick={() => setReport({
             title: "Ordens de Produção Pendentes",
@@ -468,6 +562,7 @@ function DashboardPage() {
       </div>
 
       {report && <ReportDialog {...report} />}
+      {agendamentoReport && <ReportDialog {...agendamentoReport} />}
     </div>
   );
 }
