@@ -322,9 +322,12 @@ function extractItems(o: JsonRecord): ParsedItem[] {
         for (const item of items) accum(item.ref, item.nome, item.quantidade);
         const obj = asRecord(el);
         if (obj) {
-          for (const key of Object.keys(obj)) {
-            if (key === "payments" || key === "additionalFees") continue;
-            walk(obj[key]);
+          const hasContainer = CONTAINER_FIELDS.some(k => Array.isArray(obj[k]) && obj[k].length > 0);
+          if (!hasContainer) {
+            for (const key of Object.keys(obj)) {
+              if (key === "payments" || key === "additionalFees") continue;
+              walk(obj[key]);
+            }
           }
         }
       }
