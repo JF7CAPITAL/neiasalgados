@@ -72,6 +72,7 @@ function DashboardPage() {
   const [report, setReport] = useState<ReportDialog>(null);
   const [verAgendados, setVerAgendados] = useState(false);
   const [agendamentoReport, setAgendamentoReport] = useState<ReportDialog>(null);
+  const [forecastDrill, setForecastDrill] = useState<{ nome: string; productId: string } | null>(null);
 
   useEffect(() => {
     const unsub = onSync((ts) => setLastSync(ts));
@@ -176,9 +177,25 @@ function DashboardPage() {
   const colabsTurno = collabs.filter((c) => c.em_turno);
   const emProducao = ordensAndamento.length;
 
-  const projetado = estoqueTotal + prodOrders
+  const producaoAberta = prodOrders
     .filter((o) => o.status === "pendente" || o.status === "em_andamento")
-    .reduce((s) => s, 0);
+    .reduce((s, o) => s + Number(o.quantidade_necessaria ?? 0), 0);
+  const projetado = estoqueTotal + producaoAberta - totalScheduledImpact;
+
+  const orderDateMap = new Map<string, string>();
+  for (const o of scheduledOrders) {
+    const pay = o.payload ?? {};
+    const date = pay.preparationStartDateTime || pay.schedule_order?.date || null;
+    if (date) orderDateMap.set(o.id, date.split("T")[0]);
+  }
+  const productDayMap = new Map<string, Map<string, number>>();
+  for (const item of scheduledItems) {
+    const day = orderDateMap.get(item.order_id);
+    if (!day) continue;
+    if (!productDayMap.has(item.product_id)) productDayMap.set(item.product_id, new Map());
+    const dm = productDayMap.get(item.product_id)!;
+    dm.set(day, (dm.get(day) ?? 0) + Number(item.quantidade));
+  }
 
   const isConsumoAnota = (m: typeof movements[0], period: "hoje" | "semana" | "mes") => {
     if (m.tipo !== "saida" || m.destino !== "Anota AI") return false;
@@ -227,7 +244,7 @@ function DashboardPage() {
     { name: "Concluídas", value: ordensConcluidas.length, color: "oklch(0.72 0.16 155)" },
   ].filter((s) => s.value > 0);
 
-  const closeReport = () => { setReport(null); setAgendamentoReport(null); };
+  const closeReport = () => { setReport(null); setAgendamentoReport(null); setForecastDrill(null); };
 
   const pStock = () => {
     const rows = products.map((p) => ({
@@ -325,8 +342,51 @@ function DashboardPage() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Estoque de salgados" value={fmtNum(verAgendados ? estoqueTotal - totalScheduledImpact : estoqueTotal)} hint={verAgendados ? `${fmtNum(totalScheduledImpact)} unidades em agendamentos` : "unidades em estoque"} icon={Boxes} tone={verAgendados ? "warning" : "default"}
           onClick={() => setReport({ title: "Estoque de Salgados", table: <ProdTable list={products} />, onPrint: pStock })} />
-        <KpiCard label="Estoque projetado" value={fmtNum(projetado)} hint="com ordens abertas" icon={PackageCheck} tone="info"
-          onClick={() => setReport({ title: "Estoque Projetado", table: <ProdTable list={products} />, onPrint: pStock })} />
+        <KpiCard label="Estoque projetado" value={fmtNum(projetado)} hint={`+${fmtNum(producaoAberta)} produção -${fmtNum(totalScheduledImpact)} agendados`} icon={PackageCheck} tone="info"
+          onClick={() => {
+            const rows = products
+              .map((p) => ({
+                id: p.id,
+                nome: p.nome,
+                atual: Number(p.quantidade_atual),
+                producao: prodOrders
+                  .filter((o) => (o.product_id === p.id || o.filling_id === p.id) && (o.status === "pendente" || o.status === "em_andamento"))
+                  .reduce((s, o) => s + Number(o.quantidade_necessaria ?? 0), 0),
+                agendado: scheduledImpact.get(p.id) ?? 0,
+              }))
+              .map((r) => ({ ...r, projetado: r.atual + r.producao - r.agendado }));
+            setReport({
+              title: "Estoque Projetado",
+              table: (
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">Clique em um produto para ver a previsão de saída dos próximos 7 dias.</p>
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2">Produto</th>
+                        <th className="px-3 py-2 text-right">Atual</th>
+                        <th className="px-3 py-2 text-right">Produção</th>
+                        <th className="px-3 py-2 text-right">Agendado</th>
+                        <th className="px-3 py-2 text-right">Projetado</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {rows.map((r) => (
+                        <tr key={r.id} className="hover:bg-muted/30 cursor-pointer" onClick={() => setForecastDrill({ nome: r.nome, productId: r.id })}>
+                          <td className="px-3 py-2 font-medium underline-offset-2 hover:underline">{r.nome}</td>
+                          <td className="px-3 py-2 text-right tabular">{fmtNum(r.atual)}</td>
+                          <td className="px-3 py-2 text-right tabular text-info">{fmtNum(r.producao)}</td>
+                          <td className="px-3 py-2 text-right tabular text-destructive">{fmtNum(r.agendado)}</td>
+                          <td className="px-3 py-2 text-right tabular font-semibold">{fmtNum(r.projetado)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ),
+              onPrint: () => {},
+            });
+          }} />
         <KpiCard label="Produtos abaixo do mín." value={fmtNum(produtosAbaixo.length)} hint="requer produção" icon={AlertTriangle} tone={produtosAbaixo.length ? "danger" : "success"}
           onClick={() => setReport({
             title: "Produtos Abaixo do Mínimo",
@@ -563,6 +623,44 @@ function DashboardPage() {
 
       {report && <ReportDialog {...report} />}
       {agendamentoReport && <ReportDialog {...agendamentoReport} />}
+      <Dialog open={!!forecastDrill} onOpenChange={(o) => !o && setForecastDrill(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Previsão 7 dias — {forecastDrill?.nome}</DialogTitle>
+          </DialogHeader>
+          {forecastDrill && (() => {
+            const dm = productDayMap.get(forecastDrill.productId);
+            const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+            const dias: { label: string; qtd: number }[] = [];
+            for (let i = 0; i < 7; i++) {
+              const d = new Date(hoje); d.setDate(d.getDate() + i);
+              const key = d.toISOString().split("T")[0];
+              dias.push({
+                label: d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" }),
+                qtd: dm?.get(key) ?? 0,
+              });
+            }
+            return (
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2">Dia</th>
+                    <th className="px-3 py-2 text-right">Qtd agendada</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {dias.map((d, i) => (
+                    <tr key={i}>
+                      <td className="px-3 py-2 font-medium">{d.label}</td>
+                      <td className="px-3 py-2 text-right tabular">{d.qtd ? fmtNum(d.qtd) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
