@@ -103,7 +103,7 @@ BEGIN
   SELECT * INTO o FROM public.anota_orders WHERE id = p_order;
   IF o.id IS NULL THEN RAISE EXCEPTION 'Pedido não encontrado'; END IF;
   IF o.estoque_aplicado THEN RETURN; END IF;
-  IF o.check_status <> 3 THEN RETURN; END IF; -- só finalizados
+  IF o.check_status NOT IN (1, 3) THEN RETURN; END IF;
 
   FOR it IN
     SELECT * FROM public.anota_order_items

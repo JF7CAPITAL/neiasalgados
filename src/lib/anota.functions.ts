@@ -641,7 +641,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
             await supabase.from("anota_orders").update({ estoque_aplicado: false }).eq("id", prev.id);
           }
           // apply_anota_order_stock internamente verifica estoque_aplicado e retorna se já foi aplicado
-          if (detail.check === 1) {
+          if (detail.check === 1 || detail.check === 3) {
             finalizadosParaBaixa.push(prev.id);
           }
           continue;
@@ -652,7 +652,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           if (updStatusErr) console.error("[syncAnotaOrders] update status error:", updStatusErr);
           else atualizados++;
         }
-        if (listed.check === 1 && !prev.estoque_aplicado) {
+        if ((listed.check === 1 || listed.check === 3) && !prev.estoque_aplicado) {
           finalizadosParaBaixa.push(prev.id);
         }
         continue;
@@ -683,7 +683,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       const todosMapeados = await insertOrderItems(supabase, inserted.id, items, mapByRef);
       if (items.length > 0 && !todosMapeados) pendentesMapeamento++;
 
-      if (check === 1) {
+      if (check === 1 || check === 3) {
         finalizadosParaBaixa.push(inserted.id);
       }
     }
