@@ -24,7 +24,7 @@ export function downloadExcel(filename: string, rows: Record<string, unknown>[],
 
 /** Renderiza HTML em um iframe offscreen e dispara a impressão.
  *  Sem reflow na página visível, sem popup blocker, sem efeitos visuais. */
-function printHTML(html: string) {
+export function printHTML(html: string) {
   const iframe = document.createElement("iframe");
   iframe.style.position = "fixed";
   iframe.style.top = "-9999px";

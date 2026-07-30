@@ -47,6 +47,8 @@ import {
   printProdOrdersReport,
   printPurchaseOrdersReport,
   printColabsTurnoReport,
+  printReport,
+  printHTML,
 } from "@/lib/export";
 
 export const Route = createFileRoute("/_authenticated/painel")({
@@ -384,7 +386,13 @@ function DashboardPage() {
                   </table>
                 </div>
               ),
-              onPrint: () => {},
+              onPrint: () => printReport("Estoque Projetado", rows.map((r) => ({ ...r, atual: String(r.atual), producao: String(r.producao), agendado: String(r.agendado), projetado: String(r.projetado) })), [
+                { key: "nome", label: "Produto" },
+                { key: "atual", label: "Atual" },
+                { key: "producao", label: "Produção" },
+                { key: "agendado", label: "Agendado" },
+                { key: "projetado", label: "Projetado" },
+              ]),
             });
           }} />
         <KpiCard label="Produtos abaixo do mín." value={fmtNum(produtosAbaixo.length)} hint="requer produção" icon={AlertTriangle} tone={produtosAbaixo.length ? "danger" : "success"}
@@ -412,6 +420,7 @@ function DashboardPage() {
             if (!scheduledOrders?.length) return;
             const rows = products
               .map((p) => ({
+                id: p.id,
                 produto: p.nome,
                 atual: Number(p.quantidade_atual),
                 impacto: scheduledImpact.get(p.id) ?? 0,
@@ -424,14 +433,15 @@ function DashboardPage() {
                 <div className="space-y-6">
                   <div>
                     <h4 className="mb-2 text-sm font-medium">Impacto por produto</h4>
+                    <p className="mb-2 text-xs text-muted-foreground">Clique em um produto para ver a previsão de saída dos próximos 7 dias.</p>
                     <table className="w-full text-sm">
                       <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
                         <tr><th className="px-3 py-2">Produto</th><th className="px-3 py-2 text-right">Estoque atual</th><th className="px-3 py-2 text-right">Agendado</th><th className="px-3 py-2 text-right">Saldo final</th></tr>
                       </thead>
                       <tbody className="divide-y divide-border">
                         {rows.map((r, i) => (
-                          <tr key={i}>
-                            <td className="px-3 py-2 font-medium">{r.produto}</td>
+                          <tr key={i} className="hover:bg-muted/30 cursor-pointer" onClick={() => setForecastDrill({ nome: r.produto, productId: r.id })}>
+                            <td className="px-3 py-2 font-medium underline-offset-2 hover:underline">{r.produto}</td>
                             <td className="px-3 py-2 text-right tabular">{fmtNum(r.atual)}</td>
                             <td className="px-3 py-2 text-right tabular text-destructive">{fmtNum(r.impacto)}</td>
                             <td className="px-3 py-2 text-right tabular font-semibold">{fmtNum(r.saldo)}</td>
@@ -464,7 +474,12 @@ function DashboardPage() {
                   </div>
                 </div>
               ),
-              onPrint: () => {},
+              onPrint: () => printReport("Pedidos Agendados — Impacto no Estoque", rows.map((r) => ({ ...r, atual: String(r.atual), impacto: String(r.impacto), saldo: String(r.saldo) })), [
+                { key: "produto", label: "Produto" },
+                { key: "atual", label: "Estoque atual" },
+                { key: "impacto", label: "Agendado" },
+                { key: "saldo", label: "Saldo final" },
+              ]),
             });
           }}
         />
@@ -626,7 +641,45 @@ function DashboardPage() {
       <Dialog open={!!forecastDrill} onOpenChange={(o) => !o && setForecastDrill(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Previsão 7 dias — {forecastDrill?.nome}</DialogTitle>
+            <div className="flex items-center justify-between">
+              <DialogTitle>Previsão 7 dias — {forecastDrill?.nome}</DialogTitle>
+              <Button variant="outline" size="sm" onClick={() => {
+                if (!forecastDrill) return;
+                const dm = productDayMap.get(forecastDrill.productId);
+                const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+                const dias: { label: string; qtd: number }[] = [];
+                for (let i = 0; i < 7; i++) {
+                  const d = new Date(hoje); d.setDate(d.getDate() + i);
+                  const key = d.toISOString().split("T")[0];
+                  dias.push({
+                    label: d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" }),
+                    qtd: dm?.get(key) ?? 0,
+                  });
+                }
+                const total = dias.reduce((s, d) => s + d.qtd, 0);
+                printHTML(`
+                  <h2 style="font-size:16px;font-weight:700;margin-bottom:16px">Previsão 7 dias — ${forecastDrill.nome}</h2>
+                  <table style="width:100%;border-collapse:collapse;font-size:13px">
+                    <thead><tr style="background:#f5f5f4;text-align:left">
+                      <th style="padding:8px 10px">Dia</th>
+                      <th style="padding:8px 10px;text-align:right">Qtd agendada</th>
+                    </tr></thead>
+                    <tbody>
+                      ${dias.map((d) => `<tr style="border-bottom:1px solid #eee">
+                        <td style="padding:8px 10px;font-weight:500">${d.label}</td>
+                        <td style="padding:8px 10px;text-align:right">${d.qtd ? fmtNum(d.qtd) : "—"}</td>
+                      </tr>`).join("")}
+                    </tbody>
+                    <tfoot><tr style="font-weight:700;border-top:2px solid #333">
+                      <td style="padding:8px 10px">Total</td>
+                      <td style="padding:8px 10px;text-align:right">${fmtNum(total)}</td>
+                    </tr></tfoot>
+                  </table>
+                `);
+              }}>
+                <Printer className="mr-1.5 size-4" /> Imprimir / PDF
+              </Button>
+            </div>
           </DialogHeader>
           {forecastDrill && (() => {
             const dm = productDayMap.get(forecastDrill.productId);
@@ -640,6 +693,7 @@ function DashboardPage() {
                 qtd: dm?.get(key) ?? 0,
               });
             }
+            const total = dias.reduce((s, d) => s + d.qtd, 0);
             return (
               <table className="w-full text-sm">
                 <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -656,6 +710,12 @@ function DashboardPage() {
                     </tr>
                   ))}
                 </tbody>
+                <tfoot className="border-t-2 border-foreground font-semibold">
+                  <tr>
+                    <td className="px-3 py-2">Total</td>
+                    <td className="px-3 py-2 text-right tabular">{fmtNum(total)}</td>
+                  </tr>
+                </tfoot>
               </table>
             );
           })()}
