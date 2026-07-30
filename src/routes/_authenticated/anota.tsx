@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -16,9 +16,12 @@ import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { PageHeader, KpiCard, EmptyState } from "@/components/erp/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { isSyncEnabled, setSyncEnabled, onSyncToggle } from "@/lib/sync-toggle";
 
 export const Route = createFileRoute("/_authenticated/anota")({
   component: AnotaPage,
@@ -65,9 +68,15 @@ function checkBadge(check: number, scheduledDate?: string | null) {
 
 function AnotaPage() {
   const qc = useQueryClient();
+  const [syncEnabled, setSyncEnabledState] = useState(() => isSyncEnabled());
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [buscaData, setBuscaData] = useState(new Date().toISOString().split("T")[0]);
   const [buscaStatus, setBuscaStatus] = useState<"todos" | "producao" | "finalizados">("todos");
+
+  useEffect(() => {
+    const unsub = onSyncToggle((enabled) => setSyncEnabledState(enabled));
+    return unsub;
+  }, []);
 
   const testFn = useServerFn(testAnotaConnection);
   const syncFn = useServerFn(syncAnotaOrders);
@@ -246,7 +255,17 @@ function AnotaPage() {
         icon={ShoppingBag}
         actions={
           <>
-            <Button variant="outline" onClick={() => test.mutate()} disabled={test.isPending}>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="sync-toggle"
+                checked={syncEnabled}
+                onCheckedChange={(v) => setSyncEnabled(v)}
+              />
+              <Label htmlFor="sync-toggle" className="text-sm">
+                {syncEnabled ? "Sync ativo" : "Sync desativado"}
+              </Label>
+            </div>
+            <Button variant="outline" onClick={() => test.mutate()} disabled={test.isPending || !syncEnabled}>
               {test.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Plug className="mr-2 size-4" />}
               Testar conexão
             </Button>
@@ -261,7 +280,7 @@ function AnotaPage() {
                 <SelectItem value="finalizados">Finalizados</SelectItem>
               </SelectContent>
             </Select>
-            <Button onClick={() => sync.mutate()} disabled={sync.isPending}>
+            <Button onClick={() => sync.mutate()} disabled={sync.isPending || !syncEnabled}>
               {sync.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
               Sincronizar pedidos
             </Button>
