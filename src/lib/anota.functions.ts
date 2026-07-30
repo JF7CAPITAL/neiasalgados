@@ -278,6 +278,8 @@ function extractItem(raw: unknown): ParsedItem[] {
   for (const key of CONTAINER_FIELDS) {
     const arr = it[key];
     if (Array.isArray(arr) && arr.length > 0) {
+      const parentNome = firstString(it, ["name", "nome", "description", "title"]);
+      const parentQtd = resolveQuantidade(firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), parentNome);
       const result: ParsedItem[] = [];
       for (const sub of arr) {
         const s = asRecord(sub);
@@ -285,7 +287,7 @@ function extractItem(raw: unknown): ParsedItem[] {
         const clean = cleanItemName(firstString(s, ["name", "nome", "description", "title"]));
         const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
         const nome = firstString(s, ["name", "nome", "description", "title"]);
-        const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
+        const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome) * parentQtd;
         if (!ref) continue;
         result.push({ ref, nome, quantidade });
       }
