@@ -101,11 +101,14 @@ export type Database = {
           external_order_id: string
           id: string
           imported_at: string
+          motoboy_id: string | null
           numero: string | null
           payload: Json | null
           pedido_em: string | null
           total: number
           updated_at: string
+          whatsapp_notified_at: string | null
+          whatsapp_ready_notified_at: string | null
         }
         Insert: {
           check_status?: number
@@ -115,11 +118,14 @@ export type Database = {
           external_order_id: string
           id?: string
           imported_at?: string
+          motoboy_id?: string | null
           numero?: string | null
           payload?: Json | null
           pedido_em?: string | null
           total?: number
           updated_at?: string
+          whatsapp_notified_at?: string | null
+          whatsapp_ready_notified_at?: string | null
         }
         Update: {
           check_status?: number
@@ -129,13 +135,24 @@ export type Database = {
           external_order_id?: string
           id?: string
           imported_at?: string
+          motoboy_id?: string | null
           numero?: string | null
           payload?: Json | null
           pedido_em?: string | null
           total?: number
           updated_at?: string
+          whatsapp_notified_at?: string | null
+          whatsapp_ready_notified_at?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "anota_orders_motoboy_id_fkey"
+            columns: ["motoboy_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       anota_product_map: {
         Row: {
@@ -922,6 +939,63 @@ export type Database = {
           id?: string
           role?: Database["public"]["Enums"]["app_role"]
           user_id?: string
+        }
+        Relationships: []
+      }
+      whatsapp_logs: {
+        Row: {
+          created_at: string
+          destino: string | null
+          error: string | null
+          id: string
+          mensagem: string | null
+          ref_id: string | null
+          ref_type: string | null
+          status: string
+          tipo: string | null
+        }
+        Insert: {
+          created_at?: string
+          destino?: string | null
+          error?: string | null
+          id?: string
+          mensagem?: string | null
+          ref_id?: string | null
+          ref_type?: string | null
+          status: string
+          tipo?: string | null
+        }
+        Update: {
+          created_at?: string
+          destino?: string | null
+          error?: string | null
+          id?: string
+          mensagem?: string | null
+          ref_id?: string | null
+          ref_type?: string | null
+          status?: string
+          tipo?: string | null
+        }
+        Relationships: []
+      }
+      whatsapp_settings: {
+        Row: {
+          id: string
+          key: string
+          updated_at: string
+          value: string
+        }
+        Insert: {
+          id?: string
+          key: string
+          updated_at?: string
+          value: string
+        }
+        Update: {
+          id?: string
+          key?: string
+          updated_at?: string
+          value?: string
         }
         Relationships: []
       }

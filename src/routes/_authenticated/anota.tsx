@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ShoppingBag, RefreshCw, Plug, Loader2, Link2, AlertTriangle, CheckCircle2, Eye, CalendarDays, Search, Filter, Clock } from "lucide-react";
+import { ShoppingBag, RefreshCw, Plug, Loader2, Link2, AlertTriangle, CheckCircle2, Eye, CalendarDays, Search, Filter, Clock, Send, Save, QrCode } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -12,12 +12,24 @@ import {
   saveAnotaMapping,
   ANOTA_CHECK_LABELS,
 } from "@/lib/anota.functions";
+import {
+  testWhatsAppConnection,
+  getWhatsAppSettings,
+  saveWhatsAppSettings,
+  setOrderMotoboy,
+  sendOrderMessage,
+  getWhatsAppStatus,
+  getWhatsAppQrCode,
+  createWhatsAppSession,
+  type NotifyType,
+} from "@/lib/whatsapp.functions";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { PageHeader, KpiCard, EmptyState } from "@/components/erp/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -81,6 +93,14 @@ function AnotaPage() {
   const testFn = useServerFn(testAnotaConnection);
   const syncFn = useServerFn(syncAnotaOrders);
   const saveMapFn = useServerFn(saveAnotaMapping);
+  const whatsSettingsFn = useServerFn(getWhatsAppSettings);
+  const saveWhatsSettingsFn = useServerFn(saveWhatsAppSettings);
+  const testWhatsFn = useServerFn(testWhatsAppConnection);
+  const setMotoboyFn = useServerFn(setOrderMotoboy);
+  const sendMsgFn = useServerFn(sendOrderMessage);
+  const whatsStatusFn = useServerFn(getWhatsAppStatus);
+  const whatsQrFn = useServerFn(getWhatsAppQrCode);
+  const createSessionFn = useServerFn(createWhatsAppSession);
 
   const { data: orders = [] } = useQuery({
     queryKey: ["anota-orders"],
@@ -153,6 +173,53 @@ function AnotaPage() {
     },
   });
 
+  const { data: collaborators = [] } = useQuery({
+    queryKey: ["collaborators-lite"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("collaborators")
+        .select("id, nome, cargo, celular")
+        .is("deleted_at", null)
+        .order("nome");
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: whatsSettings = {}, refetch: refetchWhatsSettings } = useQuery({
+    queryKey: ["whatsapp-settings"],
+    queryFn: async () => {
+      const r = await whatsSettingsFn();
+      return r.ok ? r.settings : {};
+    },
+  });
+
+  const { data: whatsLogs = [] } = useQuery({
+    queryKey: ["whatsapp-logs"],
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase
+          .from("whatsapp_logs")
+          .select("id, created_at, tipo, destino, mensagem, status, error")
+          .order("created_at", { ascending: false })
+          .limit(15);
+        if (error) return [];
+        return data;
+      } catch {
+        return [];
+      }
+    },
+  });
+
+  const [whatsDraft, setWhatsDraft] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setWhatsDraft((s) => {
+      const merged: Record<string, string> = {};
+      for (const k of Object.keys(whatsSettings)) merged[k] = s[k] ?? whatsSettings[k];
+      return merged;
+    });
+  }, [whatsSettings]);
+
   // Itens distintos por referência (para a tela de mapeamento)
   const distinctItems = useMemo(() => {
     const map = new Map<string, { ref: string; nome: string | null; product_id: string | null; count: number }>();
@@ -199,6 +266,37 @@ function AnotaPage() {
 
   const selectedOrder = orders.find((o) => o.id === selectedOrderId);
 
+  const { data: selectedDetail } = useQuery({
+    queryKey: ["anota-order-detail", selectedOrderId],
+    queryFn: async () => {
+      if (!selectedOrderId) return null;
+      const { data, error } = await supabase
+        .from("anota_orders")
+        .select("id, numero, external_order_id, cliente, total, check_status")
+        .eq("id", selectedOrderId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      let extra = {
+        motoboy_id: null as string | null,
+        whatsapp_notified_at: null as string | null,
+        whatsapp_ready_notified_at: null as string | null,
+      };
+      try {
+        const { data: extraData } = await supabase
+          .from("anota_orders")
+          .select("motoboy_id, whatsapp_notified_at, whatsapp_ready_notified_at")
+          .eq("id", selectedOrderId)
+          .maybeSingle();
+        if (extraData) extra = extraData;
+      } catch {
+        // Colunas ainda não existem (migration pendente) — segue com valores vazios
+      }
+      return { ...data, ...extra };
+    },
+    enabled: !!selectedOrderId,
+  });
+
   const test = useMutation({
     mutationFn: () => testFn(),
     onSuccess: (r) => (r.ok ? toast.success(r.message) : toast.error(r.message)),
@@ -238,6 +336,74 @@ function AnotaPage() {
       qc.invalidateQueries({ queryKey: ["anota-items"] });
       qc.invalidateQueries({ queryKey: ["anota-scheduled"] });
       qc.invalidateQueries({ queryKey: ["stock"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const testWhats = useMutation({
+    mutationFn: () => testWhatsFn(),
+    onSuccess: (r) => (r.ok ? toast.success(r.message) : toast.error(r.message)),
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const saveWhats = useMutation({
+    mutationFn: () => saveWhatsSettingsFn({ data: { settings: whatsDraft } }),
+    onSuccess: (r) => {
+      if (r.ok) toast.success(r.message);
+      else toast.error(r.message);
+      qc.invalidateQueries({ queryKey: ["whatsapp-settings"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const assignMotoboy = useMutation({
+    mutationFn: (motoboyId: string | null) =>
+      setMotoboyFn({ data: { orderId: selectedOrderId ?? "", motoboyId } }),
+    onSuccess: (r) => {
+      if (r.ok) toast.success(r.message);
+      else toast.error(r.message);
+      qc.invalidateQueries({ queryKey: ["anota-orders"] });
+      qc.invalidateQueries({ queryKey: ["anota-busca"] });
+      qc.invalidateQueries({ queryKey: ["anota-order-detail"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const sendMsg = useMutation({
+    mutationFn: (tipo: NotifyType) => sendMsgFn({ data: { orderId: selectedOrderId ?? "", tipo } }),
+    onSuccess: (r) => {
+      if (r.ok) toast.success(r.message);
+      else toast.error(r.message);
+      qc.invalidateQueries({ queryKey: ["anota-orders"] });
+      qc.invalidateQueries({ queryKey: ["anota-order-detail"] });
+      qc.invalidateQueries({ queryKey: ["whatsapp-logs"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const whatsStatus = useQuery({
+    queryKey: ["whatsapp-status"],
+    queryFn: () => whatsStatusFn(),
+    refetchInterval: (query) => (query.state.data?.connected ? 60000 : 15000),
+  });
+
+  const whatsQr = useMutation({
+    mutationFn: () => whatsQrFn(),
+    onSuccess: (r) => {
+      if (!r.ok) toast.error(r.message);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const createSession = useMutation({
+    mutationFn: () => createSessionFn(),
+    onSuccess: (r) => {
+      if (r.ok) {
+        toast.success(r.message);
+        qc.invalidateQueries({ queryKey: ["whatsapp-status"] });
+      } else {
+        toast.error(r.message);
+      }
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -315,6 +481,7 @@ function AnotaPage() {
           <TabsTrigger value="mapeamento">
             Mapeamento{pendentes ? ` (${pendentes})` : ""}
           </TabsTrigger>
+          <TabsTrigger value="whatsapp">WhatsApp</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pedidos" className="pt-4">
@@ -555,6 +722,203 @@ function AnotaPage() {
             </div>
           )}
         </TabsContent>
+
+        <TabsContent value="whatsapp" className="space-y-4 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Notificações WhatsApp</h3>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Envia automaticamente para clientes (e motoboys vinculados) quando os pedidos do Anota entram ou ficam
+                prontos. Requer o Waha configurado nas variáveis de ambiente.
+              </p>
+            </div>
+            <Button variant="outline" onClick={() => testWhats.mutate()} disabled={testWhats.isPending}>
+              {testWhats.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Plug className="mr-2 size-4" />}
+              Testar conexão
+            </Button>
+          </div>
+
+          <div className="rounded-xl border border-border p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold">Conexão do número</h4>
+                <p className="text-xs text-muted-foreground">
+                  {whatsStatus.data?.sessionName
+                    ? `Sessão: ${whatsStatus.data.sessionName}`
+                    : "Conecte o número do WhatsApp escaneando o QR Code."}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {whatsStatus.isFetching ? (
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                ) : whatsStatus.data?.connected ? (
+                  <Badge variant="default" className="gap-1 bg-green-600">
+                    <CheckCircle2 className="size-3" /> Conectado
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="gap-1">
+                    <AlertTriangle className="size-3" /> Desconectado
+                  </Badge>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => whatsStatus.refetch()}
+                  disabled={whatsStatus.isFetching}
+                  title="Atualizar status"
+                >
+                  <RefreshCw className="size-4" />
+                </Button>
+              </div>
+            </div>
+
+            {!whatsStatus.data?.connected ? (
+              <div className="flex flex-col items-center gap-3">
+                {whatsQr.data?.qrDataUrl ? (
+                  <img
+                    src={whatsQr.data.qrDataUrl}
+                    alt="QR Code WhatsApp"
+                    className="h-52 w-52 rounded border border-border bg-white object-contain"
+                  />
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Nenhum QR Code exibido ainda. Clique em "Gerar QR Code".
+                  </p>
+                )}
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => whatsQr.mutate()}
+                    disabled={whatsQr.isPending}
+                  >
+                    {whatsQr.isPending ? <Loader2 className="mr-1 size-4 animate-spin" /> : <QrCode className="mr-1 size-4" />}
+                    Gerar QR Code
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => createSession.mutate()}
+                    disabled={createSession.isPending}
+                  >
+                    {createSession.isPending && <Loader2 className="mr-1 size-4 animate-spin" />}
+                    Criar sessão
+                  </Button>
+                </div>
+                <p className="max-w-md text-center text-xs text-muted-foreground">
+                  No celular, abra o WhatsApp → Configurações → Aparelhos conectados → Conectar um aparelho e escaneie
+                  o QR Code. O número conectado será o remetente das notificações.
+                </p>
+                {whatsStatus.data && !whatsStatus.data.ok && (
+                  <p className="max-w-md text-center text-xs font-medium text-destructive">
+                    {whatsStatus.data.message}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Número conectado e pronto para enviar notificações de pedidos.
+              </p>
+            )}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-4 rounded-xl border border-border p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label className="text-sm font-medium">Notificações automáticas</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Liga/desliga o envio automático durante a sincronização de pedidos.
+                  </p>
+                </div>
+                <Switch
+                  checked={whatsDraft.whatsapp_enabled === "true"}
+                  onCheckedChange={(v) =>
+                    setWhatsDraft((s) => ({ ...s, whatsapp_enabled: v ? "true" : "false" }))
+                  }
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Mensagem — pedido recebido</Label>
+                <Textarea
+                  value={whatsDraft.template_pedido_recebido ?? ""}
+                  onChange={(e) => setWhatsDraft((s) => ({ ...s, template_pedido_recebido: e.target.value }))}
+                  rows={3}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Mensagem — pedido pronto (cliente)</Label>
+                <Textarea
+                  value={whatsDraft.template_pedido_pronto ?? ""}
+                  onChange={(e) => setWhatsDraft((s) => ({ ...s, template_pedido_pronto: e.target.value }))}
+                  rows={2}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs">Mensagem padrão do motoboy</Label>
+                <Textarea
+                  value={whatsDraft.template_motoboy_pronto ?? ""}
+                  onChange={(e) => setWhatsDraft((s) => ({ ...s, template_motoboy_pronto: e.target.value }))}
+                  rows={2}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Variáveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Endereço de entrega, itens do pedido e link do Google Maps são anexados automaticamente no fim da mensagem.
+                </p>
+              </div>
+
+              <div className="flex justify-end">
+                <Button onClick={() => saveWhats.mutate()} disabled={saveWhats.isPending}>
+                  {saveWhats.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
+                  Salvar configurações
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border p-4">
+              <h4 className="mb-2 text-sm font-semibold">Últimos envios</h4>
+              {whatsLogs.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Nenhum envio registrado ainda. As notificações aparecerão aqui.
+                </p>
+              ) : (
+                <ul className="space-y-3">
+                  {whatsLogs.map((l) => (
+                    <li key={l.id} className="flex items-start justify-between gap-3 text-xs">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium capitalize">{l.tipo ?? "envio"}</span>
+                          <Badge
+                            variant={l.status === "enviado" ? "default" : l.status === "erro" ? "destructive" : "outline"}
+                          >
+                            {l.status}
+                          </Badge>
+                        </div>
+                        <p className="mt-0.5 truncate text-muted-foreground">
+                          {l.mensagem ?? l.error ?? "—"}
+                        </p>
+                        <p className="text-muted-foreground">
+                          {l.destino ?? "—"} · {fmtDateTime(l.created_at)}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </TabsContent>
       </Tabs>
 
       <Dialog open={!!selectedOrderId} onOpenChange={(open) => !open && setSelectedOrderId(null)}>
@@ -606,6 +970,46 @@ function AnotaPage() {
                     </tbody>
                   </table>
                 )}
+              </div>
+
+              <div className="space-y-3 border-t pt-3">
+                <h4 className="text-sm font-medium">Entrega (WhatsApp)</h4>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Motoboy (colaborador)</Label>
+                  <Select
+                    value={selectedDetail?.motoboy_id ?? "none"}
+                    onValueChange={(v) => assignMotoboy.mutate(v === "none" ? null : v)}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Selecionar motoboy..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">— Nenhum —</SelectItem>
+                      {collaborators.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.nome}
+                          {c.cargo ? ` (${c.cargo})` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => sendMsg.mutate("recebido")} disabled={sendMsg.isPending}>
+                    <Send className="mr-1 size-3" /> Confirmar pedido
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => sendMsg.mutate("pronto")} disabled={sendMsg.isPending}>
+                    <Send className="mr-1 size-3" /> Pedido pronto
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => sendMsg.mutate("motoboy")}
+                    disabled={sendMsg.isPending || !selectedDetail?.motoboy_id}
+                  >
+                    <Send className="mr-1 size-3" /> Notificar motoboy
+                  </Button>
+                </div>
               </div>
             </div>
           )}

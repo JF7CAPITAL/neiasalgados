@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { notifyOrderWhatsAppLogic } from "@/lib/whatsapp.functions";
 
 /**
  * Integração Anota AI (somente entrada).
@@ -612,6 +613,8 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     let atualizados = 0;
     let pendentesMapeamento = 0;
     const finalizadosParaBaixa: string[] = []; // ids internos (anota_orders.id)
+    const novosParaNotificar: string[] = []; // ids internos de pedidos novos (notificação de recebimento)
+    const prontosParaNotificar: string[] = []; // ids internos que passaram para finalizado
 
     for (const listed of discovery.orders) {
       const prev = existing.get(listed.id);
@@ -635,6 +638,9 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
           else atualizados++;
           await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
+          if (detail.check === 3 && prev.check_status !== 3) {
+            prontosParaNotificar.push(prev.id);
+          }
           // Só apaga movimentos antigos se o status mudou, para preservar a data original
           if (statusChanged && prev.estoque_aplicado) {
             await supabase.from("product_movements").delete().eq("ref_order_id", prev.id).eq("destino", "Anota AI");
@@ -683,6 +689,12 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       const todosMapeados = await insertOrderItems(supabase, inserted.id, items, mapByRef);
       if (items.length > 0 && !todosMapeados) pendentesMapeamento++;
 
+      if (check === 3) {
+        prontosParaNotificar.push(inserted.id);
+      } else {
+        novosParaNotificar.push(inserted.id);
+      }
+
       if (check === 1 || check === 3) {
         finalizadosParaBaixa.push(inserted.id);
       }
@@ -709,6 +721,15 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         p_user: context.userId,
       });
       if (!rpcErr) baixasAplicadas++;
+    }
+
+    // Notificações WhatsApp (pedido recebido e/ou pronto)
+    // A função interna respeita as configurações (template, toggle) e a anti-duplicação.
+    for (const id of novosParaNotificar) {
+      await notifyOrderWhatsAppLogic(supabase, id, "recebido", context.userId);
+    }
+    for (const id of prontosParaNotificar) {
+      await notifyOrderWhatsAppLogic(supabase, id, "pronto", context.userId);
     }
 
     const partes = [`${importados} novo(s)`, `${atualizados} atualizado(s)`, `${baixasAplicadas} baixa(s) de estoque`];
