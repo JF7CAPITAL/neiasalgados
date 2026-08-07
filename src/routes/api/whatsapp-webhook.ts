@@ -58,14 +58,17 @@ function extractFrom(root: Json): string {
   return "";
 }
 
-/** Ignora mensagens de grupo, broadcast, newsletter e status. */
+/**
+ * Ignora mensagens de grupo, broadcast, newsletter e status.
+ * Obs.: "@lid" NÃO é grupo — é o ID de usuário 1:1 usado pelo WhatsApp no
+ * modo de privacidade (GOWS entrega DMs com o remetente em @lid).
+ */
 function isGroupChat(chatId: string): boolean {
   return (
     chatId.includes("@g.us") ||
     chatId.includes("@broadcast") ||
     chatId.includes("@newsletter") ||
-    chatId.includes("@status") ||
-    chatId.includes("@lid")
+    chatId.includes("@status")
   );
 }
 
@@ -178,9 +181,11 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           }
 
           // Envia a mensagem da primeira regra que bateu.
+          // Usa o chatId completo (pode ser @c.us ou @lid) para responder no
+          // mesmo chat de onde a mensagem veio.
           const rule = matched[0];
           const msg = renderTemplate(rule.mensagem, { numero: "", total: "", cliente: "" });
-          const r = await sendReply(phone, rule, msg);
+          const r = await sendReply(chatId, rule, msg);
           if (r.ok) lastReplyBy.set(phone, now);
 
           await logWebhookEvent({

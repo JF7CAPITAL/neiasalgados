@@ -271,13 +271,16 @@ export interface WahaSendResult {
   status?: number;
 }
 
-/** Envia um texto via Waha para um número em E.164 (só dígitos). */
+/**
+ * Envia um texto via Waha. `to` pode ser um número em E.164 (só dígitos) ou
+ * um chatId completo (ex.: "55...@c.us", "232573183738057@lid").
+ */
 export async function sendWahaText(to: string, text: string): Promise<WahaSendResult> {
   const env = wahaEnv();
   if ("error" in env) return { ok: false, message: env.error };
   if (!env.enabled)
     return { ok: false, message: "Notificações WhatsApp desativadas (WAHA_ENABLED=false)." };
-  const chatId = `${to}@c.us`;
+  const chatId = to.includes("@") ? to : `${to}@c.us`;
   try {
     const res = await fetch(`${env.url}/api/sendText`, {
       method: "POST",
@@ -305,13 +308,16 @@ export async function sendWahaText(to: string, text: string): Promise<WahaSendRe
 // ---------------------------------------------------------------------------
 export type NotifyType = "recebido" | "pronto" | "motoboy";
 
-/** Envia uma imagem (com legenda) via Waha usando uma URL pública do Storage. */
+/**
+ * Envia uma imagem (com legenda) via Waha usando uma URL pública do Storage.
+ * `to` pode ser um número em E.164 (só dígitos) ou um chatId completo.
+ */
 export async function sendWahaImage(to: string, imageUrl: string, caption: string): Promise<WahaSendResult> {
   const env = wahaEnv();
   if ("error" in env) return { ok: false, message: env.error };
   if (!env.enabled)
     return { ok: false, message: "Notificações WhatsApp desativadas (WAHA_ENABLED=false)." };
-  const chatId = `${to}@c.us`;
+  const chatId = to.includes("@") ? to : `${to}@c.us`;
   try {
     const res = await fetch(`${env.url}/api/sendImage`, {
       method: "POST",
