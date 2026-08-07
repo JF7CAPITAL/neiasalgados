@@ -36,7 +36,10 @@ function wahaEnv(): WahaEnv | { error: string } {
   const session = (process.env.WAHA_SESSION ?? "default").trim() || "default";
   const enabled = (process.env.WAHA_ENABLED ?? "true").trim().toLowerCase() !== "false";
   if (!url || !key) {
-    return { error: "WhatsApp (Waha) não configurado. Defina WAHA_URL e WAHA_API_KEY nas variáveis de ambiente." };
+    return {
+      error:
+        "WhatsApp (Waha) não configurado. Defina WAHA_URL e WAHA_API_KEY nas variáveis de ambiente.",
+    };
   }
   return { url, key, session, enabled };
 }
@@ -57,7 +60,15 @@ export function orderPhone(payload: unknown): string | null {
   if (!root) return null;
   const cust = asRecord(root.customer) ?? asRecord(root.client);
   if (!cust) return null;
-  for (const k of ["phone", "phoneNumber", "cellphone", "celular", "telefone", "whatsapp", "mobile"]) {
+  for (const k of [
+    "phone",
+    "phoneNumber",
+    "cellphone",
+    "celular",
+    "telefone",
+    "whatsapp",
+    "mobile",
+  ]) {
     const v = cust[k];
     if (typeof v === "string" && v.trim()) {
       const norm = normalizePhone(v);
@@ -118,7 +129,10 @@ async function orderItemsText(supabase: DbClient, orderId: string): Promise<stri
       .eq("order_id", orderId);
     if (!data || !data.length) return "";
     return data
-      .map((it: { nome: string | null; quantidade: number }) => `${it.quantidade}x ${it.nome ?? "item"}`)
+      .map(
+        (it: { nome: string | null; quantidade: number }) =>
+          `${it.quantidade}x ${it.nome ?? "item"}`,
+      )
       .join(", ");
   } catch {
     return "";
@@ -164,7 +178,15 @@ async function sendMotoboyMessage(
 ): Promise<boolean> {
   const text = await buildMotoboyText(supabase, order, settings);
   const r = await sendWahaText(phoneM, text);
-  await logWhatsApp(supabase, order, "motoboy_pronto", phoneM, r.ok ? "enviado" : "erro", r.message, text);
+  await logWhatsApp(
+    supabase,
+    order,
+    "motoboy_pronto",
+    phoneM,
+    r.ok ? "enviado" : "erro",
+    r.message,
+    text,
+  );
   return r.ok;
 }
 
@@ -178,8 +200,34 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   template_pedido_recebido:
     "Neia Salgados: recebemos seu pedido #{{numero}} no valor de R$ {{total}}. Já estamos preparando!",
   template_pedido_pronto: "Neia Salgados: seu pedido #{{numero}} está pronto!",
-  template_motoboy_pronto: "Neia Salgados: pedido #{{numero}} ({{cliente}}) está pronto para entrega.",
+  template_motoboy_pronto:
+    "Neia Salgados: pedido #{{numero}} ({{cliente}}) está pronto para entrega.",
+  status_messages: "[]",
 };
+
+export interface StatusMessageRule {
+  status: number;
+  message: string;
+}
+
+/** Faz parse das regras "status -> mensagem" salvas como JSON. */
+export function parseStatusMessages(raw: string | undefined): StatusMessageRule[] {
+  try {
+    const arr = JSON.parse(raw ?? "[]");
+    if (Array.isArray(arr)) {
+      return arr.filter(
+        (r): r is StatusMessageRule =>
+          !!r &&
+          typeof r === "object" &&
+          typeof (r as StatusMessageRule).status === "number" &&
+          typeof (r as StatusMessageRule).message === "string",
+      );
+    }
+  } catch {
+    // JSON inválido — retorna vazio
+  }
+  return [];
+}
 
 export const WHATSAPP_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);
 
@@ -231,7 +279,8 @@ export interface WahaSendResult {
 export async function sendWahaText(to: string, text: string): Promise<WahaSendResult> {
   const env = wahaEnv();
   if ("error" in env) return { ok: false, message: env.error };
-  if (!env.enabled) return { ok: false, message: "Notificações WhatsApp desativadas (WAHA_ENABLED=false)." };
+  if (!env.enabled)
+    return { ok: false, message: "Notificações WhatsApp desativadas (WAHA_ENABLED=false)." };
   const chatId = `${to}@c.us`;
   try {
     const res = await fetch(`${env.url}/api/sendText`, {
@@ -241,9 +290,16 @@ export async function sendWahaText(to: string, text: string): Promise<WahaSendRe
     });
     if (res.ok) return { ok: true, message: "Mensagem enviada." };
     const snippet = (await res.text().catch(() => "")).slice(0, 200);
-    return { ok: false, status: res.status, message: `Falha no Waha (HTTP ${res.status}): ${snippet}` };
+    return {
+      ok: false,
+      status: res.status,
+      message: `Falha no Waha (HTTP ${res.status}): ${snippet}`,
+    };
   } catch (e) {
-    return { ok: false, message: `Erro de rede ao chamar o Waha: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      ok: false,
+      message: `Erro de rede ao chamar o Waha: ${e instanceof Error ? e.message : String(e)}`,
+    };
   }
 }
 
@@ -263,6 +319,7 @@ interface OrderRow {
   motoboy_id: string | null;
   whatsapp_notified_at: string | null;
   whatsapp_ready_notified_at: string | null;
+  whatsapp_statuses_notified?: string[] | null;
 }
 
 export interface NotifyOrderResult {
@@ -299,7 +356,11 @@ async function doNotify(
 ): Promise<NotifyOrderResult> {
   const settings = await loadSettings(supabase);
   if (settings.whatsapp_enabled !== "true") {
-    return { ok: false, message: "Notificações WhatsApp estão desativadas nas configurações.", enviados: 0 };
+    return {
+      ok: false,
+      message: "Notificações WhatsApp estão desativadas nas configurações.",
+      enviados: 0,
+    };
   }
 
   const clientePhone = orderPhone(order.payload);
@@ -307,14 +368,31 @@ async function doNotify(
 
   if (tipo === "recebido") {
     if (!clientePhone) {
-      await logWhatsApp(supabase, order, "pedido_recebido", null, "ignorado", "Cliente sem telefone no payload");
+      await logWhatsApp(
+        supabase,
+        order,
+        "pedido_recebido",
+        null,
+        "ignorado",
+        "Cliente sem telefone no payload",
+      );
       return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
     }
     if (!order.whatsapp_notified_at || mode === "manual") {
-      const ok = await notifyOne(supabase, order, settings, clientePhone, "pedido_recebido", "template_pedido_recebido");
+      const ok = await notifyOne(
+        supabase,
+        order,
+        settings,
+        clientePhone,
+        "pedido_recebido",
+        "template_pedido_recebido",
+      );
       if (ok) {
         enviados++;
-        await supabase.from("anota_orders").update({ whatsapp_notified_at: new Date().toISOString() }).eq("id", order.id);
+        await supabase
+          .from("anota_orders")
+          .update({ whatsapp_notified_at: new Date().toISOString() })
+          .eq("id", order.id);
       }
     }
     return { ok: true, message: "Confirmação de recebimento processada.", enviados };
@@ -330,21 +408,43 @@ async function doNotify(
       .eq("id", order.motoboy_id)
       .maybeSingle();
     if (!moto?.celular) {
-      return { ok: false, message: "Motoboy vinculado não possui celular cadastrado.", enviados: 0 };
+      return {
+        ok: false,
+        message: "Motoboy vinculado não possui celular cadastrado.",
+        enviados: 0,
+      };
     }
     const phoneM = normalizePhone(moto.celular);
     if (!phoneM) return { ok: false, message: "Celular do motoboy inválido.", enviados: 0 };
     const ok = await sendMotoboyMessage(supabase, order, settings, phoneM);
-    return { ok, message: ok ? "Motoboy notificado." : "Falha ao notificar motoboy.", enviados: ok ? 1 : 0 };
+    return {
+      ok,
+      message: ok ? "Motoboy notificado." : "Falha ao notificar motoboy.",
+      enviados: ok ? 1 : 0,
+    };
   }
 
   // tipo === "pronto"
   if (!clientePhone) {
-    await logWhatsApp(supabase, order, "pedido_pronto", null, "ignorado", "Cliente sem telefone no payload");
+    await logWhatsApp(
+      supabase,
+      order,
+      "pedido_pronto",
+      null,
+      "ignorado",
+      "Cliente sem telefone no payload",
+    );
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
   }
   if (!order.whatsapp_ready_notified_at || mode === "manual") {
-    const ok = await notifyOne(supabase, order, settings, clientePhone, "pedido_pronto", "template_pedido_pronto");
+    const ok = await notifyOne(
+      supabase,
+      order,
+      settings,
+      clientePhone,
+      "pedido_pronto",
+      "template_pedido_pronto",
+    );
     if (ok) {
       enviados++;
       await supabase
@@ -391,6 +491,92 @@ export async function notifyOrderWhatsAppLogic(
   return doNotify(supabase, data, tipo, "auto");
 }
 
+/**
+ * Verifica se existe uma mensagem configurada para o status atual do pedido
+ * (regras "status -> mensagem") e envia ao cliente, com anti-duplicação por status.
+ * Chamada pelo syncAnotaOrders quando o pedido muda de status.
+ */
+export async function notifyStatusMessageWhatsApp(
+  supabase: DbClient,
+  orderId: string,
+): Promise<NotifyOrderResult> {
+  const { data, error } = await supabase
+    .from("anota_orders")
+    .select(
+      "id, numero, external_order_id, cliente, total, check_status, payload, motoboy_id, whatsapp_notified_at, whatsapp_ready_notified_at, whatsapp_statuses_notified",
+    )
+    .eq("id", orderId)
+    .maybeSingle();
+  if (error || !data) return { ok: false, message: "Pedido não encontrado.", enviados: 0 };
+
+  const settings = await loadSettings(supabase);
+  if (settings.whatsapp_enabled !== "true") {
+    return {
+      ok: false,
+      message: "Notificações WhatsApp estão desativadas nas configurações.",
+      enviados: 0,
+    };
+  }
+
+  const rules = parseStatusMessages(settings.status_messages);
+  const rule = rules.find((r) => r.status === data.check_status);
+  if (!rule || !rule.message.trim()) {
+    return {
+      ok: false,
+      message: `Nenhuma mensagem configurada para o status ${data.check_status}.`,
+      enviados: 0,
+    };
+  }
+
+  const notified = Array.isArray(data.whatsapp_statuses_notified)
+    ? data.whatsapp_statuses_notified
+    : [];
+  if (notified.includes(String(data.check_status))) {
+    return {
+      ok: false,
+      message: `Status ${data.check_status} já notificado para este pedido.`,
+      enviados: 0,
+    };
+  }
+
+  const clientePhone = orderPhone(data.payload);
+  if (!clientePhone) {
+    await logWhatsApp(
+      supabase,
+      data,
+      `status_${data.check_status}`,
+      null,
+      "ignorado",
+      "Cliente sem telefone no payload",
+    );
+    return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
+  }
+
+  const text = renderTemplate(rule.message, {
+    numero: data.numero ?? data.external_order_id ?? "",
+    total: fmtMoney(data.total),
+    cliente: data.cliente ?? "cliente",
+  });
+  const r = await sendWahaText(clientePhone, text);
+  await logWhatsApp(
+    supabase,
+    data,
+    `status_${data.check_status}`,
+    clientePhone,
+    r.ok ? "enviado" : "erro",
+    r.message,
+    text,
+  );
+  if (r.ok) {
+    await supabase
+      .from("anota_orders")
+      .update({ whatsapp_statuses_notified: [...notified, String(data.check_status)] })
+      .eq("id", data.id);
+    return { ok: true, message: `Mensagem de status ${data.check_status} enviada.`, enviados: 1 };
+  }
+  return { ok: false, message: r.message, enviados: 0 };
+}
+
 /** Envia manualmente (sem respeitar anti-duplicação). */
 export async function sendOrderMessageManual(
   supabase: DbClient,
@@ -418,7 +604,10 @@ const ROLES_PERMITIDAS = ["admin", "estoque", "compras", "producao", "operaciona
 async function ensureRole(context: { supabase: any; userId: string }) {
   for (const role of ROLES_PERMITIDAS) {
     try {
-      const { data } = await context.supabase.rpc("has_role", { _user_id: context.userId, _role: role });
+      const { data } = await context.supabase.rpc("has_role", {
+        _user_id: context.userId,
+        _role: role,
+      });
       if (data === true) return;
     } catch {
       const { data: rows } = await context.supabase
@@ -458,7 +647,10 @@ export const testWhatsAppConnection = createServerFn({ method: "POST" })
       }
       return { ok: false, message: `Waha respondeu HTTP ${res.status} em /api/health.` };
     } catch (e) {
-      return { ok: false, message: `Erro de rede ao chamar o Waha: ${e instanceof Error ? e.message : String(e)}` };
+      return {
+        ok: false,
+        message: `Erro de rede ao chamar o Waha: ${e instanceof Error ? e.message : String(e)}`,
+      };
     }
   });
 
@@ -497,9 +689,8 @@ export const getWhatsAppStatus = createServerFn({ method: "POST" })
       }
       const json: unknown = await res.json().catch(() => null);
       const arr = Array.isArray(json) ? json : [];
-      const session = arr.find(
-        (s: { id?: string; name?: string }) => (s.id ?? s.name) === env.session,
-      ) ?? null;
+      const session =
+        arr.find((s: { id?: string; name?: string }) => (s.id ?? s.name) === env.session) ?? null;
       const connected =
         !!session &&
         ((session as WahaSessionInfo).status === "WORKING" ||
@@ -548,11 +739,19 @@ export const getWhatsAppQrCode = createServerFn({ method: "POST" })
         const contentType = res.headers.get("content-type") ?? "";
         if (contentType.includes("image")) {
           const b64 = Buffer.from(await res.arrayBuffer()).toString("base64");
-          return { ok: true, message: "QR Code gerado.", qrDataUrl: `data:${contentType};base64,${b64}` };
+          return {
+            ok: true,
+            message: "QR Code gerado.",
+            qrDataUrl: `data:${contentType};base64,${b64}`,
+          };
         }
         const text = await res.text();
         let json: JsonRecord | null = null;
-        try { json = asRecord(JSON.parse(text)); } catch { json = null; }
+        try {
+          json = asRecord(JSON.parse(text));
+        } catch {
+          json = null;
+        }
         if (json && typeof json.qr === "string" && json.qr) {
           const qr = json.qr.startsWith("data:") ? json.qr : `data:image/png;base64,${json.qr}`;
           return { ok: true, message: "QR Code gerado.", qrDataUrl: qr };
@@ -563,7 +762,8 @@ export const getWhatsAppQrCode = createServerFn({ method: "POST" })
     }
     return {
       ok: false,
-      message: "Não foi possível obter o QR Code. Confirme se o Waha está acessível e a sessão " +
+      message:
+        "Não foi possível obter o QR Code. Confirme se o Waha está acessível e a sessão " +
         `"${env.session}" foi criada.`,
     };
   });
@@ -587,12 +787,18 @@ export const createWhatsAppSession = createServerFn({ method: "POST" })
         body: JSON.stringify({ name: env.session }),
       });
       if (res.ok) {
-        return { ok: true, message: `Sessão "${env.session}" criada. Escaneie o QR Code para conectar.` };
+        return {
+          ok: true,
+          message: `Sessão "${env.session}" criada. Escaneie o QR Code para conectar.`,
+        };
       }
       const snippet = (await res.text().catch(() => "")).slice(0, 200);
       return { ok: false, message: `Falha ao criar sessão (HTTP ${res.status}): ${snippet}` };
     } catch (e) {
-      return { ok: false, message: `Erro de rede ao chamar o Waha: ${e instanceof Error ? e.message : String(e)}` };
+      return {
+        ok: false,
+        message: `Erro de rede ao chamar o Waha: ${e instanceof Error ? e.message : String(e)}`,
+      };
     }
   });
 
@@ -632,7 +838,9 @@ export const saveWhatsAppSettings = createServerFn({ method: "POST" })
       .filter(([k]) => WHATSAPP_SETTING_KEYS.includes(k))
       .map(([key, value]) => ({ key, value }));
     if (!upserts.length) return { ok: false, message: "Nenhuma configuração válida." };
-    const { error } = await context.supabase.from("whatsapp_settings").upsert(upserts, { onConflict: "key" });
+    const { error } = await context.supabase
+      .from("whatsapp_settings")
+      .upsert(upserts, { onConflict: "key" });
     if (error) return { ok: false, message: `Erro ao salvar: ${error.message}` };
     return { ok: true, message: "Configurações salvas com sucesso." };
   });

@@ -2,7 +2,25 @@ import { useMemo, useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ShoppingBag, RefreshCw, Plug, Loader2, Link2, AlertTriangle, CheckCircle2, Eye, CalendarDays, Search, Filter, Clock, Send, Save, QrCode } from "lucide-react";
+import {
+  ShoppingBag,
+  RefreshCw,
+  Plug,
+  Loader2,
+  Link2,
+  AlertTriangle,
+  CheckCircle2,
+  Eye,
+  CalendarDays,
+  Search,
+  Filter,
+  Clock,
+  Send,
+  Save,
+  QrCode,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -21,7 +39,9 @@ import {
   getWhatsAppStatus,
   getWhatsAppQrCode,
   createWhatsAppSession,
+  parseStatusMessages,
   type NotifyType,
+  type StatusMessageRule,
 } from "@/lib/whatsapp.functions";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { PageHeader, KpiCard, EmptyState } from "@/components/erp/PageHeader";
@@ -30,7 +50,13 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { isSyncEnabled, setSyncEnabled, onSyncToggle } from "@/lib/sync-toggle";
@@ -58,7 +84,7 @@ function getScheduledDate(payload: any): string | null {
 }
 
 const CHECK_TONE: Record<number, "default" | "secondary" | "destructive" | "outline"> = {
-  [ -2 ]: "outline",
+  [-2]: "outline",
   0: "outline",
   1: "secondary",
   2: "secondary",
@@ -71,12 +97,23 @@ const CHECK_TONE: Record<number, "default" | "secondary" | "destructive" | "outl
 function checkBadge(check: number, scheduledDate?: string | null) {
   if (check === -2) {
     const label = scheduledDate ? `Agendamento ${diasAte(scheduledDate)}` : "Agendamento";
-    return <Badge variant="outline" className="text-info border-info/30 bg-info/15">{label}</Badge>;
+    return (
+      <Badge variant="outline" className="text-info border-info/30 bg-info/15">
+        {label}
+      </Badge>
+    );
   }
   return (
-    <Badge variant={CHECK_TONE[check] ?? "outline"}>{ANOTA_CHECK_LABELS[check] ?? `Status ${check}`}</Badge>
+    <Badge variant={CHECK_TONE[check] ?? "outline"}>
+      {ANOTA_CHECK_LABELS[check] ?? `Status ${check}`}
+    </Badge>
   );
 }
+
+const STATUS_MESSAGE_OPTIONS = [
+  { value: -2, label: "Agendado" },
+  ...Object.entries(ANOTA_CHECK_LABELS).map(([k, v]) => ({ value: Number(k), label: v })),
+];
 
 function AnotaPage() {
   const qc = useQueryClient();
@@ -107,7 +144,9 @@ function AnotaPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("anota_orders")
-        .select("id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at")
+        .select(
+          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at",
+        )
         .order("imported_at", { ascending: false })
         .limit(300);
       if (error) throw error;
@@ -131,7 +170,9 @@ function AnotaPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("anota_orders")
-        .select("id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, payload")
+        .select(
+          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, payload",
+        )
         .eq("check_status", -2)
         .order("imported_at", { ascending: false });
       if (error) throw error;
@@ -148,7 +189,9 @@ function AnotaPage() {
       to.setDate(to.getDate() + 1);
       let query = supabase
         .from("anota_orders")
-        .select("id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at")
+        .select(
+          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at",
+        )
         .gte("imported_at", from.toISOString())
         .lt("imported_at", to.toISOString())
         .order("imported_at", { ascending: false });
@@ -220,9 +263,23 @@ function AnotaPage() {
     });
   }, [whatsSettings]);
 
+  // Regras "status -> mensagem" (JSON dentro de whatsDraft.status_messages)
+  const [statusRules, setStatusRules] = useState<StatusMessageRule[]>([]);
+  useEffect(() => {
+    setStatusRules(parseStatusMessages(whatsDraft.status_messages));
+  }, [whatsDraft.status_messages]);
+
+  const updateStatusRules = (rules: StatusMessageRule[]) => {
+    setStatusRules(rules);
+    setWhatsDraft((s) => ({ ...s, status_messages: JSON.stringify(rules) }));
+  };
+
   // Itens distintos por referência (para a tela de mapeamento)
   const distinctItems = useMemo(() => {
-    const map = new Map<string, { ref: string; nome: string | null; product_id: string | null; count: number }>();
+    const map = new Map<
+      string,
+      { ref: string; nome: string | null; product_id: string | null; count: number }
+    >();
     for (const it of items) {
       const ref = it.anota_item_ref;
       if (!ref) continue;
@@ -239,11 +296,15 @@ function AnotaPage() {
         });
       }
     }
-    return Array.from(map.values()).sort((a, b) => (a.nome ?? a.ref).localeCompare(b.nome ?? b.ref));
+    return Array.from(map.values()).sort((a, b) =>
+      (a.nome ?? a.ref).localeCompare(b.nome ?? b.ref),
+    );
   }, [items]);
 
   const pendentes = distinctItems.filter((d) => !d.product_id).length;
-  const finalizadosSemBaixa = orders.filter((o) => o.check_status === 3 && !o.estoque_aplicado).length;
+  const finalizadosSemBaixa = orders.filter(
+    (o) => o.check_status === 3 && !o.estoque_aplicado,
+  ).length;
 
   // Estado local dos selects de mapeamento
   const [mapDraft, setMapDraft] = useState<Record<string, string>>({});
@@ -324,7 +385,11 @@ function AnotaPage() {
         .filter(([, v]) => v)
         .map(([ref, product_id]) => {
           const d = distinctItems.find((x) => x.ref === ref);
-          return { anota_item_ref: ref, nome: d?.nome ?? null, product_id: product_id === "none" ? null : product_id };
+          return {
+            anota_item_ref: ref,
+            nome: d?.nome ?? null,
+            product_id: product_id === "none" ? null : product_id,
+          };
         });
       if (!mappings.length) throw new Error("Nenhuma alteração de mapeamento para salvar.");
       return saveMapFn({ data: { mappings } });
@@ -431,8 +496,16 @@ function AnotaPage() {
                 {syncEnabled ? "Sync ativo" : "Sync desativado"}
               </Label>
             </div>
-            <Button variant="outline" onClick={() => test.mutate()} disabled={test.isPending || !syncEnabled}>
-              {test.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Plug className="mr-2 size-4" />}
+            <Button
+              variant="outline"
+              onClick={() => test.mutate()}
+              disabled={test.isPending || !syncEnabled}
+            >
+              {test.isPending ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : (
+                <Plug className="mr-2 size-4" />
+              )}
               Testar conexão
             </Button>
             <Select value={filtro} onValueChange={(v) => setFiltro(v as Filtro)}>
@@ -447,7 +520,11 @@ function AnotaPage() {
               </SelectContent>
             </Select>
             <Button onClick={() => sync.mutate()} disabled={sync.isPending || !syncEnabled}>
-              {sync.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <RefreshCw className="mr-2 size-4" />}
+              {sync.isPending ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 size-4" />
+              )}
               Sincronizar pedidos
             </Button>
           </>
@@ -473,7 +550,9 @@ function AnotaPage() {
 
       <Tabs defaultValue="pedidos">
         <TabsList>
-          <TabsTrigger value="pedidos">Pedidos{hojeOrders.length ? ` (${hojeOrders.length})` : ""}</TabsTrigger>
+          <TabsTrigger value="pedidos">
+            Pedidos{hojeOrders.length ? ` (${hojeOrders.length})` : ""}
+          </TabsTrigger>
           <TabsTrigger value="agendados">
             Agendados{agendadosCount ? ` (${agendadosCount})` : ""}
           </TabsTrigger>
@@ -516,8 +595,14 @@ function AnotaPage() {
                         </button>
                       </td>
                       <td className="px-4 py-3">{o.cliente ?? "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{fmtDateTime(o.pedido_em ?? o.imported_at)}</td>
-                      <td className="px-4 py-3">{o.check_status === -2 ? checkBadge(-2, getScheduledDate(o as any)) : checkBadge(o.check_status)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {fmtDateTime(o.pedido_em ?? o.imported_at)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {o.check_status === -2
+                          ? checkBadge(-2, getScheduledDate(o as any))
+                          : checkBadge(o.check_status)}
+                      </td>
                       <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
                       <td className="px-4 py-3 text-center">
                         {o.estoque_aplicado ? (
@@ -567,7 +652,9 @@ function AnotaPage() {
                           </button>
                         </td>
                         <td className="px-4 py-3">{o.cliente ?? "—"}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{scheduledDate ? fmtDateTime(scheduledDate) : "—"}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {scheduledDate ? fmtDateTime(scheduledDate) : "—"}
+                        </td>
                         <td className="px-4 py-3">{checkBadge(-2, scheduledDate)}</td>
                         <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
                       </tr>
@@ -635,7 +722,9 @@ function AnotaPage() {
                         </button>
                       </td>
                       <td className="px-4 py-3">{o.cliente ?? "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{fmtDateTime(o.pedido_em ?? o.imported_at)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {fmtDateTime(o.pedido_em ?? o.imported_at)}
+                      </td>
                       <td className="px-4 py-3">{checkBadge(o.check_status)}</td>
                       <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
                       <td className="px-4 py-3 text-center">
@@ -663,8 +752,8 @@ function AnotaPage() {
           ) : (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Vincule cada item do cardápio do Anota AI a um produto do seu sistema. A baixa de estoque só é aplicada
-                em pedidos finalizados com todos os itens mapeados.
+                Vincule cada item do cardápio do Anota AI a um produto do seu sistema. A baixa de
+                estoque só é aplicada em pedidos finalizados com todos os itens mapeados.
               </p>
               <div className="overflow-x-auto rounded-xl border border-border">
                 <table className="w-full text-sm">
@@ -728,12 +817,20 @@ function AnotaPage() {
             <div>
               <h3 className="text-base font-semibold">Notificações WhatsApp</h3>
               <p className="max-w-2xl text-sm text-muted-foreground">
-                Envia automaticamente para clientes (e motoboys vinculados) quando os pedidos do Anota entram ou ficam
-                prontos. Requer o Waha configurado nas variáveis de ambiente.
+                Envia automaticamente para clientes (e motoboys vinculados) quando os pedidos do
+                Anota entram ou ficam prontos. Requer o Waha configurado nas variáveis de ambiente.
               </p>
             </div>
-            <Button variant="outline" onClick={() => testWhats.mutate()} disabled={testWhats.isPending}>
-              {testWhats.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Plug className="mr-2 size-4" />}
+            <Button
+              variant="outline"
+              onClick={() => testWhats.mutate()}
+              disabled={testWhats.isPending}
+            >
+              {testWhats.isPending ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : (
+                <Plug className="mr-2 size-4" />
+              )}
               Testar conexão
             </Button>
           </div>
@@ -792,7 +889,11 @@ function AnotaPage() {
                     onClick={() => whatsQr.mutate()}
                     disabled={whatsQr.isPending}
                   >
-                    {whatsQr.isPending ? <Loader2 className="mr-1 size-4 animate-spin" /> : <QrCode className="mr-1 size-4" />}
+                    {whatsQr.isPending ? (
+                      <Loader2 className="mr-1 size-4 animate-spin" />
+                    ) : (
+                      <QrCode className="mr-1 size-4" />
+                    )}
                     Gerar QR Code
                   </Button>
                   <Button
@@ -806,8 +907,9 @@ function AnotaPage() {
                   </Button>
                 </div>
                 <p className="max-w-md text-center text-xs text-muted-foreground">
-                  No celular, abra o WhatsApp → Configurações → Aparelhos conectados → Conectar um aparelho e escaneie
-                  o QR Code. O número conectado será o remetente das notificações.
+                  No celular, abra o WhatsApp → Configurações → Aparelhos conectados → Conectar um
+                  aparelho e escaneie o QR Code. O número conectado será o remetente das
+                  notificações.
                 </p>
                 {whatsStatus.data && !whatsStatus.data.ok && (
                   <p className="max-w-md text-center text-xs font-medium text-destructive">
@@ -843,7 +945,9 @@ function AnotaPage() {
                 <Label className="text-xs">Mensagem — pedido recebido</Label>
                 <Textarea
                   value={whatsDraft.template_pedido_recebido ?? ""}
-                  onChange={(e) => setWhatsDraft((s) => ({ ...s, template_pedido_recebido: e.target.value }))}
+                  onChange={(e) =>
+                    setWhatsDraft((s) => ({ ...s, template_pedido_recebido: e.target.value }))
+                  }
                   rows={3}
                 />
                 <p className="text-xs text-muted-foreground">
@@ -855,7 +959,9 @@ function AnotaPage() {
                 <Label className="text-xs">Mensagem — pedido pronto (cliente)</Label>
                 <Textarea
                   value={whatsDraft.template_pedido_pronto ?? ""}
-                  onChange={(e) => setWhatsDraft((s) => ({ ...s, template_pedido_pronto: e.target.value }))}
+                  onChange={(e) =>
+                    setWhatsDraft((s) => ({ ...s, template_pedido_pronto: e.target.value }))
+                  }
                   rows={2}
                 />
                 <p className="text-xs text-muted-foreground">
@@ -867,20 +973,107 @@ function AnotaPage() {
                 <Label className="text-xs">Mensagem padrão do motoboy</Label>
                 <Textarea
                   value={whatsDraft.template_motoboy_pronto ?? ""}
-                  onChange={(e) => setWhatsDraft((s) => ({ ...s, template_motoboy_pronto: e.target.value }))}
+                  onChange={(e) =>
+                    setWhatsDraft((s) => ({ ...s, template_motoboy_pronto: e.target.value }))
+                  }
                   rows={2}
                 />
                 <p className="text-xs text-muted-foreground">
                   Variáveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Endereço de entrega, itens do pedido e link do Google Maps são anexados automaticamente no fim da mensagem.
+                  Endereço de entrega, itens do pedido e link do Google Maps são anexados
+                  automaticamente no fim da mensagem.
                 </p>
+              </div>
+
+              <div className="space-y-3 border-t border-border pt-3">
+                <div>
+                  <Label className="text-sm font-medium">Mensagens por status do pedido</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Quando um pedido muda para o status configurado, a mensagem é enviada
+                    automaticamente ao cliente (com anti-duplicação por status). Aplica-se a todos
+                    os pedidos.
+                  </p>
+                </div>
+
+                {statusRules.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Nenhuma regra configurada. Clique em "Adicionar regra" para criar uma.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {statusRules.map((rule, i) => (
+                      <div key={i} className="space-y-2 rounded-lg border border-border p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label className="text-xs">Status do pedido</Label>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="size-7 p-0"
+                            onClick={() => updateStatusRules(statusRules.filter((_, j) => j !== i))}
+                            title="Remover regra"
+                          >
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        </div>
+                        <Select
+                          value={String(rule.status)}
+                          onValueChange={(v) =>
+                            updateStatusRules(
+                              statusRules.map((r, j) =>
+                                j === i ? { ...r, status: Number(v) } : r,
+                              ),
+                            )
+                          }
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Selecionar status..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {STATUS_MESSAGE_OPTIONS.map((opt) => (
+                              <SelectItem key={opt.value} value={String(opt.value)}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Textarea
+                          value={rule.message}
+                          onChange={(e) =>
+                            updateStatusRules(
+                              statusRules.map((r, j) =>
+                                j === i ? { ...r, message: e.target.value } : r,
+                              ),
+                            )
+                          }
+                          rows={2}
+                          placeholder="Mensagem enviada quando o pedido entrar neste status..."
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => updateStatusRules([...statusRules, { status: 0, message: "" }])}
+                >
+                  <Plus className="mr-1 size-4" /> Adicionar regra
+                </Button>
               </div>
 
               <div className="flex justify-end">
                 <Button onClick={() => saveWhats.mutate()} disabled={saveWhats.isPending}>
-                  {saveWhats.isPending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
+                  {saveWhats.isPending ? (
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                  ) : (
+                    <Save className="mr-2 size-4" />
+                  )}
                   Salvar configurações
                 </Button>
               </div>
@@ -900,7 +1093,13 @@ function AnotaPage() {
                         <div className="flex items-center gap-2">
                           <span className="font-medium capitalize">{l.tipo ?? "envio"}</span>
                           <Badge
-                            variant={l.status === "enviado" ? "default" : l.status === "erro" ? "destructive" : "outline"}
+                            variant={
+                              l.status === "enviado"
+                                ? "default"
+                                : l.status === "erro"
+                                  ? "destructive"
+                                  : "outline"
+                            }
                           >
                             {l.status}
                           </Badge>
@@ -937,7 +1136,9 @@ function AnotaPage() {
                 </div>
                 <div>
                   <span className="text-muted-foreground">Data:</span>{" "}
-                  <span className="font-medium">{fmtDateTime(selectedOrder.pedido_em ?? selectedOrder.imported_at)}</span>
+                  <span className="font-medium">
+                    {fmtDateTime(selectedOrder.pedido_em ?? selectedOrder.imported_at)}
+                  </span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Status:</span>{" "}
@@ -951,7 +1152,9 @@ function AnotaPage() {
               <div className="border-t pt-3">
                 <h4 className="mb-2 text-sm font-medium">Itens do pedido</h4>
                 {orderItems.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Nenhum item encontrado. Sincronize novamente os pedidos.</p>
+                  <p className="text-sm text-muted-foreground">
+                    Nenhum item encontrado. Sincronize novamente os pedidos.
+                  </p>
                 ) : (
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -995,10 +1198,20 @@ function AnotaPage() {
                   </Select>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" onClick={() => sendMsg.mutate("recebido")} disabled={sendMsg.isPending}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => sendMsg.mutate("recebido")}
+                    disabled={sendMsg.isPending}
+                  >
                     <Send className="mr-1 size-3" /> Confirmar pedido
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => sendMsg.mutate("pronto")} disabled={sendMsg.isPending}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => sendMsg.mutate("pronto")}
+                    disabled={sendMsg.isPending}
+                  >
                     <Send className="mr-1 size-3" /> Pedido pronto
                   </Button>
                   <Button

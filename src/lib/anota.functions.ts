@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { notifyOrderWhatsAppLogic } from "@/lib/whatsapp.functions";
+import { notifyOrderWhatsAppLogic, notifyStatusMessageWhatsApp } from "@/lib/whatsapp.functions";
 
 /**
  * Integração Anota AI (somente entrada).
@@ -37,7 +37,9 @@ let tokenCache: CachedToken | null = null;
  * Tenta múltiplos endpoints e formatos de payload por defensividade.
  * O resultado é cacheado até ~5min antes do vencimento declarado.
  */
-async function getAnotaAccessToken(): Promise<{ token: string } | { error: string; status: number }> {
+async function getAnotaAccessToken(): Promise<
+  { token: string } | { error: string; status: number }
+> {
   // Fallback: token cru salvo em ANOTA_AI_TOKEN (compat com integração anterior)
   const legacy = process.env.ANOTA_AI_TOKEN;
   const clientId = process.env.ANOTA_AI_CLIENT_ID;
@@ -45,7 +47,10 @@ async function getAnotaAccessToken(): Promise<{ token: string } | { error: strin
 
   if (!clientId || !clientSecret) {
     if (legacy) return { token: legacy };
-    return { error: "Credenciais do Anota AI não configuradas (client_id / client_secret).", status: 0 };
+    return {
+      error: "Credenciais do Anota AI não configuradas (client_id / client_secret).",
+      status: 0,
+    };
   }
 
   if (tokenCache && tokenCache.expiresAt > Date.now()) {
@@ -53,10 +58,27 @@ async function getAnotaAccessToken(): Promise<{ token: string } | { error: strin
   }
 
   const payloads: { body: string; contentType: string }[] = [
-    { body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, grant_type: "client_credentials" }), contentType: "application/json" },
+    {
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "client_credentials",
+      }),
+      contentType: "application/json",
+    },
     { body: JSON.stringify({ clientId, clientSecret }), contentType: "application/json" },
-    { body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }), contentType: "application/json" },
-    { body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: "client_credentials" }).toString(), contentType: "application/x-www-form-urlencoded" },
+    {
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+      contentType: "application/json",
+    },
+    {
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "client_credentials",
+      }).toString(),
+      contentType: "application/x-www-form-urlencoded",
+    },
   ];
 
   let lastStatus = 0;
@@ -79,7 +101,11 @@ async function getAnotaAccessToken(): Promise<{ token: string } | { error: strin
         lastText = text;
         if (!res.ok) continue;
         let json: unknown = null;
-        try { json = JSON.parse(text); } catch { continue; }
+        try {
+          json = JSON.parse(text);
+        } catch {
+          continue;
+        }
         const root = asRecord(json);
         if (!root) continue;
         const info = asRecord(root.info) ?? root;
@@ -91,7 +117,8 @@ async function getAnotaAccessToken(): Promise<{ token: string } | { error: strin
           (typeof root.token === "string" && root.token) ||
           null;
         if (!token) continue;
-        const expiresIn = firstNumber(info as JsonRecord, ["expires_in", "expiresIn", "expires"]) ?? 3600;
+        const expiresIn =
+          firstNumber(info as JsonRecord, ["expires_in", "expiresIn", "expires"]) ?? 3600;
         tokenCache = { token, expiresAt: Date.now() + Math.max(60, expiresIn - 300) * 1000 };
         return { token };
       } catch {
@@ -265,11 +292,20 @@ function cleanItemName(nome: string | null): string | null {
 /** Nomes de campos que indicam que um objeto é um contêiner
  *  (categoria/grupo/subgrupo/combo) com itens aninhados. */
 const CONTAINER_FIELDS = [
-  "subItems", "subitems", "sub_itens",
-  "items", "products", "produtos",
-  "subgroups", "subGroups", "subgrupos",
-  "combo", "comboItems", "combo_itens",
-  "options", "choices",
+  "subItems",
+  "subitems",
+  "sub_itens",
+  "items",
+  "products",
+  "produtos",
+  "subgroups",
+  "subGroups",
+  "subgrupos",
+  "combo",
+  "comboItems",
+  "combo_itens",
+  "options",
+  "choices",
 ];
 
 function extractItem(raw: unknown): ParsedItem[] {
@@ -280,15 +316,32 @@ function extractItem(raw: unknown): ParsedItem[] {
     const arr = it[key];
     if (Array.isArray(arr) && arr.length > 0) {
       const parentNome = firstString(it, ["name", "nome", "description", "title"]);
-      const parentQtd = resolveQuantidade(firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), parentNome);
+      const parentQtd = resolveQuantidade(
+        firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]),
+        parentNome,
+      );
       const result: ParsedItem[] = [];
       for (const sub of arr) {
         const s = asRecord(sub);
         if (!s) continue;
         const clean = cleanItemName(firstString(s, ["name", "nome", "description", "title"]));
-        const ref = firstString(s, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
+        const ref =
+          firstString(s, [
+            "external_id",
+            "externalId",
+            "externalCode",
+            "code",
+            "product_id",
+            "productId",
+            "id",
+            "_id",
+          ]) ?? clean;
         const nome = firstString(s, ["name", "nome", "description", "title"]);
-        const quantidade = resolveQuantidade(firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome) * parentQtd;
+        const quantidade =
+          resolveQuantidade(
+            firstNumber(s, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]),
+            nome,
+          ) * parentQtd;
         if (!ref) continue;
         result.push({ ref, nome, quantidade });
       }
@@ -297,10 +350,23 @@ function extractItem(raw: unknown): ParsedItem[] {
   }
   // Item plano (sem filhos) — extrai diretamente
   const clean = cleanItemName(firstString(it, ["name", "nome", "description", "title"]));
-  const ref = firstString(it, ["external_id", "externalId", "externalCode", "code", "product_id", "productId", "id", "_id"]) ?? clean;
+  const ref =
+    firstString(it, [
+      "external_id",
+      "externalId",
+      "externalCode",
+      "code",
+      "product_id",
+      "productId",
+      "id",
+      "_id",
+    ]) ?? clean;
   if (!ref) return [];
   const nome = firstString(it, ["name", "nome", "description", "title"]);
-  const quantidade = resolveQuantidade(firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]), nome);
+  const quantidade = resolveQuantidade(
+    firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]),
+    nome,
+  );
   return [{ ref, nome, quantidade }];
 }
 
@@ -325,7 +391,9 @@ function extractItems(o: JsonRecord): ParsedItem[] {
         for (const item of items) accum(item.ref, item.nome, item.quantidade);
         const obj = asRecord(el);
         if (obj) {
-          const hasContainer = CONTAINER_FIELDS.some(k => Array.isArray(obj[k]) && obj[k].length > 0);
+          const hasContainer = CONTAINER_FIELDS.some(
+            (k) => Array.isArray(obj[k]) && obj[k].length > 0,
+          );
           if (!hasContainer) {
             for (const key of Object.keys(obj)) {
               if (key === "payments" || key === "additionalFees") continue;
@@ -366,10 +434,19 @@ function parseOrder(o: JsonRecord): ParsedOrder | null {
     firstString(o, ["client_name", "customer_name", "name", "nome"]) ??
     firstString(asRecord(o.client) ?? {}, ["name", "nome"]) ??
     firstString(asRecord(o.customer) ?? {}, ["name", "nome"]);
-  const pedidoEm = firstString(o, ["created_at", "createdAt", "date_created", "date", "created", "data"]);
+  const pedidoEm = firstString(o, [
+    "created_at",
+    "createdAt",
+    "date_created",
+    "date",
+    "created",
+    "data",
+  ]);
 
   const items = extractItems(o);
-  let total = firstNumber(o, ["total", "total_price", "totalPrice", "price", "value", "valor", "amount"]) ?? 0;
+  let total =
+    firstNumber(o, ["total", "total_price", "totalPrice", "price", "value", "valor", "amount"]) ??
+    0;
   if (!total && items.length) {
     // fallback: soma dos itens (quando houver preço por item no payload)
     total = 0;
@@ -378,7 +455,12 @@ function parseOrder(o: JsonRecord): ParsedOrder | null {
   return { externalId, numero, check, total, cliente, pedidoEm, items, raw: o };
 }
 
-async function fetchJson(url: string, token: string, method: "GET" | "POST" = "GET", pageId?: string): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+async function fetchJson(
+  url: string,
+  token: string,
+  method: "GET" | "POST" = "GET",
+  pageId?: string,
+): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
   const res = await fetch(url, { method, headers: anotaHeaders(token, pageId) });
   const text = await res.text();
   let json: unknown = null;
@@ -400,7 +482,12 @@ async function discoverListPath(
   let lastText = "";
   for (const path of LIST_PATHS) {
     try {
-      const { ok, status, json, text } = await fetchJson(`${ANOTA_BASE}${path}${query}`, token, "GET", pageId);
+      const { ok, status, json, text } = await fetchJson(
+        `${ANOTA_BASE}${path}${query}`,
+        token,
+        "GET",
+        pageId,
+      );
       lastStatus = status;
       lastText = text;
       if (ok && json) {
@@ -422,7 +509,12 @@ async function discoverListPath(
 }
 
 /** Busca o detalhe completo de um pedido, tentando caminhos derivados. */
-async function fetchOrderDetail(token: string, listPath: string, id: string, pageId?: string): Promise<ParsedOrder | null> {
+async function fetchOrderDetail(
+  token: string,
+  listPath: string,
+  id: string,
+  pageId?: string,
+): Promise<ParsedOrder | null> {
   const candidates = [
     `/ping/get/${id}`,
     `${listPath}/${id}`,
@@ -466,8 +558,14 @@ async function ensureRole(context: { supabase: any; userId: string }) {
   let hasRole = false;
   for (const role of ROLES_PERMITIDAS) {
     try {
-      const { data } = await context.supabase.rpc("has_role", { _user_id: context.userId, _role: role });
-      if (data === true) { hasRole = true; break; }
+      const { data } = await context.supabase.rpc("has_role", {
+        _user_id: context.userId,
+        _role: role,
+      });
+      if (data === true) {
+        hasRole = true;
+        break;
+      }
     } catch {
       const { data: rows } = await context.supabase
         .from("user_roles")
@@ -475,12 +573,17 @@ async function ensureRole(context: { supabase: any; userId: string }) {
         .eq("user_id", context.userId)
         .eq("role", role)
         .maybeSingle();
-      if (rows) { hasRole = true; break; }
+      if (rows) {
+        hasRole = true;
+        break;
+      }
     }
   }
   if (!hasRole) {
     // Permite acesso mesmo sem role pois o usuário já está autenticado
-    console.warn(`Usuário ${context.userId} não tem role Anota AI — acesso concedido por autenticação`);
+    console.warn(
+      `Usuário ${context.userId} não tem role Anota AI — acesso concedido por autenticação`,
+    );
   }
 }
 
@@ -496,7 +599,7 @@ async function insertOrderItems(
   await supabase.from("anota_order_items").delete().eq("order_id", orderId);
   let todosMapeados = true;
   const rows = items.map((it) => {
-    const productId = mapByRef.has(it.ref) ? mapByRef.get(it.ref) ?? null : null;
+    const productId = mapByRef.has(it.ref) ? (mapByRef.get(it.ref) ?? null) : null;
     if (!productId) todosMapeados = false;
     return {
       order_id: orderId,
@@ -591,7 +694,9 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     }
 
     // Mapeamento item -> produto
-    const { data: mapRows, error: mapErr } = await supabase.from("anota_product_map").select("anota_item_ref, product_id");
+    const { data: mapRows, error: mapErr } = await supabase
+      .from("anota_product_map")
+      .select("anota_item_ref, product_id");
     if (mapErr) console.error("[syncAnotaOrders] map query error:", mapErr);
     const mapByRef = new Map<string, string | null>();
     for (const m of mapRows ?? []) {
@@ -605,9 +710,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       .select("id, external_order_id, check_status, estoque_aplicado, payload")
       .in("external_order_id", externalIds.length ? externalIds : ["__none__"]);
     if (existingErr) console.error("[syncAnotaOrders] existing query error:", existingErr);
-    const existing = new Map(
-      (existingRows ?? []).map((r) => [r.external_order_id, r] as const),
-    );
+    const existing = new Map((existingRows ?? []).map((r) => [r.external_order_id, r] as const));
 
     let importados = 0;
     let atualizados = 0;
@@ -615,6 +718,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     const finalizadosParaBaixa: string[] = []; // ids internos (anota_orders.id)
     const novosParaNotificar: string[] = []; // ids internos de pedidos novos (notificação de recebimento)
     const prontosParaNotificar: string[] = []; // ids internos que passaram para finalizado
+    const statusMudouParaNotificar: string[] = []; // ids internos que mudaram de status (mensagens configuradas por status)
 
     for (const listed of discovery.orders) {
       const prev = existing.get(listed.id);
@@ -641,10 +745,20 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           if (detail.check === 3 && prev.check_status !== 3) {
             prontosParaNotificar.push(prev.id);
           }
+          if (statusChanged) {
+            statusMudouParaNotificar.push(prev.id);
+          }
           // Só apaga movimentos antigos se o status mudou, para preservar a data original
           if (statusChanged && prev.estoque_aplicado) {
-            await supabase.from("product_movements").delete().eq("ref_order_id", prev.id).eq("destino", "Anota AI");
-            await supabase.from("anota_orders").update({ estoque_aplicado: false }).eq("id", prev.id);
+            await supabase
+              .from("product_movements")
+              .delete()
+              .eq("ref_order_id", prev.id)
+              .eq("destino", "Anota AI");
+            await supabase
+              .from("anota_orders")
+              .update({ estoque_aplicado: false })
+              .eq("id", prev.id);
           }
           // apply_anota_order_stock internamente verifica estoque_aplicado e retorna se já foi aplicado
           if (detail.check === 1 || detail.check === 3) {
@@ -654,9 +768,15 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         }
         // fallback: lista — atualiza status se mudou
         if (prev.check_status !== listed.check) {
-          const { error: updStatusErr } = await supabase.from("anota_orders").update({ check_status: listed.check }).eq("id", prev.id);
+          const { error: updStatusErr } = await supabase
+            .from("anota_orders")
+            .update({ check_status: listed.check })
+            .eq("id", prev.id);
           if (updStatusErr) console.error("[syncAnotaOrders] update status error:", updStatusErr);
-          else atualizados++;
+          else {
+            atualizados++;
+            statusMudouParaNotificar.push(prev.id);
+          }
         }
         if ((listed.check === 1 || listed.check === 3) && !prev.estoque_aplicado) {
           finalizadosParaBaixa.push(prev.id);
@@ -694,6 +814,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       } else {
         novosParaNotificar.push(inserted.id);
       }
+      statusMudouParaNotificar.push(inserted.id);
 
       if (check === 1 || check === 3) {
         finalizadosParaBaixa.push(inserted.id);
@@ -731,8 +852,15 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     for (const id of prontosParaNotificar) {
       await notifyOrderWhatsAppLogic(supabase, id, "pronto", context.userId);
     }
+    for (const id of statusMudouParaNotificar) {
+      await notifyStatusMessageWhatsApp(supabase, id);
+    }
 
-    const partes = [`${importados} novo(s)`, `${atualizados} atualizado(s)`, `${baixasAplicadas} baixa(s) de estoque`];
+    const partes = [
+      `${importados} novo(s)`,
+      `${atualizados} atualizado(s)`,
+      `${baixasAplicadas} baixa(s) de estoque`,
+    ];
     if (pendentesMapeamento) partes.push(`${pendentesMapeamento} pedido(s) aguardando mapeamento`);
 
     await supabase.from("activity_logs").insert({
@@ -785,7 +913,11 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
 
       if (upsertErr) {
         console.error("[saveAnotaMapping] upsert error:", upsertErr);
-        return { ok: false, message: `Erro ao salvar mapeamento: ${upsertErr.message}`, baixasAplicadas: 0 };
+        return {
+          ok: false,
+          message: `Erro ao salvar mapeamento: ${upsertErr.message}`,
+          baixasAplicadas: 0,
+        };
       }
 
       const { error: updateErr } = await supabase
@@ -795,7 +927,11 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
 
       if (updateErr) {
         console.error("[saveAnotaMapping] update items error:", updateErr);
-        return { ok: false, message: `Erro ao atualizar itens: ${updateErr.message}`, baixasAplicadas: 0 };
+        return {
+          ok: false,
+          message: `Erro ao atualizar itens: ${updateErr.message}`,
+          baixasAplicadas: 0,
+        };
       }
     }
 
@@ -808,19 +944,29 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
 
     if (pendentesErr) {
       console.error("[saveAnotaMapping] query pendentes error:", pendentesErr);
-      return { ok: false, message: `Erro ao buscar pedidos pendentes: ${pendentesErr.message}`, baixasAplicadas: 0 };
+      return {
+        ok: false,
+        message: `Erro ao buscar pedidos pendentes: ${pendentesErr.message}`,
+        baixasAplicadas: 0,
+      };
     }
 
     let baixasAplicadas = 0;
     for (const ord of pendentes ?? []) {
-      const { data: itens, error: itensErr } = await supabase.from("anota_order_items").select("mapeado").eq("order_id", ord.id);
+      const { data: itens, error: itensErr } = await supabase
+        .from("anota_order_items")
+        .select("mapeado")
+        .eq("order_id", ord.id);
       if (itensErr) {
         console.error("[saveAnotaMapping] query itens error:", itensErr);
         continue;
       }
       const temMapeado = (itens ?? []).some((i) => i.mapeado);
       if (!temMapeado) continue;
-      const { error } = await supabase.rpc("apply_anota_order_stock", { p_order: ord.id, p_user: context.userId });
+      const { error } = await supabase.rpc("apply_anota_order_stock", {
+        p_order: ord.id,
+        p_user: context.userId,
+      });
       if (!error) baixasAplicadas++;
     }
 
