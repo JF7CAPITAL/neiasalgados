@@ -146,7 +146,7 @@ async function orderItemsText(supabase: DbClient, orderId: string): Promise<stri
 async function buildMotoboyText(
   supabase: DbClient,
   order: OrderRow,
-  settings: Record<string, string>,
+  notif: WhatsAppNotification | null | undefined,
 ): Promise<string> {
   const numero = order.numero ?? order.external_order_id ?? "";
   const vars: Record<string, string> = {
@@ -154,7 +154,7 @@ async function buildMotoboyText(
     total: fmtMoney(order.total),
     cliente: order.cliente ?? "cliente",
   };
-  let text = renderTemplate(settings.template_motoboy_pronto, vars);
+  let text = renderTemplate(notif?.mensagem ?? "", vars);
 
   const block: string[] = [];
   const delivery = orderDeliveryInfo(order.payload);
@@ -173,20 +173,12 @@ async function buildMotoboyText(
 async function sendMotoboyMessage(
   supabase: DbClient,
   order: OrderRow,
-  settings: Record<string, string>,
+  notif: WhatsAppNotification | null | undefined,
   phoneM: string,
 ): Promise<boolean> {
-  const text = await buildMotoboyText(supabase, order, settings);
-  const r = await sendWahaText(phoneM, text);
-  await logWhatsApp(
-    supabase,
-    order,
-    "motoboy_pronto",
-    phoneM,
-    r.ok ? "enviado" : "erro",
-    r.message,
-    text,
-  );
+  if (!notif) return false;
+  const text = await buildMotoboyText(supabase, order, notif);
+  const r = await sendNotif(phoneM, text, notif);
   return r.ok;
 }
 
@@ -197,42 +189,29 @@ function renderTemplate(tpl: string, vars: Record<string, string>): string {
 
 const DEFAULT_SETTINGS: Record<string, string> = {
   whatsapp_enabled: "true",
-  template_pedido_recebido:
-    "Neia Salgados: recebemos seu pedido #{{numero}} no valor de R$ {{total}}. Já estamos preparando!",
-  template_pedido_pronto: "Neia Salgados: seu pedido #{{numero}} está pronto!",
-  template_motoboy_pronto:
-    "Neia Salgados: pedido #{{numero}} ({{cliente}}) está pronto para entrega.",
-  status_messages: "[]",
 };
-
-export interface StatusMessageRule {
-  status: number;
-  message: string;
-}
-
-/** Faz parse das regras "status -> mensagem" salvas como JSON. */
-export function parseStatusMessages(raw: string | undefined): StatusMessageRule[] {
-  try {
-    const arr = JSON.parse(raw ?? "[]");
-    if (Array.isArray(arr)) {
-      return arr.filter(
-        (r): r is StatusMessageRule =>
-          !!r &&
-          typeof r === "object" &&
-          typeof (r as StatusMessageRule).status === "number" &&
-          typeof (r as StatusMessageRule).message === "string",
-      );
-    }
-  } catch {
-    // JSON inválido — retorna vazio
-  }
-  return [];
-}
 
 export const WHATSAPP_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DbClient = any;
+
+/** Identificadores fixos das notificações automáticas (além das de status). */
+export const FIXED_NOTIFICATION_REGRAS = [
+  "pedido_recebido",
+  "pedido_pronto",
+  "motoboy",
+] as const;
+
+export interface WhatsAppNotification {
+  id: string;
+  regra: string;
+  titulo: string;
+  mensagem: string;
+  status: number | null;
+  imagem_url: string | null;
+  ativo: boolean;
+}
 
 async function loadSettings(supabase: DbClient): Promise<Record<string, string>> {
   const { data, error } = await supabase.from("whatsapp_settings").select("key, value");
@@ -245,28 +224,22 @@ async function loadSettings(supabase: DbClient): Promise<Record<string, string>>
   return map;
 }
 
-async function logWhatsApp(
-  supabase: DbClient,
-  order: { id: string; numero?: string | null; external_order_id?: string | null },
-  tipo: string,
-  destino: string | null,
-  status: string,
-  error?: string | null,
-  mensagem?: string | null,
-) {
-  try {
-    await supabase.from("whatsapp_logs").insert({
-      ref_type: "anota_order",
-      ref_id: order.id,
-      destino,
-      tipo,
-      mensagem: mensagem ?? null,
-      status,
-      error: error ?? null,
-    });
-  } catch (e) {
-    console.error("[whatsapp] log insert error:", e);
+/** Carrega todas as notificações automáticas da tabela dedicada. */
+async function loadNotifications(supabase: DbClient): Promise<WhatsAppNotification[]> {
+  const { data, error } = await supabase
+    .from("whatsapp_notifications")
+    .select("*")
+    .order("regra");
+  if (error) {
+    console.error("[whatsapp] loadNotifications error:", error.message);
+    return [];
   }
+  return (data ?? []) as WhatsAppNotification[];
+}
+
+/** Retorna a regra `status_<N>` para um status do pedido. */
+export function statusRuleRegra(status: number): string {
+  return `status_${status}`;
 }
 
 export interface WahaSendResult {
@@ -306,8 +279,51 @@ export async function sendWahaText(to: string, text: string): Promise<WahaSendRe
 // ---------------------------------------------------------------------------
 // Core de notificação (executado no servidor)
 // ---------------------------------------------------------------------------
-
 export type NotifyType = "recebido" | "pronto" | "motoboy";
+
+/** Envia uma imagem (com legenda) via Waha usando uma URL pública do Storage. */
+export async function sendWahaImage(to: string, imageUrl: string, caption: string): Promise<WahaSendResult> {
+  const env = wahaEnv();
+  if ("error" in env) return { ok: false, message: env.error };
+  if (!env.enabled)
+    return { ok: false, message: "Notificações WhatsApp desativadas (WAHA_ENABLED=false)." };
+  const chatId = `${to}@c.us`;
+  try {
+    const res = await fetch(`${env.url}/api/sendImage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Api-Key": env.key },
+      body: JSON.stringify({
+        session: env.session,
+        chatId,
+        file: {
+          url: imageUrl,
+          mimetype: "image/jpeg",
+          filename: "notificacao.jpg",
+        },
+        caption,
+      }),
+    });
+    if (res.ok) return { ok: true, message: "Imagem enviada." };
+    const snippet = (await res.text().catch(() => "")).slice(0, 200);
+    return {
+      ok: false,
+      status: res.status,
+      message: `Falha no Waha (HTTP ${res.status}): ${snippet}`,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      message: `Erro de rede ao chamar o Waha: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+/** Envia o texto e, se houver imagem configurada, envia a imagem como legenda. */
+async function sendNotif(to: string, text: string, notif: WhatsAppNotification): Promise<WahaSendResult> {
+  const hasImage = notif.imagem_url && notif.imagem_url.trim().length > 0;
+  if (hasImage) return sendWahaImage(to, notif.imagem_url!.trim(), text);
+  return sendWahaText(to, text);
+}
 
 interface OrderRow {
   id: string;
@@ -331,20 +347,17 @@ export interface NotifyOrderResult {
 async function notifyOne(
   supabase: DbClient,
   order: OrderRow,
-  settings: Record<string, string>,
+  notif: WhatsAppNotification | null | undefined,
   destino: string | null,
-  tipo: "pedido_recebido" | "pedido_pronto" | "motoboy_pronto",
-  templateKey: keyof typeof DEFAULT_SETTINGS,
 ): Promise<boolean> {
-  if (!destino) return false;
+  if (!destino || !notif) return false;
   const numero = order.numero ?? order.external_order_id ?? "";
-  const text = renderTemplate(settings[templateKey], {
+  const text = renderTemplate(notif.mensagem, {
     numero,
     total: fmtMoney(order.total),
     cliente: order.cliente ?? "cliente",
   });
-  const r = await sendWahaText(destino, text);
-  await logWhatsApp(supabase, order, tipo, destino, r.ok ? "enviado" : "erro", r.message, text);
+  const r = await sendNotif(destino, text, notif);
   return r.ok;
 }
 
@@ -363,30 +376,17 @@ async function doNotify(
     };
   }
 
+  const notifications = await loadNotifications(supabase);
   const clientePhone = orderPhone(order.payload);
   let enviados = 0;
 
   if (tipo === "recebido") {
     if (!clientePhone) {
-      await logWhatsApp(
-        supabase,
-        order,
-        "pedido_recebido",
-        null,
-        "ignorado",
-        "Cliente sem telefone no payload",
-      );
       return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
     }
+    const notif = notifications.find((n) => n.regra === "pedido_recebido" && n.ativo);
     if (!order.whatsapp_notified_at || mode === "manual") {
-      const ok = await notifyOne(
-        supabase,
-        order,
-        settings,
-        clientePhone,
-        "pedido_recebido",
-        "template_pedido_recebido",
-      );
+      const ok = await notifyOne(supabase, order, notif, clientePhone);
       if (ok) {
         enviados++;
         await supabase
@@ -416,7 +416,8 @@ async function doNotify(
     }
     const phoneM = normalizePhone(moto.celular);
     if (!phoneM) return { ok: false, message: "Celular do motoboy inválido.", enviados: 0 };
-    const ok = await sendMotoboyMessage(supabase, order, settings, phoneM);
+    const notif = notifications.find((n) => n.regra === "motoboy" && n.ativo);
+    const ok = await sendMotoboyMessage(supabase, order, notif, phoneM);
     return {
       ok,
       message: ok ? "Motoboy notificado." : "Falha ao notificar motoboy.",
@@ -426,25 +427,11 @@ async function doNotify(
 
   // tipo === "pronto"
   if (!clientePhone) {
-    await logWhatsApp(
-      supabase,
-      order,
-      "pedido_pronto",
-      null,
-      "ignorado",
-      "Cliente sem telefone no payload",
-    );
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
   }
   if (!order.whatsapp_ready_notified_at || mode === "manual") {
-    const ok = await notifyOne(
-      supabase,
-      order,
-      settings,
-      clientePhone,
-      "pedido_pronto",
-      "template_pedido_pronto",
-    );
+    const notif = notifications.find((n) => n.regra === "pedido_pronto" && n.ativo);
+    const ok = await notifyOne(supabase, order, notif, clientePhone);
     if (ok) {
       enviados++;
       await supabase
@@ -462,7 +449,8 @@ async function doNotify(
     if (moto?.celular) {
       const phoneM = normalizePhone(moto.celular);
       if (phoneM) {
-        const okM = await sendMotoboyMessage(supabase, order, settings, phoneM);
+        const notif = notifications.find((n) => n.regra === "motoboy" && n.ativo);
+        const okM = await sendMotoboyMessage(supabase, order, notif, phoneM);
         if (okM) enviados++;
       }
     }
@@ -518,9 +506,10 @@ export async function notifyStatusMessageWhatsApp(
     };
   }
 
-  const rules = parseStatusMessages(settings.status_messages);
-  const rule = rules.find((r) => r.status === data.check_status);
-  if (!rule || !rule.message.trim()) {
+  const regra = statusRuleRegra(data.check_status);
+  const notifications = await loadNotifications(supabase);
+  const notif = notifications.find((n) => n.regra === regra && n.ativo);
+  if (!notif || !notif.mensagem.trim()) {
     return {
       ok: false,
       message: `Nenhuma mensagem configurada para o status ${data.check_status}.`,
@@ -541,32 +530,15 @@ export async function notifyStatusMessageWhatsApp(
 
   const clientePhone = orderPhone(data.payload);
   if (!clientePhone) {
-    await logWhatsApp(
-      supabase,
-      data,
-      `status_${data.check_status}`,
-      null,
-      "ignorado",
-      "Cliente sem telefone no payload",
-    );
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
   }
 
-  const text = renderTemplate(rule.message, {
+  const text = renderTemplate(notif.mensagem, {
     numero: data.numero ?? data.external_order_id ?? "",
     total: fmtMoney(data.total),
     cliente: data.cliente ?? "cliente",
   });
-  const r = await sendWahaText(clientePhone, text);
-  await logWhatsApp(
-    supabase,
-    data,
-    `status_${data.check_status}`,
-    clientePhone,
-    r.ok ? "enviado" : "erro",
-    r.message,
-    text,
-  );
+  const r = await sendNotif(clientePhone, text, notif);
   if (r.ok) {
     await supabase
       .from("anota_orders")
@@ -843,6 +815,68 @@ export const saveWhatsAppSettings = createServerFn({ method: "POST" })
       .upsert(upserts, { onConflict: "key" });
     if (error) return { ok: false, message: `Erro ao salvar: ${error.message}` };
     return { ok: true, message: "Configurações salvas com sucesso." };
+  });
+
+export interface GetWhatsAppNotificationsResult {
+  ok: boolean;
+  notifications: WhatsAppNotification[];
+}
+
+/** Retorna todas as notificações automáticas configuradas. */
+export const getWhatsAppNotifications = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<GetWhatsAppNotificationsResult> => {
+    await ensureRole(context);
+    const notifications = await loadNotifications(context.supabase);
+    return { ok: true, notifications };
+  });
+
+export interface SaveWhatsAppNotificationInput {
+  notifications: {
+    regra: string;
+    titulo: string;
+    mensagem: string;
+    status: number | null;
+    imagem_url: string | null;
+    ativo: boolean;
+  }[];
+}
+
+export interface SaveWhatsAppNotificationsResult {
+  ok: boolean;
+  message: string;
+}
+
+/** Salva (upsert por regra) todas as notificações automáticas. */
+export const saveWhatsAppNotifications = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: SaveWhatsAppNotificationInput) => {
+    if (!input || !Array.isArray(input.notifications)) {
+      throw new Error("Dados inválidos.");
+    }
+    for (const n of input.notifications) {
+      if (typeof n.regra !== "string" || !n.regra.trim()) throw new Error("Regra inválida.");
+      if (typeof n.mensagem !== "string" || !n.mensagem.trim()) {
+        throw new Error("Mensagem vazia em uma das notificações.");
+      }
+    }
+    return { notifications: input.notifications };
+  })
+  .handler(async ({ context, data }): Promise<SaveWhatsAppNotificationsResult> => {
+    await ensureRole(context);
+    const upserts = data.notifications.map((n) => ({
+      regra: n.regra,
+      titulo: n.titulo ?? "",
+      mensagem: n.mensagem,
+      status: n.status ?? null,
+      imagem_url: n.imagem_url ?? null,
+      ativo: n.ativo ?? true,
+    }));
+    const { error } = await context.supabase
+      .from("whatsapp_notifications")
+      .upsert(upserts, { onConflict: "regra" });
+    if (error) return { ok: false, message: `Erro ao salvar: ${error.message}` };
+    return { ok: true, message: "Notificações salvas com sucesso." };
   });
 
 export interface SetOrderMotoboyInput {

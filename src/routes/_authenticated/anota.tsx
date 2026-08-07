@@ -20,6 +20,7 @@ import {
   QrCode,
   Plus,
   Trash2,
+  ImagePlus,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -34,14 +35,16 @@ import {
   testWhatsAppConnection,
   getWhatsAppSettings,
   saveWhatsAppSettings,
+  getWhatsAppNotifications,
+  saveWhatsAppNotifications,
   setOrderMotoboy,
   sendOrderMessage,
   getWhatsAppStatus,
   getWhatsAppQrCode,
   createWhatsAppSession,
-  parseStatusMessages,
+  FIXED_NOTIFICATION_REGRAS,
   type NotifyType,
-  type StatusMessageRule,
+  type WhatsAppNotification,
 } from "@/lib/whatsapp.functions";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { PageHeader, KpiCard, EmptyState } from "@/components/erp/PageHeader";
@@ -115,6 +118,12 @@ const STATUS_MESSAGE_OPTIONS = [
   ...Object.entries(ANOTA_CHECK_LABELS).map(([k, v]) => ({ value: Number(k), label: v })),
 ];
 
+const DEFAULT_NOTIF_TITLES: Record<string, string> = {
+  pedido_recebido: "Pedido recebido",
+  pedido_pronto: "Pedido pronto",
+  motoboy: "Pedido pronto (motoboy)",
+};
+
 function AnotaPage() {
   const qc = useQueryClient();
   const [syncEnabled, setSyncEnabledState] = useState(() => isSyncEnabled());
@@ -132,6 +141,8 @@ function AnotaPage() {
   const saveMapFn = useServerFn(saveAnotaMapping);
   const whatsSettingsFn = useServerFn(getWhatsAppSettings);
   const saveWhatsSettingsFn = useServerFn(saveWhatsAppSettings);
+  const getNotifsFn = useServerFn(getWhatsAppNotifications);
+  const saveNotifsFn = useServerFn(saveWhatsAppNotifications);
   const testWhatsFn = useServerFn(testWhatsAppConnection);
   const setMotoboyFn = useServerFn(setOrderMotoboy);
   const sendMsgFn = useServerFn(sendOrderMessage);
@@ -237,20 +248,11 @@ function AnotaPage() {
     },
   });
 
-  const { data: whatsLogs = [] } = useQuery({
-    queryKey: ["whatsapp-logs"],
+  const { data: whatsNotifs = [], refetch: refetchWhatsNotifs } = useQuery({
+    queryKey: ["whatsapp-notifications"],
     queryFn: async () => {
-      try {
-        const { data, error } = await supabase
-          .from("whatsapp_logs")
-          .select("id, created_at, tipo, destino, mensagem, status, error")
-          .order("created_at", { ascending: false })
-          .limit(15);
-        if (error) return [];
-        return data;
-      } catch {
-        return [];
-      }
+      const r = await getNotifsFn();
+      return r.ok ? r.notifications : [];
     },
   });
 
@@ -263,15 +265,39 @@ function AnotaPage() {
     });
   }, [whatsSettings]);
 
-  // Regras "status -> mensagem" (JSON dentro de whatsDraft.status_messages)
-  const [statusRules, setStatusRules] = useState<StatusMessageRule[]>([]);
+  const [notifDraft, setNotifDraft] = useState<WhatsAppNotification[]>([]);
   useEffect(() => {
-    setStatusRules(parseStatusMessages(whatsDraft.status_messages));
-  }, [whatsDraft.status_messages]);
+    setNotifDraft((prev) => {
+      if (whatsNotifs.length) {
+        return whatsNotifs.map((n) => prev.find((p) => p.regra === n.regra) ?? { ...n });
+      }
+      if (prev.length) return prev;
+      return FIXED_NOTIFICATION_REGRAS.map((regra) => ({
+        id: "",
+        regra,
+        titulo: DEFAULT_NOTIF_TITLES[regra] ?? regra,
+        mensagem: "",
+        status: null,
+        imagem_url: null,
+        ativo: true,
+      }));
+    });
+  }, [whatsNotifs]);
 
-  const updateStatusRules = (rules: StatusMessageRule[]) => {
-    setStatusRules(rules);
-    setWhatsDraft((s) => ({ ...s, status_messages: JSON.stringify(rules) }));
+  const upsertNotifDraft = (next: WhatsAppNotification) => {
+    setNotifDraft((prev) => {
+      const i = prev.findIndex((n) => n.regra === next.regra);
+      if (i >= 0) {
+        const copy = [...prev];
+        copy[i] = next;
+        return copy;
+      }
+      return [...prev, next];
+    });
+  };
+
+  const removeNotifDraft = (regra: string) => {
+    setNotifDraft((prev) => prev.filter((n) => n.regra !== regra));
   };
 
   // Itens distintos por referência (para a tela de mapeamento)
@@ -411,15 +437,41 @@ function AnotaPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const saveWhats = useMutation({
-    mutationFn: () => saveWhatsSettingsFn({ data: { settings: whatsDraft } }),
+  const saveNotifs = useMutation({
+    mutationFn: async () => {
+      const settingsR = await saveWhatsSettingsFn({ data: { settings: whatsDraft } });
+      if (!settingsR.ok) return settingsR;
+      return saveNotifsFn({ data: { notifications: notifDraft } });
+    },
     onSuccess: (r) => {
       if (r.ok) toast.success(r.message);
       else toast.error(r.message);
+      qc.invalidateQueries({ queryKey: ["whatsapp-notifications"] });
       qc.invalidateQueries({ queryKey: ["whatsapp-settings"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  const uploadNotifImage = async (regra: string, file: File) => {
+    const ext = file.name.split(".").pop() ?? "jpg";
+    const path = `notificacoes/${regra}-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage
+      .from("whatsapp-notifications")
+      .upload(path, file, { contentType: file.type, upsert: true });
+    if (error) {
+      toast.error(`Falha no upload: ${error.message}`);
+      return;
+    }
+    const { data } = supabase.storage.from("whatsapp-notifications").getPublicUrl(path);
+    const cur = notifDraft.find((n) => n.regra === regra);
+    if (cur) upsertNotifDraft({ ...cur, imagem_url: data.publicUrl });
+    toast.success("Imagem enviada com sucesso.");
+  };
+
+  const removeNotifImage = (regra: string) => {
+    const cur = notifDraft.find((n) => n.regra === regra);
+    if (cur) upsertNotifDraft({ ...cur, imagem_url: null });
+  };
 
   const assignMotoboy = useMutation({
     mutationFn: (motoboyId: string | null) =>
@@ -441,7 +493,7 @@ function AnotaPage() {
       else toast.error(r.message);
       qc.invalidateQueries({ queryKey: ["anota-orders"] });
       qc.invalidateQueries({ queryKey: ["anota-order-detail"] });
-      qc.invalidateQueries({ queryKey: ["whatsapp-logs"] });
+      refetchWhatsNotifs();
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -924,197 +976,196 @@ function AnotaPage() {
             )}
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-4 rounded-xl border border-border p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <Label className="text-sm font-medium">Notificações automáticas</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Liga/desliga o envio automático durante a sincronização de pedidos.
-                  </p>
-                </div>
-                <Switch
-                  checked={whatsDraft.whatsapp_enabled === "true"}
-                  onCheckedChange={(v) =>
-                    setWhatsDraft((s) => ({ ...s, whatsapp_enabled: v ? "true" : "false" }))
-                  }
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Mensagem — pedido recebido</Label>
-                <Textarea
-                  value={whatsDraft.template_pedido_recebido ?? ""}
-                  onChange={(e) =>
-                    setWhatsDraft((s) => ({ ...s, template_pedido_recebido: e.target.value }))
-                  }
-                  rows={3}
-                />
+          <div className="space-y-4 rounded-xl border border-border p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <Label className="text-sm font-medium">Notificações automáticas</Label>
                 <p className="text-xs text-muted-foreground">
-                  Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
+                  Cada notificação tem um título, a mensagem, a regra de disparo e uma imagem
+                  opcional enviada junto com o texto. Ative/desative o envio automático durante a
+                  sincronização de pedidos.
                 </p>
               </div>
+              <Switch
+                checked={whatsDraft.whatsapp_enabled === "true"}
+                onCheckedChange={(v) =>
+                  setWhatsDraft((s) => ({ ...s, whatsapp_enabled: v ? "true" : "false" }))
+                }
+              />
+            </div>
 
-              <div className="space-y-1.5">
-                <Label className="text-xs">Mensagem — pedido pronto (cliente)</Label>
-                <Textarea
-                  value={whatsDraft.template_pedido_pronto ?? ""}
-                  onChange={(e) =>
-                    setWhatsDraft((s) => ({ ...s, template_pedido_pronto: e.target.value }))
-                  }
-                  rows={2}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
-                </p>
-              </div>
+            {notifDraft.map((notif) => {
+              const isFixed = FIXED_NOTIFICATION_REGRAS.includes(
+                notif.regra as (typeof FIXED_NOTIFICATION_REGRAS)[number],
+              );
+              const fixedTitle = DEFAULT_NOTIF_TITLES[notif.regra];
+              return (
+                <div key={notif.regra} className="space-y-3 rounded-lg border border-border p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Label className="text-xs">Ativa</Label>
+                      <Switch
+                        checked={notif.ativo}
+                        onCheckedChange={(v) => upsertNotifDraft({ ...notif, ativo: v })}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-xs">
+                        {notif.regra}
+                      </Badge>
+                      {!isFixed && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="size-7 p-0"
+                          onClick={() => removeNotifDraft(notif.regra)}
+                          title="Remover notificação"
+                        >
+                          <Trash2 className="size-4 text-destructive" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
 
-              <div className="space-y-1.5">
-                <Label className="text-xs">Mensagem padrão do motoboy</Label>
-                <Textarea
-                  value={whatsDraft.template_motoboy_pronto ?? ""}
-                  onChange={(e) =>
-                    setWhatsDraft((s) => ({ ...s, template_motoboy_pronto: e.target.value }))
-                  }
-                  rows={2}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Variáveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Endereço de entrega, itens do pedido e link do Google Maps são anexados
-                  automaticamente no fim da mensagem.
-                </p>
-              </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Título</Label>
+                    <input
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                      value={notif.titulo || fixedTitle || notif.regra}
+                      onChange={(e) => upsertNotifDraft({ ...notif, titulo: e.target.value })}
+                      placeholder={fixedTitle ?? "Nome da notificação"}
+                    />
+                  </div>
 
-              <div className="space-y-3 border-t border-border pt-3">
-                <div>
-                  <Label className="text-sm font-medium">Mensagens por status do pedido</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Quando um pedido muda para o status configurado, a mensagem é enviada
-                    automaticamente ao cliente (com anti-duplicação por status). Aplica-se a todos
-                    os pedidos.
-                  </p>
-                </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Mensagem</Label>
+                    <Textarea
+                      value={notif.mensagem}
+                      onChange={(e) => upsertNotifDraft({ ...notif, mensagem: e.target.value })}
+                      rows={3}
+                      placeholder="Texto enviado ao cliente/motoboy..."
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
+                    </p>
+                  </div>
 
-                {statusRules.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Nenhuma regra configurada. Clique em "Adicionar regra" para criar uma.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {statusRules.map((rule, i) => (
-                      <div key={i} className="space-y-2 rounded-lg border border-border p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <Label className="text-xs">Status do pedido</Label>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Regra de disparo</Label>
+                    {isFixed ? (
+                      <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                        {notif.regra === "pedido_recebido" &&
+                          "Enviada automaticamente quando um pedido entra."}
+                        {notif.regra === "pedido_pronto" &&
+                          "Enviada automaticamente quando um pedido fica pronto (cliente)."}
+                        {notif.regra === "motoboy" &&
+                          "Enviada automaticamente quando o pedido fica pronto (motoboy vinculado)."}
+                      </p>
+                    ) : (
+                      <Select
+                        value={String(notif.status ?? "")}
+                        onValueChange={(v) => {
+                          const status = Number(v);
+                          upsertNotifDraft({ ...notif, status, regra: `status_${status}` });
+                        }}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Selecionar status..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {STATUS_MESSAGE_OPTIONS.map((opt) => (
+                            <SelectItem key={opt.value} value={String(opt.value)}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Imagem (opcional)</Label>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {notif.imagem_url ? (
+                        <>
+                          <img
+                            src={notif.imagem_url}
+                            alt="Imagem da notificação"
+                            className="h-16 w-16 rounded border border-border object-cover"
+                          />
+                          <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground hover:text-foreground">
+                            <ImagePlus className="size-4" />
+                            Trocar imagem
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) uploadNotifImage(notif.regra, f);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
                           <Button
                             size="sm"
                             variant="ghost"
                             className="size-7 p-0"
-                            onClick={() => updateStatusRules(statusRules.filter((_, j) => j !== i))}
-                            title="Remover regra"
+                            onClick={() => removeNotifImage(notif.regra)}
+                            title="Remover imagem"
                           >
                             <Trash2 className="size-4 text-destructive" />
                           </Button>
-                        </div>
-                        <Select
-                          value={String(rule.status)}
-                          onValueChange={(v) =>
-                            updateStatusRules(
-                              statusRules.map((r, j) =>
-                                j === i ? { ...r, status: Number(v) } : r,
-                              ),
-                            )
-                          }
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Selecionar status..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {STATUS_MESSAGE_OPTIONS.map((opt) => (
-                              <SelectItem key={opt.value} value={String(opt.value)}>
-                                {opt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Textarea
-                          value={rule.message}
-                          onChange={(e) =>
-                            updateStatusRules(
-                              statusRules.map((r, j) =>
-                                j === i ? { ...r, message: e.target.value } : r,
-                              ),
-                            )
-                          }
-                          rows={2}
-                          placeholder="Mensagem enviada quando o pedido entrar neste status..."
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
-                        </p>
-                      </div>
-                    ))}
+                        </>
+                      ) : (
+                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input px-3 py-1.5 text-xs hover:bg-accent">
+                          <ImagePlus className="size-4" />
+                          Enviar imagem
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) uploadNotifImage(notif.regra, f);
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
                   </div>
+                </div>
+              );
+            })}
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  upsertNotifDraft({
+                    id: "",
+                    regra: `status_${STATUS_MESSAGE_OPTIONS[0]?.value ?? 0}`,
+                    titulo: "Status do pedido",
+                    mensagem: "",
+                    status: STATUS_MESSAGE_OPTIONS[0]?.value ?? 0,
+                    imagem_url: null,
+                    ativo: true,
+                  })
+                }
+              >
+                <Plus className="mr-1 size-4" /> Adicionar notificação de status
+              </Button>
+
+              <Button onClick={() => saveNotifs.mutate()} disabled={saveNotifs.isPending}>
+                {saveNotifs.isPending ? (
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                ) : (
+                  <Save className="mr-2 size-4" />
                 )}
-
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => updateStatusRules([...statusRules, { status: 0, message: "" }])}
-                >
-                  <Plus className="mr-1 size-4" /> Adicionar regra
-                </Button>
-              </div>
-
-              <div className="flex justify-end">
-                <Button onClick={() => saveWhats.mutate()} disabled={saveWhats.isPending}>
-                  {saveWhats.isPending ? (
-                    <Loader2 className="mr-2 size-4 animate-spin" />
-                  ) : (
-                    <Save className="mr-2 size-4" />
-                  )}
-                  Salvar configurações
-                </Button>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-border p-4">
-              <h4 className="mb-2 text-sm font-semibold">Últimos envios</h4>
-              {whatsLogs.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  Nenhum envio registrado ainda. As notificações aparecerão aqui.
-                </p>
-              ) : (
-                <ul className="space-y-3">
-                  {whatsLogs.map((l) => (
-                    <li key={l.id} className="flex items-start justify-between gap-3 text-xs">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium capitalize">{l.tipo ?? "envio"}</span>
-                          <Badge
-                            variant={
-                              l.status === "enviado"
-                                ? "default"
-                                : l.status === "erro"
-                                  ? "destructive"
-                                  : "outline"
-                            }
-                          >
-                            {l.status}
-                          </Badge>
-                        </div>
-                        <p className="mt-0.5 truncate text-muted-foreground">
-                          {l.mensagem ?? l.error ?? "—"}
-                        </p>
-                        <p className="text-muted-foreground">
-                          {l.destino ?? "—"} · {fmtDateTime(l.created_at)}
-                        </p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                Salvar notificações
+              </Button>
             </div>
           </div>
         </TabsContent>

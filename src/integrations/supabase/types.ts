@@ -945,6 +945,42 @@ export type Database = {
         }
         Relationships: []
       }
+      whatsapp_notifications: {
+        Row: {
+          ativo: boolean
+          created_at: string
+          id: string
+          imagem_url: string | null
+          mensagem: string
+          regra: string
+          status: number | null
+          titulo: string
+          updated_at: string
+        }
+        Insert: {
+          ativo?: boolean
+          created_at?: string
+          id?: string
+          imagem_url?: string | null
+          mensagem?: string
+          regra: string
+          status?: number | null
+          titulo?: string
+          updated_at?: string
+        }
+        Update: {
+          ativo?: boolean
+          created_at?: string
+          id?: string
+          imagem_url?: string | null
+          mensagem?: string
+          regra?: string
+          status?: number | null
+          titulo?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       whatsapp_logs: {
         Row: {
           created_at: string
