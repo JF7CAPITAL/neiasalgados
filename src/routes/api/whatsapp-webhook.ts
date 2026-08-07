@@ -97,6 +97,22 @@ async function sendReply(to: string, rule: WhatsAppKeywordRule, text: string) {
   return sendWahaText(to, text);
 }
 
+/** Grava um evento recebido no log de atividade (best-effort, nunca quebra o fluxo). */
+async function logWebhookEvent(detalhes: Record<string, unknown>) {
+  try {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    await supabaseAdmin.from("activity_logs").insert({
+      modulo: "whatsapp_webhook",
+      acao: "recebeu_evento",
+      registro_id: null,
+      user_id: null,
+      detalhes: detalhes as never,
+    });
+  } catch (e) {
+    console.error("[whatsapp-webhook] falha ao logar:", e);
+  }
+}
+
 export const Route = createFileRoute("/api/whatsapp-webhook")({
   server: {
     handlers: {
@@ -112,35 +128,44 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const event = str(root.event);
           // Processa apenas eventos de mensagem (texto) recebidos.
           if (!(event === "message" || event === "message.any" || event === "Message")) {
+            await logWebhookEvent({ event, motivo: "nao_eh_mensagem" });
             return Response.json({ ok: true, ignored: "evento não é mensagem" });
           }
 
           const payload = asRecord(root.payload) ?? root;
+          const chatId = extractFrom(payload);
           if (isFromMe(payload)) {
+            await logWebhookEvent({ event, chatId, motivo: "from_me" });
             return Response.json({ ok: true, ignored: "mensagem enviada por nós" });
           }
 
-          const chatId = extractFrom(payload);
           if (!chatId || isGroupChat(chatId)) {
+            await logWebhookEvent({ event, chatId, motivo: "grupo" });
             return Response.json({ ok: true, ignored: "sem remetente ou grupo" });
           }
 
           const phone = normalizePhone(chatId.split("@")[0]);
-          if (!phone) return Response.json({ ok: true, ignored: "telefone inválido" });
+          if (!phone) {
+            await logWebhookEvent({ event, chatId, motivo: "telefone_invalido" });
+            return Response.json({ ok: true, ignored: "telefone inválido" });
+          }
 
           const texto = extractText(payload);
           if (!texto.trim()) {
+            await logWebhookEvent({ event, chatId, phone, motivo: "sem_texto" });
             return Response.json({ ok: true, ignored: "mensagem sem texto" });
           }
 
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
           const rules = (await loadKeywordRules(supabaseAdmin)).filter((r) => r.ativo);
           if (!rules.length) {
+            await logWebhookEvent({ event, chatId, phone, texto, motivo: "sem_regra" });
             return Response.json({ ok: true, ignored: "nenhuma regra ativa" });
           }
 
           const matched = matchKeywordRules(texto, rules);
           if (!matched.length) {
+            await logWebhookEvent({ event, chatId, phone, texto, motivo: "sem_match" });
             return Response.json({ ok: true, ignored: "nenhuma palavra-chave bateu" });
           }
 
@@ -148,6 +173,7 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const now = Date.now();
           const last = lastReplyBy.get(phone) ?? 0;
           if (now - last < cooldownMs) {
+            await logWebhookEvent({ event, chatId, phone, texto, motivo: "cooldown" });
             return Response.json({ ok: true, ignored: "cooldown do remetente" });
           }
 
@@ -156,6 +182,17 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const msg = renderTemplate(rule.mensagem, { numero: "", total: "", cliente: "" });
           const r = await sendReply(phone, rule, msg);
           if (r.ok) lastReplyBy.set(phone, now);
+
+          await logWebhookEvent({
+            event,
+            chatId,
+            phone,
+            texto,
+            motivo: "enviou",
+            regra: rule.regra,
+            enviado: r.ok,
+            mensagem: r.message,
+          });
 
           return Response.json({ ok: true, enviado: r.ok, mensagem: r.message });
         } catch (e) {

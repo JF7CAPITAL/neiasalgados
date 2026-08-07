@@ -579,25 +579,36 @@ export async function notifyStatusMessageWhatsApp(
 }
 
 /**
+ * Normaliza texto para comparação: remove acentos (diacríticos) e
+ * converte para minúsculas. Faz "cardápio" e "cardapio" serem equivalentes.
+ */
+export function normalizeText(v: string): string {
+  return (v ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+/**
  * Normaliza as palavras-chave de uma regra (lista separada por vírgula,
  * ponto e vírgula ou quebra de linha).
  */
 export function keywordList(palavras: string): string[] {
   return palavras
     .split(/[,\n;]/)
-    .map((p) => p.trim().toLowerCase())
+    .map((p) => normalizeText(p).trim())
     .filter((p) => p.length > 0);
 }
 
 /**
  * Retorna as regras (ativas) cujas palavras-chave aparecem no texto alvo.
- * Comparação case-insensitive; basta QUALQUER palavra-chave bater.
+ * Comparação sem acento e case-insensitive; basta QUALQUER palavra-chave bater.
  */
 export function matchKeywordRules(
   texto: string,
   rules: WhatsAppKeywordRule[],
 ): WhatsAppKeywordRule[] {
-  const alvo = (texto ?? "").toLowerCase();
+  const alvo = normalizeText(texto ?? "");
   return rules.filter((rule) => {
     if (!rule.ativo) return false;
     const palavras = keywordList(rule.palavras_chave);
