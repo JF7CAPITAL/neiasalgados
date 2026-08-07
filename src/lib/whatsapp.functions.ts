@@ -183,7 +183,7 @@ async function sendMotoboyMessage(
 }
 
 /** Renderiza um template substituindo {{chave}}. */
-function renderTemplate(tpl: string, vars: Record<string, string>): string {
+export function renderTemplate(tpl: string, vars: Record<string, string>): string {
   return tpl.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => vars[k] ?? `{{${k}}}`);
 }
 
@@ -283,6 +283,7 @@ export async function sendWahaText(to: string, text: string): Promise<WahaSendRe
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Api-Key": env.key },
       body: JSON.stringify({ session: env.session, chatId, text }),
+      signal: AbortSignal.timeout(15_000),
     });
     if (res.ok) return { ok: true, message: "Mensagem enviada." };
     const snippet = (await res.text().catch(() => "")).slice(0, 200);
@@ -315,6 +316,7 @@ export async function sendWahaImage(to: string, imageUrl: string, caption: strin
     const res = await fetch(`${env.url}/api/sendImage`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Api-Key": env.key },
+      signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({
         session: env.session,
         chatId,
@@ -577,6 +579,34 @@ export async function notifyStatusMessageWhatsApp(
 }
 
 /**
+ * Normaliza as palavras-chave de uma regra (lista separada por vírgula,
+ * ponto e vírgula ou quebra de linha).
+ */
+export function keywordList(palavras: string): string[] {
+  return palavras
+    .split(/[,\n;]/)
+    .map((p) => p.trim().toLowerCase())
+    .filter((p) => p.length > 0);
+}
+
+/**
+ * Retorna as regras (ativas) cujas palavras-chave aparecem no texto alvo.
+ * Comparação case-insensitive; basta QUALQUER palavra-chave bater.
+ */
+export function matchKeywordRules(
+  texto: string,
+  rules: WhatsAppKeywordRule[],
+): WhatsAppKeywordRule[] {
+  const alvo = (texto ?? "").toLowerCase();
+  return rules.filter((rule) => {
+    if (!rule.ativo) return false;
+    const palavras = keywordList(rule.palavras_chave);
+    if (!palavras.length) return false;
+    return palavras.some((p) => alvo.includes(p));
+  });
+}
+
+/**
  * Verifica se alguma regra por palavras-chave corresponde ao pedido (itens,
  * cliente e payload) e envia a mensagem configurada ao cliente, com
  * anti-duplicação por regra. Chamada pelo syncAnotaOrders para pedidos novos
@@ -621,20 +651,12 @@ export async function notifyKeywordRulesWhatsApp(
   const itens = await orderItemsText(supabase, orderId);
   const alvo = [data.cliente ?? "", data.numero ?? "", itens, JSON.stringify(data.payload ?? {})]
     .filter(Boolean)
-    .join("\n")
-    .toLowerCase();
+    .join("\n");
 
   let enviados = 0;
   const novosNotificados: string[] = [...notified];
-  for (const rule of rules) {
+  for (const rule of matchKeywordRules(alvo, rules)) {
     if (novosNotificados.includes(rule.regra)) continue;
-    const palavras = rule.palavras_chave
-      .split(/[,\n;]/)
-      .map((p) => p.trim().toLowerCase())
-      .filter((p) => p.length > 0);
-    if (!palavras.length) continue;
-    const match = palavras.some((p) => alvo.includes(p));
-    if (!match) continue;
 
     const text = renderTemplate(rule.mensagem, {
       numero: data.numero ?? data.external_order_id ?? "",
