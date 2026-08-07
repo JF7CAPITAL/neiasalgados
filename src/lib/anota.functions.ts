@@ -1,7 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { notifyOrderWhatsAppLogic, notifyStatusMessageWhatsApp } from "@/lib/whatsapp.functions";
-
+import {
+  notifyOrderWhatsAppLogic,
+  notifyStatusMessageWhatsApp,
+  notifyKeywordRulesWhatsApp,
+} from "@/lib/whatsapp.functions";
 /**
  * Integração Anota AI (somente entrada).
  *
@@ -854,6 +857,9 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     }
     for (const id of statusMudouParaNotificar) {
       await notifyStatusMessageWhatsApp(supabase, id);
+    }
+    for (const id of statusMudouParaNotificar) {
+      await notifyKeywordRulesWhatsApp(supabase, id);
     }
 
     const partes = [

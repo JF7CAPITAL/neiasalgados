@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -37,6 +37,8 @@ import {
   saveWhatsAppSettings,
   getWhatsAppNotifications,
   saveWhatsAppNotifications,
+  getWhatsAppKeywordRules,
+  saveWhatsAppKeywordRules,
   setOrderMotoboy,
   sendOrderMessage,
   getWhatsAppStatus,
@@ -45,6 +47,7 @@ import {
   FIXED_NOTIFICATION_REGRAS,
   type NotifyType,
   type WhatsAppNotification,
+  type WhatsAppKeywordRule,
 } from "@/lib/whatsapp.functions";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { PageHeader, KpiCard, EmptyState } from "@/components/erp/PageHeader";
@@ -149,6 +152,8 @@ function AnotaPage() {
   const whatsStatusFn = useServerFn(getWhatsAppStatus);
   const whatsQrFn = useServerFn(getWhatsAppQrCode);
   const createSessionFn = useServerFn(createWhatsAppSession);
+  const getKeywordRulesFn = useServerFn(getWhatsAppKeywordRules);
+  const saveKeywordRulesFn = useServerFn(saveWhatsAppKeywordRules);
 
   const { data: orders = [] } = useQuery({
     queryKey: ["anota-orders"],
@@ -248,7 +253,7 @@ function AnotaPage() {
     },
   });
 
-  const { data: whatsNotifs = [], refetch: refetchWhatsNotifs } = useQuery({
+  const { data: whatsNotifs = [], isFetched: notifsFetched, refetch: refetchWhatsNotifs } = useQuery({
     queryKey: ["whatsapp-notifications"],
     queryFn: async () => {
       const r = await getNotifsFn();
@@ -266,10 +271,33 @@ function AnotaPage() {
   }, [whatsSettings]);
 
   const [notifDraft, setNotifDraft] = useState<WhatsAppNotification[]>([]);
+  // Regras editadas localmente pelo usuário (para não sobrescrever edições
+  // pendentes quando o servidor refaz o fetch).
+  const dirtyRegrasRef = useRef<Set<string>>(new Set());
+
+  const markDirty = (regra: string) => {
+    dirtyRegrasRef.current.add(regra);
+  };
+
+  const clearDirty = () => {
+    dirtyRegrasRef.current.clear();
+  };
+
   useEffect(() => {
     setNotifDraft((prev) => {
+      if (!notifsFetched) return prev;
       if (whatsNotifs.length) {
-        return whatsNotifs.map((n) => prev.find((p) => p.regra === n.regra) ?? { ...n });
+        const serverRegras = new Set(whatsNotifs.map((n) => n.regra));
+        const merged = whatsNotifs.map((n) => {
+          const local = prev.find((p) => p.regra === n.regra);
+          if (local && dirtyRegrasRef.current.has(n.regra)) return local;
+          return { ...n };
+        });
+        // Mantém itens locais que ainda não existem no servidor (regras novas)
+        for (const p of prev) {
+          if (!serverRegras.has(p.regra)) merged.push(p);
+        }
+        return merged;
       }
       if (prev.length) return prev;
       return FIXED_NOTIFICATION_REGRAS.map((regra) => ({
@@ -282,9 +310,10 @@ function AnotaPage() {
         ativo: true,
       }));
     });
-  }, [whatsNotifs]);
+  }, [whatsNotifs, notifsFetched]);
 
   const upsertNotifDraft = (next: WhatsAppNotification) => {
+    markDirty(next.regra);
     setNotifDraft((prev) => {
       const i = prev.findIndex((n) => n.regra === next.regra);
       if (i >= 0) {
@@ -297,8 +326,80 @@ function AnotaPage() {
   };
 
   const removeNotifDraft = (regra: string) => {
+    markDirty(regra);
     setNotifDraft((prev) => prev.filter((n) => n.regra !== regra));
   };
+
+  const { data: keywordRules = [], refetch: refetchKeywordRules } = useQuery({
+    queryKey: ["whatsapp-keyword-rules"],
+    queryFn: async () => {
+      const r = await getKeywordRulesFn();
+      return r.ok ? r.rules : [];
+    },
+  });
+
+  const [keywordDraft, setKeywordDraft] = useState<WhatsAppKeywordRule[]>([]);
+  useEffect(() => {
+    setKeywordDraft(keywordRules);
+  }, [keywordRules]);
+
+  const upsertKeywordRule = (next: WhatsAppKeywordRule) => {
+    setKeywordDraft((prev) => {
+      const i = prev.findIndex((r) => r.regra === next.regra);
+      if (i >= 0) {
+        const copy = [...prev];
+        copy[i] = next;
+        return copy;
+      }
+      return [...prev, next];
+    });
+  };
+
+  const removeKeywordRule = (regra: string) => {
+    setKeywordDraft((prev) => prev.filter((r) => r.regra !== regra));
+  };
+
+  const saveKeywordRules = useMutation({
+    mutationFn: async () =>
+      saveKeywordRulesFn({
+        data: { rules: keywordDraft },
+      }),
+    onSuccess: (r) => {
+      if (r.ok) toast.success(r.message);
+      else toast.error(r.message);
+      qc.invalidateQueries({ queryKey: ["whatsapp-keyword-rules"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const uploadKeywordImage = async (regra: string, file: File) => {
+    const ext = file.name.split(".").pop() ?? "jpg";
+    const path = `regras-keywords/${regra}-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage
+      .from("whatsapp-notifications")
+      .upload(path, file, { contentType: file.type, upsert: true });
+    if (error) {
+      toast.error(`Falha no upload: ${error.message}`);
+      return;
+    }
+    const { data } = supabase.storage.from("whatsapp-notifications").getPublicUrl(path);
+    const cur = keywordDraft.find((r) => r.regra === regra);
+    if (cur) upsertKeywordRule({ ...cur, imagem_url: data.publicUrl });
+    toast.success("Imagem enviada com sucesso.");
+  };
+
+  const removeKeywordImage = (regra: string) => {
+    const cur = keywordDraft.find((r) => r.regra === regra);
+    if (cur) upsertKeywordRule({ ...cur, imagem_url: null });
+  };
+
+  const slugify = (v: string) =>
+    v
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
 
   // Itens distintos por referência (para a tela de mapeamento)
   const distinctItems = useMemo(() => {
@@ -444,8 +545,10 @@ function AnotaPage() {
       return saveNotifsFn({ data: { notifications: notifDraft } });
     },
     onSuccess: (r) => {
-      if (r.ok) toast.success(r.message);
-      else toast.error(r.message);
+      if (r.ok) {
+        clearDirty();
+        toast.success(r.message);
+      } else toast.error(r.message);
       qc.invalidateQueries({ queryKey: ["whatsapp-notifications"] });
       qc.invalidateQueries({ queryKey: ["whatsapp-settings"] });
     },
@@ -613,6 +716,7 @@ function AnotaPage() {
             Mapeamento{pendentes ? ` (${pendentes})` : ""}
           </TabsTrigger>
           <TabsTrigger value="whatsapp">WhatsApp</TabsTrigger>
+          <TabsTrigger value="palavras">Palavras-chave</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pedidos" className="pt-4">
@@ -1167,6 +1271,177 @@ function AnotaPage() {
                 Salvar notificações
               </Button>
             </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="palavras" className="space-y-4 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold">Regras por palavras-chave</h3>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Quando o pedido sincronizado contiver uma das palavras-chave nos itens, no nome do
+                cliente ou no payload, a mensagem configurada é enviada automaticamente ao cliente.
+                Suporta as variáveis {"{{numero}}"}, {"{{total}}"} e {"{{cliente}}"}.
+              </p>
+            </div>
+          </div>
+
+          {keywordDraft.length === 0 ? (
+            <EmptyState
+              title="Nenhuma regra configurada"
+              description="Crie uma regra para disparar mensagens por palavras-chave."
+              icon={Filter}
+            />
+          ) : (
+            keywordDraft.map((rule) => (
+              <div key={rule.regra} className="space-y-3 rounded-lg border border-border p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs">Ativa</Label>
+                    <Switch
+                      checked={rule.ativo}
+                      onCheckedChange={(v) => upsertKeywordRule({ ...rule, ativo: v })}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs">
+                      {rule.regra}
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="size-7 p-0"
+                      onClick={() => removeKeywordRule(rule.regra)}
+                      title="Remover regra"
+                    >
+                      <Trash2 className="size-4 text-destructive" />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Nome da regra</Label>
+                  <input
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    value={rule.nome}
+                    onChange={(e) => upsertKeywordRule({ ...rule, nome: e.target.value })}
+                    placeholder="Ex.: Cliente fiel"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Palavras-chave (separadas por vírgula)</Label>
+                  <Textarea
+                    value={rule.palavras_chave}
+                    onChange={(e) =>
+                      upsertKeywordRule({ ...rule, palavras_chave: e.target.value })
+                    }
+                    rows={2}
+                    placeholder="Ex.: bolo, brigadeiro, festa"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    A regra dispara se QUALQUER palavra-chave aparecer no pedido (não diferencia
+                    maiúsculas/minúsculas).
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Mensagem</Label>
+                  <Textarea
+                    value={rule.mensagem}
+                    onChange={(e) => upsertKeywordRule({ ...rule, mensagem: e.target.value })}
+                    rows={3}
+                    placeholder="Texto enviado ao cliente quando a regra dispara..."
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Imagem (opcional)</Label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {rule.imagem_url ? (
+                      <>
+                        <img
+                          src={rule.imagem_url}
+                          alt="Imagem da regra"
+                          className="h-16 w-16 rounded border border-border object-cover"
+                        />
+                        <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground hover:text-foreground">
+                          <ImagePlus className="size-4" />
+                          Trocar imagem
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) uploadKeywordImage(rule.regra, f);
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="size-7 p-0"
+                          onClick={() => removeKeywordImage(rule.regra)}
+                          title="Remover imagem"
+                        >
+                          <Trash2 className="size-4 text-destructive" />
+                        </Button>
+                      </>
+                    ) : (
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input px-3 py-1.5 text-xs hover:bg-accent">
+                        <ImagePlus className="size-4" />
+                        Enviar imagem
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) uploadKeywordImage(rule.regra, f);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const slug = slugify("nova-regra-" + Date.now());
+                upsertKeywordRule({
+                  id: "",
+                  regra: slug,
+                  nome: "Nova regra",
+                  palavras_chave: "",
+                  mensagem: "",
+                  imagem_url: null,
+                  ativo: true,
+                });
+              }}
+            >
+              <Plus className="mr-1 size-4" /> Adicionar regra
+            </Button>
+
+            <Button
+              onClick={() => saveKeywordRules.mutate()}
+              disabled={saveKeywordRules.isPending}
+            >
+              {saveKeywordRules.isPending ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : (
+                <Save className="mr-2 size-4" />
+              )}
+              Salvar regras
+            </Button>
           </div>
         </TabsContent>
       </Tabs>

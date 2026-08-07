@@ -945,3 +945,31 @@ CREATE POLICY "Auth update whatsapp notifications" ON storage.objects
 DROP POLICY IF EXISTS "Auth delete whatsapp notifications" ON storage.objects;
 CREATE POLICY "Auth delete whatsapp notifications" ON storage.objects
   FOR DELETE TO authenticated USING (bucket_id = 'whatsapp-notifications');
+
+-- ===================================================================
+-- MIGRATION 8: Colunas de notificação em anota_orders + regras por
+-- palavras-chave (disparo customizável do WhatsApp)
+-- ===================================================================
+
+ALTER TABLE public.anota_orders
+  ADD COLUMN IF NOT EXISTS whatsapp_keywords_notified text[] NOT NULL DEFAULT '{}';
+
+CREATE TABLE public.whatsapp_keyword_rules (
+  id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  regra text NOT NULL UNIQUE,
+  nome text NOT NULL DEFAULT '',
+  palavras_chave text NOT NULL DEFAULT '',
+  mensagem text NOT NULL DEFAULT '',
+  imagem_url text,
+  ativo boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.whatsapp_keyword_rules TO authenticated;
+GRANT ALL ON public.whatsapp_keyword_rules TO service_role;
+ALTER TABLE public.whatsapp_keyword_rules ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Equipe pode gerenciar regras por palavras-chave" ON public.whatsapp_keyword_rules
+  FOR ALL TO authenticated USING (true) WITH CHECK (true);
+CREATE TRIGGER trg_whatsapp_keyword_rules_updated BEFORE UPDATE ON public.whatsapp_keyword_rules
+  FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

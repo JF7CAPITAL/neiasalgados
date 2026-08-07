@@ -213,6 +213,16 @@ export interface WhatsAppNotification {
   ativo: boolean;
 }
 
+export interface WhatsAppKeywordRule {
+  id: string;
+  regra: string;
+  nome: string;
+  palavras_chave: string;
+  mensagem: string;
+  imagem_url: string | null;
+  ativo: boolean;
+}
+
 async function loadSettings(supabase: DbClient): Promise<Record<string, string>> {
   const { data, error } = await supabase.from("whatsapp_settings").select("key, value");
   if (error) {
@@ -235,6 +245,19 @@ async function loadNotifications(supabase: DbClient): Promise<WhatsAppNotificati
     return [];
   }
   return (data ?? []) as WhatsAppNotification[];
+}
+
+/** Carrega todas as regras de disparo por palavras-chave. */
+export async function loadKeywordRules(supabase: DbClient): Promise<WhatsAppKeywordRule[]> {
+  const { data, error } = await supabase
+    .from("whatsapp_keyword_rules")
+    .select("*")
+    .order("regra");
+  if (error) {
+    console.error("[whatsapp] loadKeywordRules error:", error.message);
+    return [];
+  }
+  return (data ?? []) as WhatsAppKeywordRule[];
 }
 
 /** Retorna a regra `status_<N>` para um status do pedido. */
@@ -319,7 +342,11 @@ export async function sendWahaImage(to: string, imageUrl: string, caption: strin
 }
 
 /** Envia o texto e, se houver imagem configurada, envia a imagem como legenda. */
-async function sendNotif(to: string, text: string, notif: WhatsAppNotification): Promise<WahaSendResult> {
+async function sendNotif(
+  to: string,
+  text: string,
+  notif: Pick<WhatsAppNotification, "imagem_url">,
+): Promise<WahaSendResult> {
   const hasImage = notif.imagem_url && notif.imagem_url.trim().length > 0;
   if (hasImage) return sendWahaImage(to, notif.imagem_url!.trim(), text);
   return sendWahaText(to, text);
@@ -547,6 +574,95 @@ export async function notifyStatusMessageWhatsApp(
     return { ok: true, message: `Mensagem de status ${data.check_status} enviada.`, enviados: 1 };
   }
   return { ok: false, message: r.message, enviados: 0 };
+}
+
+/**
+ * Verifica se alguma regra por palavras-chave corresponde ao pedido (itens,
+ * cliente e payload) e envia a mensagem configurada ao cliente, com
+ * anti-duplicação por regra. Chamada pelo syncAnotaOrders para pedidos novos
+ * ou atualizados.
+ */
+export async function notifyKeywordRulesWhatsApp(
+  supabase: DbClient,
+  orderId: string,
+): Promise<NotifyOrderResult> {
+  const { data, error } = await supabase
+    .from("anota_orders")
+    .select(
+      "id, numero, external_order_id, cliente, total, check_status, payload, motoboy_id, whatsapp_notified_at, whatsapp_ready_notified_at, whatsapp_statuses_notified, whatsapp_keywords_notified",
+    )
+    .eq("id", orderId)
+    .maybeSingle();
+  if (error || !data) return { ok: false, message: "Pedido não encontrado.", enviados: 0 };
+
+  const settings = await loadSettings(supabase);
+  if (settings.whatsapp_enabled !== "true") {
+    return {
+      ok: false,
+      message: "Notificações WhatsApp estão desativadas nas configurações.",
+      enviados: 0,
+    };
+  }
+
+  const rules = (await loadKeywordRules(supabase)).filter((r) => r.ativo);
+  if (!rules.length) {
+    return { ok: false, message: "Nenhuma regra por palavra-chave ativa.", enviados: 0 };
+  }
+
+  const notified = Array.isArray(data.whatsapp_keywords_notified)
+    ? data.whatsapp_keywords_notified
+    : [];
+
+  const clientePhone = orderPhone(data.payload);
+  if (!clientePhone) {
+    return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
+  }
+
+  const itens = await orderItemsText(supabase, orderId);
+  const alvo = [data.cliente ?? "", data.numero ?? "", itens, JSON.stringify(data.payload ?? {})]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+
+  let enviados = 0;
+  const novosNotificados: string[] = [...notified];
+  for (const rule of rules) {
+    if (novosNotificados.includes(rule.regra)) continue;
+    const palavras = rule.palavras_chave
+      .split(/[,\n;]/)
+      .map((p) => p.trim().toLowerCase())
+      .filter((p) => p.length > 0);
+    if (!palavras.length) continue;
+    const match = palavras.some((p) => alvo.includes(p));
+    if (!match) continue;
+
+    const text = renderTemplate(rule.mensagem, {
+      numero: data.numero ?? data.external_order_id ?? "",
+      total: fmtMoney(data.total),
+      cliente: data.cliente ?? "cliente",
+    });
+    const r = await sendNotif(clientePhone, text, rule);
+    if (r.ok) {
+      enviados++;
+      novosNotificados.push(rule.regra);
+    }
+  }
+
+  if (novosNotificados.length > notified.length) {
+    await supabase
+      .from("anota_orders")
+      .update({ whatsapp_keywords_notified: novosNotificados })
+      .eq("id", orderId);
+  }
+
+  if (!enviados) {
+    return {
+      ok: false,
+      message: "Nenhuma palavra-chave corresponde a este pedido (ou já notificado).",
+      enviados: 0,
+    };
+  }
+  return { ok: true, message: `${enviados} regra(s) por palavra-chave disparada(s).`, enviados };
 }
 
 /** Envia manualmente (sem respeitar anti-duplicação). */
@@ -940,4 +1056,85 @@ export const sendOrderMessage = createServerFn({ method: "POST" })
       detalhes: { tipo: data.tipo, resultado: r.message, enviados: r.enviados },
     });
     return { ok: r.ok, message: r.message, enviados: r.enviados };
+  });
+
+export interface GetWhatsAppKeywordRulesResult {
+  ok: boolean;
+  rules: WhatsAppKeywordRule[];
+}
+
+/** Retorna todas as regras de disparo por palavras-chave. */
+export const getWhatsAppKeywordRules = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<GetWhatsAppKeywordRulesResult> => {
+    await ensureRole(context);
+    const rules = await loadKeywordRules(context.supabase);
+    return { ok: true, rules };
+  });
+
+export interface SaveWhatsAppKeywordRuleInput {
+  rules: {
+    regra: string;
+    nome: string;
+    palavras_chave: string;
+    mensagem: string;
+    imagem_url: string | null;
+    ativo: boolean;
+  }[];
+}
+
+export interface SaveWhatsAppKeywordRulesResult {
+  ok: boolean;
+  message: string;
+}
+
+/** Salva (upsert por regra) todas as regras por palavras-chave e remove as removidas. */
+export const saveWhatsAppKeywordRules = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: SaveWhatsAppKeywordRuleInput) => {
+    if (!input || !Array.isArray(input.rules)) {
+      throw new Error("Dados inválidos.");
+    }
+    for (const r of input.rules) {
+      if (typeof r.regra !== "string" || !r.regra.trim()) throw new Error("Regra inválida.");
+      if (typeof r.palavras_chave !== "string" || !r.palavras_chave.trim()) {
+        throw new Error("Informe ao menos uma palavra-chave em cada regra.");
+      }
+      if (typeof r.mensagem !== "string" || !r.mensagem.trim()) {
+        throw new Error("Mensagem vazia em uma das regras.");
+      }
+    }
+    return { rules: input.rules };
+  })
+  .handler(async ({ context, data }): Promise<SaveWhatsAppKeywordRulesResult> => {
+    await ensureRole(context);
+    const upserts = data.rules.map((r) => ({
+      regra: r.regra,
+      nome: r.nome ?? "",
+      palavras_chave: r.palavras_chave,
+      mensagem: r.mensagem,
+      imagem_url: r.imagem_url ?? null,
+      ativo: r.ativo ?? true,
+    }));
+    const { error } = await context.supabase
+      .from("whatsapp_keyword_rules")
+      .upsert(upserts, { onConflict: "regra" });
+    if (error) return { ok: false, message: `Erro ao salvar: ${error.message}` };
+
+    const { data: existentes, error: listErr } = await context.supabase
+      .from("whatsapp_keyword_rules")
+      .select("regra");
+    if (!listErr && existentes) {
+      const mantidas = new Set(data.rules.map((r) => r.regra));
+      const aRemover = existentes
+        .filter((e) => !mantidas.has(e.regra))
+        .map((e) => e.regra);
+      if (aRemover.length) {
+        await context.supabase
+          .from("whatsapp_keyword_rules")
+          .delete()
+          .in("regra", aRemover);
+      }
+    }
+    return { ok: true, message: "Regras por palavra-chave salvas com sucesso." };
   });
