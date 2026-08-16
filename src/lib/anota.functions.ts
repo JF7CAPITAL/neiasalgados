@@ -292,6 +292,30 @@ function cleanItemName(nome: string | null): string | null {
   return n;
 }
 
+/** Data/hora em que o pedido agendado deve entrar em produção.
+ *  Mesma lógica da tela: payload.preparationStartDateTime ou payload.schedule_order.date. */
+function getScheduledDateTime(payload: unknown): Date | null {
+  const root = asRecord(payload);
+  if (!root) return null;
+  const schedule = asRecord(root.schedule_order);
+  const raw =
+    (typeof root.preparationStartDateTime === "string" && root.preparationStartDateTime.trim()) ||
+    (schedule && typeof schedule.date === "string" && schedule.date.trim()) ||
+    null;
+  if (!raw) return null;
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Se o pedido ainda aparece como agendado (-2) no Anota mas o horário agendado
+ *  já venceu, o ERP promove para produção (1) independentemente da sincronização. */
+function effectiveCheckStatus(payload: unknown, check: number): number {
+  if (check !== -2) return check;
+  const dt = getScheduledDateTime(payload);
+  if (dt && dt.getTime() <= Date.now()) return 1;
+  return check;
+}
+
 /** Nomes de campos que indicam que um objeto é um contêiner
  *  (categoria/grupo/subgrupo/combo) com itens aninhados. */
 const CONTAINER_FIELDS = [
@@ -651,6 +675,62 @@ export const testAnotaConnection = createServerFn({ method: "POST" })
     };
   });
 
+/** Promove para produção (1) os pedidos agendados (-2) cujo horário já venceu,
+ *  sem depender da API do Anota. Dispara as notificações de status/palavras-chave. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function promoteExpiredScheduledOrders(supabase: any): Promise<number> {
+  const { data: agendados, error } = await supabase
+    .from("anota_orders")
+    .select("id, payload")
+    .eq("check_status", -2);
+  if (error) {
+    console.error("[promoteExpiredScheduledOrders] query error:", error);
+    return 0;
+  }
+
+  const agora = Date.now();
+  let promovidos = 0;
+  for (const o of agendados ?? []) {
+    const dt = getScheduledDateTime(o.payload);
+    if (!dt || dt.getTime() > agora) continue;
+    const { error: updErr } = await supabase
+      .from("anota_orders")
+      .update({ check_status: 1 })
+      .eq("id", o.id)
+      .eq("check_status", -2);
+    if (updErr) {
+      console.error("[promoteExpiredScheduledOrders] update error:", updErr);
+      continue;
+    }
+    promovidos++;
+    await notifyStatusMessageWhatsApp(supabase, o.id);
+    await notifyKeywordRulesWhatsApp(supabase, o.id);
+  }
+  return promovidos;
+}
+
+export interface PromoteScheduledResult {
+  ok: boolean;
+  message: string;
+  promovidos: number;
+}
+
+/** Server function: o próprio ERP move os agendados vencidos para produção. */
+export const promoteScheduledAnotaOrders = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<PromoteScheduledResult> => {
+    await ensureRole(context);
+    const promovidos = await promoteExpiredScheduledOrders(context.supabase);
+    return {
+      ok: true,
+      message:
+        promovidos > 0
+          ? `${promovidos} pedido(s) agendado(s) promovido(s) para produção.`
+          : "Nenhum pedido agendado venceu ainda.",
+      promovidos,
+    };
+  });
+
 export interface AnotaSyncResult {
   ok: boolean;
   message: string;
@@ -683,6 +763,10 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     const pageId = process.env.ANOTA_AI_STORE_ID;
 
     const supabase = context.supabase;
+
+    // O ERP promove os agendados vencidos para produção antes de sincronizar,
+    // assim não depende do Anota para refletir o status.
+    await promoteExpiredScheduledOrders(supabase);
 
     const discovery = await discoverListPath(token, statusQuery(data.filtro), pageId);
     if ("error" in discovery) {
@@ -730,12 +814,14 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         // Sempre busca o detalhe atualizado para garantir itens/quantidades corretas
         const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
         if (detail) {
-          const statusChanged = prev.check_status !== detail.check;
+          // Se o Anota ainda reporta agendado (-2) mas o horário já venceu, mantém produção (1)
+          const newCheck = effectiveCheckStatus(detail.raw, detail.check);
+          const statusChanged = prev.check_status !== newCheck;
           const { error: updErr } = await supabase
             .from("anota_orders")
             .update({
               numero: detail.numero,
-              check_status: detail.check,
+              check_status: newCheck,
               total: detail.total,
               cliente: detail.cliente,
               pedido_em: detail.pedidoEm,
@@ -764,16 +850,17 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
               .eq("id", prev.id);
           }
           // apply_anota_order_stock internamente verifica estoque_aplicado e retorna se já foi aplicado
-          if (detail.check === 1 || detail.check === 3) {
+          if (newCheck === 1 || newCheck === 3) {
             finalizadosParaBaixa.push(prev.id);
           }
           continue;
         }
         // fallback: lista — atualiza status se mudou
-        if (prev.check_status !== listed.check) {
+        const fallbackCheck = effectiveCheckStatus(prev.payload, listed.check);
+        if (prev.check_status !== fallbackCheck) {
           const { error: updStatusErr } = await supabase
             .from("anota_orders")
-            .update({ check_status: listed.check })
+            .update({ check_status: fallbackCheck })
             .eq("id", prev.id);
           if (updStatusErr) console.error("[syncAnotaOrders] update status error:", updStatusErr);
           else {
@@ -781,7 +868,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
             statusMudouParaNotificar.push(prev.id);
           }
         }
-        if ((listed.check === 1 || listed.check === 3) && !prev.estoque_aplicado) {
+        if ((fallbackCheck === 1 || fallbackCheck === 3) && !prev.estoque_aplicado) {
           finalizadosParaBaixa.push(prev.id);
         }
         continue;
@@ -789,7 +876,10 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
 
       // Novo pedido — busca detalhe
       const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
-      const check = detail?.check ?? listed.check;
+      const check = effectiveCheckStatus(
+        detail?.raw ?? null,
+        detail?.check ?? listed.check,
+      );
 
       const { data: inserted, error: insErr } = await supabase
         .from("anota_orders")
