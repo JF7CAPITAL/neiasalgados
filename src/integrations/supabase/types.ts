@@ -1056,6 +1056,30 @@ export type Database = {
         }
         Relationships: []
       }
+      whatsapp_processed_messages: {
+        Row: {
+          created_at: string
+          id: string
+          message_id: string
+          phone: string | null
+          regra: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          message_id: string
+          phone?: string | null
+          regra?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          message_id?: string
+          phone?: string | null
+          regra?: string | null
+        }
+        Relationships: []
+      }
       whatsapp_settings: {
         Row: {
           id: string

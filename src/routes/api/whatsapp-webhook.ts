@@ -48,6 +48,23 @@ function extractText(root: Json): string {
   return "";
 }
 
+/**
+ * Extrai o id único da mensagem recebida (ex.: "false_5511...@c.us_<hash>").
+ * O Waha entrega o MESMO id quando repete o mesmo evento (bug GOWS),
+ * então ele serve como chave de deduplicação.
+ */
+function extractMessageId(root: Json): string {
+  const payload = asRecord(root.payload);
+  const message = asRecord(payload?.message) ?? asRecord(root.message);
+  const candidates = [
+    str(message?.id),
+    str(message?.messageId),
+    str(payload?.id),
+    str(root.messageId),
+  ];
+  return candidates.find((c) => c.length > 0) ?? "";
+}
+
 /** Extrai o chatId do remetente (ex.: "5511999999999@c.us"). */
 function extractFrom(root: Json): string {
   if (str(root.from)) return str(root.from);
@@ -101,7 +118,11 @@ async function sendReply(to: string, rule: WhatsAppKeywordRule, text: string) {
 }
 
 /** Grava um evento recebido no log de atividade (best-effort, nunca quebra o fluxo). */
-async function logWebhookEvent(detalhes: Record<string, unknown>) {
+async function logWebhookEvent(
+  detalhes: Record<string, unknown>,
+  wahaRequestId = "",
+  wahaTimestamp = "",
+) {
   try {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     await supabaseAdmin.from("activity_logs").insert({
@@ -109,7 +130,11 @@ async function logWebhookEvent(detalhes: Record<string, unknown>) {
       acao: "recebeu_evento",
       registro_id: null,
       user_id: null,
-      detalhes: detalhes as never,
+      detalhes: {
+        ...detalhes,
+        ...(wahaRequestId ? { waha_request_id: wahaRequestId } : {}),
+        ...(wahaTimestamp ? { waha_timestamp: wahaTimestamp } : {}),
+      } as never,
     });
   } catch (e) {
     console.error("[whatsapp-webhook] falha ao logar:", e);
@@ -124,6 +149,12 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const raw = await request.text();
           if (!raw.trim()) return Response.json({ ok: false, error: "corpo vazio" });
 
+          // Headers de diagnóstico do Waha: id único por entrega do webhook.
+          const wahaRequestId = request.headers.get("x-webhook-request-id") ?? "";
+          const wahaTimestamp = request.headers.get("x-webhook-timestamp") ?? "";
+          const log = (detalhes: Record<string, unknown>) =>
+            logWebhookEvent(detalhes, wahaRequestId, wahaTimestamp);
+
           const body: unknown = JSON.parse(raw);
           const root = asRecord(body);
           if (!root) return Response.json({ ok: false, error: "payload inválido" });
@@ -131,52 +162,79 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const event = str(root.event);
           // Processa apenas eventos de mensagem (texto) recebidos.
           if (!(event === "message" || event === "message.any" || event === "Message")) {
-            await logWebhookEvent({ event, motivo: "nao_eh_mensagem" });
+            await log({ event, motivo: "nao_eh_mensagem" });
             return Response.json({ ok: true, ignored: "evento não é mensagem" });
           }
 
           const payload = asRecord(root.payload) ?? root;
           const chatId = extractFrom(payload);
           if (isFromMe(payload)) {
-            await logWebhookEvent({ event, chatId, motivo: "from_me" });
+            await log({ event, chatId, motivo: "from_me" });
             return Response.json({ ok: true, ignored: "mensagem enviada por nós" });
           }
 
           if (!chatId || isGroupChat(chatId)) {
-            await logWebhookEvent({ event, chatId, motivo: "grupo" });
+            await log({ event, chatId, motivo: "grupo" });
             return Response.json({ ok: true, ignored: "sem remetente ou grupo" });
           }
 
           const phone = normalizePhone(chatId.split("@")[0]);
           if (!phone) {
-            await logWebhookEvent({ event, chatId, motivo: "telefone_invalido" });
+            await log({ event, chatId, motivo: "telefone_invalido" });
             return Response.json({ ok: true, ignored: "telefone inválido" });
           }
 
           const texto = extractText(payload);
           if (!texto.trim()) {
-            await logWebhookEvent({ event, chatId, phone, motivo: "sem_texto" });
+            await log({ event, chatId, phone, motivo: "sem_texto" });
             return Response.json({ ok: true, ignored: "mensagem sem texto" });
           }
 
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
           const rules = (await loadKeywordRules(supabaseAdmin)).filter((r) => r.ativo);
           if (!rules.length) {
-            await logWebhookEvent({ event, chatId, phone, texto, motivo: "sem_regra" });
+            await log({ event, chatId, phone, texto, motivo: "sem_regra" });
             return Response.json({ ok: true, ignored: "nenhuma regra ativa" });
           }
 
           const matched = matchKeywordRules(texto, rules);
           if (!matched.length) {
-            await logWebhookEvent({ event, chatId, phone, texto, motivo: "sem_match" });
+            await log({ event, chatId, phone, texto, motivo: "sem_match" });
             return Response.json({ ok: true, ignored: "nenhuma palavra-chave bateu" });
+          }
+
+          // Deduplicação por id único da mensagem: o Waha (engine GOWS) entrega
+          // o MESMO evento 2x (bug conhecido). Reivindica o id atomicamente;
+          // se já existir, a segunda entrega é ignorada sem enviar resposta.
+          const messageId = extractMessageId(root);
+          if (messageId) {
+            const { data: inserted, error: dedupErr } = await supabaseAdmin
+              .from("whatsapp_processed_messages")
+              .insert({
+                message_id: messageId,
+                phone,
+                regra: matched[0].regra,
+              })
+              .select("message_id")
+              .single();
+            if (dedupErr || !inserted) {
+              await log({
+                event,
+                chatId,
+                phone,
+                texto,
+                motivo: "duplicada",
+                message_id: messageId,
+              });
+              return Response.json({ ok: true, ignored: "mensagem já processada" });
+            }
           }
 
           cleanupCooldown();
           const now = Date.now();
           const last = lastReplyBy.get(phone) ?? 0;
           if (now - last < cooldownMs) {
-            await logWebhookEvent({ event, chatId, phone, texto, motivo: "cooldown" });
+            await log({ event, chatId, phone, texto, motivo: "cooldown" });
             return Response.json({ ok: true, ignored: "cooldown do remetente" });
           }
 
@@ -188,7 +246,16 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const r = await sendReply(chatId, rule, msg);
           if (r.ok) lastReplyBy.set(phone, now);
 
-          await logWebhookEvent({
+          // Se o envio falhou, libera a reivindicação para que um retry do
+          // Waha possa reprocessar (sem isso a mensagem ficaria bloqueada).
+          if (!r.ok && messageId) {
+            await supabaseAdmin
+              .from("whatsapp_processed_messages")
+              .delete()
+              .eq("message_id", messageId);
+          }
+
+          await log({
             event,
             chatId,
             phone,
@@ -197,6 +264,7 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
             regra: rule.regra,
             enviado: r.ok,
             mensagem: r.message,
+            ...(messageId ? { message_id: messageId } : {}),
           });
 
           return Response.json({ ok: true, enviado: r.ok, mensagem: r.message });
