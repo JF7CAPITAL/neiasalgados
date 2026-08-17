@@ -33,19 +33,44 @@ function EstoquePage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [mv, setMv] = useState<{ product: Product; tipo: string; qtd: number; obs: string } | null>(null);
-  useRealtime(["products", "product_movements"], ["stock", "dashboard"]);
+  useRealtime(["products", "product_movements", "anota_orders", "anota_order_items"], ["stock", "dashboard"]);
 
-  const { data: rows = [], isLoading } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["stock"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("products")
-        .select("id, nome, unidade, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal")
-        .is("deleted_at", null).order("nome");
-      if (error) throw error;
-      return data as Product[];
+      const [prodR, scheduledR] = await Promise.all([
+        supabase
+          .from("products")
+          .select("id, nome, unidade, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal")
+          .is("deleted_at", null).order("nome"),
+        supabase
+          .from("anota_orders")
+          .select("id")
+          .eq("check_status", -2),
+      ]);
+      if (prodR.error) throw prodR.error;
+      const scheduledOrders = scheduledR.data ?? [];
+      let scheduledItems: { product_id: string | null; quantidade: number }[] = [];
+      if (scheduledOrders.length > 0) {
+        const itemsR = await supabase
+          .from("anota_order_items")
+          .select("product_id, quantidade")
+          .in("order_id", scheduledOrders.map((o: { id: string }) => o.id))
+          .eq("mapeado", true)
+          .not("product_id", "is", null);
+        scheduledItems = itemsR.data ?? [];
+      }
+      const scheduledImpact = new Map<string, number>();
+      for (const it of scheduledItems) {
+        if (!it.product_id) continue;
+        scheduledImpact.set(it.product_id, (scheduledImpact.get(it.product_id) ?? 0) + Number(it.quantidade));
+      }
+      return { rows: prodR.data as Product[], scheduledImpact };
     },
   });
+
+  const rows = data?.rows ?? [];
+  const scheduledImpact = data?.scheduledImpact ?? new Map<string, number>();
 
   const apply = useMutation({
     mutationFn: async (m: { product: Product; tipo: string; qtd: number; obs: string }) => {
@@ -65,15 +90,18 @@ function EstoquePage() {
   const filtered = rows.filter((p) => p.nome.toLowerCase().includes(search.toLowerCase()));
 
   const handlePrint = () => {
-    printStockReport(filtered.map((p) => ({
-      nome: p.nome,
-      atual: Number(p.quantidade_atual),
-      reservado: Number(p.quantidade_reservada),
-      disponivel: Number(p.quantidade_atual) - Number(p.quantidade_reservada),
-      minimo: Number(p.estoque_minimo),
-      ideal: Number(p.estoque_ideal),
-      situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
-    })));
+    printStockReport(filtered.map((p) => {
+      const reservado = scheduledImpact.get(p.id) ?? 0;
+      return {
+        nome: p.nome,
+        atual: Number(p.quantidade_atual),
+        reservado,
+        disponivel: Number(p.quantidade_atual) - reservado,
+        minimo: Number(p.estoque_minimo),
+        ideal: Number(p.estoque_ideal),
+        situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
+      };
+    }));
   };
 
   return (
@@ -85,6 +113,7 @@ function EstoquePage() {
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input className="pl-9" placeholder="Buscar produto..." value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
+      <p className="text-sm text-muted-foreground">A coluna "Reservado" mostra a quantidade agendada em pedidos futuros (agendados).</p>
 
       {isLoading ? <div className="h-64 animate-pulse rounded-xl border border-border bg-card" />
         : filtered.length === 0 ? <EmptyState icon={Boxes} title="Nenhum produto em estoque" />
@@ -101,13 +130,14 @@ function EstoquePage() {
               </TableRow></TableHeader>
               <TableBody>
                 {filtered.map((p) => {
-                  const disp = p.quantidade_atual - p.quantidade_reservada;
+                  const reservado = scheduledImpact.get(p.id) ?? 0;
+                  const disp = p.quantidade_atual - reservado;
                   const lvl = stockLevel(p.quantidade_atual, p.estoque_minimo, p.estoque_ideal);
                   return (
                     <TableRow key={p.id}>
                       <TableCell className="font-medium">{p.nome}</TableCell>
                       <TableCell className="text-right tabular">{fmtNum(p.quantidade_atual)}</TableCell>
-                      <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.quantidade_reservada)}</TableCell>
+                      <TableCell className="text-right tabular text-muted-foreground">{fmtNum(reservado)}</TableCell>
                       <TableCell className="text-right tabular font-medium">{fmtNum(disp)}</TableCell>
                       <TableCell><StockBadge level={lvl} /></TableCell>
                       <TableCell className="text-right">

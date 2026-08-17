@@ -249,15 +249,18 @@ function DashboardPage() {
   const closeReport = () => { setReport(null); setAgendamentoReport(null); setForecastDrill(null); };
 
   const pStock = () => {
-    const rows = products.map((p) => ({
-      nome: p.nome,
-      atual: Number(p.quantidade_atual),
-      reservado: Number(p.quantidade_reservada),
-      disponivel: Number(p.quantidade_atual) - Number(p.quantidade_reservada),
-      minimo: Number(p.estoque_minimo),
-      ideal: Number(p.estoque_ideal),
-      situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
-    }));
+    const rows = products.map((p) => {
+      const reservado = scheduledImpact.get(p.id) ?? 0;
+      return {
+        nome: p.nome,
+        atual: Number(p.quantidade_atual),
+        reservado,
+        disponivel: Number(p.quantidade_atual) - reservado,
+        minimo: Number(p.estoque_minimo),
+        ideal: Number(p.estoque_ideal),
+        situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
+      };
+    });
     printStockReport(rows);
   };
 
@@ -299,12 +302,13 @@ function DashboardPage() {
       </TableRow></TableHeader>
       <TableBody>
         {list.map((p) => {
-          const disp = Number(p.quantidade_atual) - Number(p.quantidade_reservada);
+          const reservado = scheduledImpact.get(p.id) ?? 0;
+          const disp = Number(p.quantidade_atual) - reservado;
           return (
             <TableRow key={p.id}>
               <TableCell className="font-medium">{p.nome}</TableCell>
               <TableCell className="text-right tabular">{fmtNum(p.quantidade_atual)}</TableCell>
-              <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.quantidade_reservada)}</TableCell>
+              <TableCell className="text-right tabular text-muted-foreground">{fmtNum(reservado)}</TableCell>
               <TableCell className="text-right tabular font-medium">{fmtNum(disp)}</TableCell>
               <TableCell>{fmtNum(p.estoque_minimo)}</TableCell>
               <TableCell>{fmtNum(p.estoque_ideal)}</TableCell>
@@ -343,7 +347,7 @@ function DashboardPage() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Estoque de salgados" value={fmtNum(verAgendados ? estoqueTotal - totalScheduledImpact : estoqueTotal)} hint={verAgendados ? `${fmtNum(totalScheduledImpact)} unidades em agendamentos` : "unidades em estoque"} icon={Boxes} tone={verAgendados ? "warning" : "default"}
-          onClick={() => setReport({ title: "Estoque de Salgados", table: <ProdTable list={products} />, onPrint: pStock })} />
+          onClick={() => setReport({ title: "Estoque de Salgados", table: <div className="space-y-4"><p className="text-sm text-muted-foreground">A coluna "Reservado" mostra a quantidade agendada em pedidos futuros (agendados).</p><ProdTable list={products} /></div>, onPrint: pStock })} />
         <KpiCard label="Estoque projetado" value={fmtNum(projetado)} hint={`+${fmtNum(producaoAberta)} produção -${fmtNum(totalScheduledImpact)} agendados`} icon={PackageCheck} tone="info"
           onClick={() => {
             const rows = products
