@@ -4,7 +4,7 @@
 CREATE OR REPLACE FUNCTION public.receive_purchase_order(
   p_order uuid, p_quantidade numeric, p_preco numeric DEFAULT NULL, p_user uuid DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
-DECLARE o public.purchase_orders;
+DECLARE o public.purchase_orders; pid uuid;
 BEGIN
   SELECT * INTO o FROM public.purchase_orders WHERE id = p_order;
   IF o.id IS NULL THEN RAISE EXCEPTION 'Ordem não encontrada'; END IF;
