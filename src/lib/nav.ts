@@ -15,6 +15,7 @@ import {
   History,
   LineChart,
   ShoppingBag,
+  MessageSquare,
   type LucideIcon,
 } from "lucide-react";
 
@@ -42,6 +43,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Fornecedores", to: "/fornecedores", icon: Truck, roles: ["admin", "compras"], group: "Estoque" },
 
   { label: "Anota AI", to: "/anota", icon: ShoppingBag, roles: ["admin", "estoque", "compras", "producao", "operacional"], group: "Integrações" },
+  { label: "Mensagens", to: "/mensagens", icon: MessageSquare, roles: ["admin", "estoque", "compras", "producao", "operacional"], group: "Integrações" },
 
   { label: "Colaboradores", to: "/colaboradores", icon: Users, roles: ["admin", "rh"], group: "Gestão" },
   { label: "Relatório de Produção", to: "/relatorio-producao", icon: LineChart, roles: ["admin", "producao", "estoque", "financeiro"], group: "Gestão" },

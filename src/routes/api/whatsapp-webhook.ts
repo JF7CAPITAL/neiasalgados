@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import {
+  isContactPaused,
   loadKeywordRules,
+  logWhatsAppMessage,
   matchKeywordRules,
   normalizePhone,
   renderTemplate,
@@ -191,6 +193,23 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           }
 
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+          // Grava a mensagem recebida na conversa (aba Mensagens).
+          await logWhatsAppMessage(supabaseAdmin, {
+            phone,
+            chatId: chatId,
+            direction: "in",
+            texto,
+            tipo: "recebida",
+            status: "recebida",
+          });
+
+          // Contato em pausa temporária: não responde automaticamente.
+          if (await isContactPaused(supabaseAdmin, phone)) {
+            await log({ event, chatId, phone, texto, motivo: "pausado" });
+            return Response.json({ ok: true, ignored: "envio pausado para o contato" });
+          }
+
           const rules = (await loadKeywordRules(supabaseAdmin)).filter((r) => r.ativo);
           if (!rules.length) {
             await log({ event, chatId, phone, texto, motivo: "sem_regra" });
@@ -245,6 +264,17 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const msg = renderTemplate(rule.mensagem, { numero: "", total: "", cliente: "" });
           const r = await sendReply(chatId, rule, msg);
           if (r.ok) lastReplyBy.set(phone, now);
+
+          // Grava a resposta na conversa (aba Mensagens).
+          await logWhatsAppMessage(supabaseAdmin, {
+            phone,
+            chatId: chatId,
+            direction: "out",
+            texto: msg,
+            tipo: `keyword:${rule.regra}`,
+            status: r.ok ? "enviado" : "erro",
+            error: r.ok ? null : r.message,
+          });
 
           // Se o envio falhou, libera a reivindicação para que um retry do
           // Waha possa reprocessar (sem isso a mensagem ficaria bloqueada).

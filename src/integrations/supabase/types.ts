@@ -1027,6 +1027,33 @@ export type Database = {
         }
         Relationships: []
       }
+      whatsapp_contact_pauses: {
+        Row: {
+          chat_id: string | null
+          created_at: string
+          id: string
+          paused_until: string
+          phone: string
+          updated_at: string
+        }
+        Insert: {
+          chat_id?: string | null
+          created_at?: string
+          id?: string
+          paused_until: string
+          phone: string
+          updated_at?: string
+        }
+        Update: {
+          chat_id?: string | null
+          created_at?: string
+          id?: string
+          paused_until?: string
+          phone?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       whatsapp_keyword_rules: {
         Row: {
           ativo: boolean
@@ -1060,6 +1087,45 @@ export type Database = {
           palavras_chave?: string
           regra?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      whatsapp_messages: {
+        Row: {
+          chat_id: string | null
+          created_at: string
+          direction: string
+          error: string | null
+          id: string
+          phone: string
+          ref_order_id: string | null
+          status: string | null
+          texto: string
+          tipo: string | null
+        }
+        Insert: {
+          chat_id?: string | null
+          created_at?: string
+          direction?: string
+          error?: string | null
+          id?: string
+          phone: string
+          ref_order_id?: string | null
+          status?: string | null
+          texto?: string
+          tipo?: string | null
+        }
+        Update: {
+          chat_id?: string | null
+          created_at?: string
+          direction?: string
+          error?: string | null
+          id?: string
+          phone?: string
+          ref_order_id?: string | null
+          status?: string | null
+          texto?: string
+          tipo?: string | null
         }
         Relationships: []
       }
@@ -1153,6 +1219,10 @@ export type Database = {
         Args: { p_order: string; p_user?: string }
         Returns: undefined
       }
+      cleanup_whatsapp_messages: {
+        Args: Record<PropertyKey, never>
+        Returns: undefined
+      }
       complete_production_order: {
         Args: {
           p_obs?: string
@@ -1168,6 +1238,10 @@ export type Database = {
           _role: Database["public"]["Enums"]["app_role"]
           _user_id: string
         }
+        Returns: boolean
+      }
+      is_whatsapp_paused: {
+        Args: { p_phone: string }
         Returns: boolean
       }
       receive_purchase_order: {

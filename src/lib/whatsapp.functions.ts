@@ -179,6 +179,16 @@ async function sendMotoboyMessage(
   if (!notif) return false;
   const text = await buildMotoboyText(supabase, order, notif);
   const r = await sendNotif(phoneM, text, notif);
+  await logWhatsAppMessage(supabase, {
+    phone: phoneFromDest(phoneM),
+    chatId: phoneM,
+    direction: "out",
+    texto: text,
+    tipo: "notificacao:motoboy",
+    status: r.ok ? "enviado" : "erro",
+    error: r.ok ? null : r.message,
+    refOrderId: order.id,
+  });
   return r.ok;
 }
 
@@ -360,6 +370,69 @@ async function sendNotif(
   return sendWahaText(to, text);
 }
 
+// ---------------------------------------------------------------------------
+// Conversas (aba Mensagens) e pausa temporária por contato
+// ---------------------------------------------------------------------------
+
+/** Grava uma mensagem (entrada ou saída) na conversa do contato. */
+export async function logWhatsAppMessage(
+  supabase: DbClient,
+  input: {
+    phone: string;
+    chatId?: string | null;
+    direction: "in" | "out";
+    texto: string;
+    tipo?: string | null;
+    status?: string | null;
+    error?: string | null;
+    refOrderId?: string | null;
+  },
+): Promise<void> {
+  try {
+    await supabase.from("whatsapp_messages").insert({
+      phone: input.phone,
+      chat_id: input.chatId ?? null,
+      direction: input.direction,
+      texto: input.texto ?? "",
+      tipo: input.tipo ?? null,
+      status: input.status ?? null,
+      error: input.error ?? null,
+      ref_order_id: input.refOrderId ?? null,
+    });
+  } catch (e) {
+    console.error("[whatsapp] falha ao gravar mensagem da conversa:", e);
+  }
+}
+
+/** Retorna o telefone (E.164) a partir de um destino (número ou chatId). */
+export function phoneFromDest(destino: string): string {
+  const raw = destino.includes("@") ? destino.split("@")[0] : destino;
+  return normalizePhone(raw) ?? raw;
+}
+
+/** Verifica se o envio de mensagens está temporariamente pausado para o contato. */
+export async function isContactPaused(supabase: DbClient, phone: string): Promise<boolean> {
+  try {
+    const { data } = await supabase.rpc("is_whatsapp_paused", { p_phone: phone });
+    return data === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Remove pausas expiradas e mensagens com mais de 2 dias (retention). */
+export async function cleanupWhatsAppData(supabase: DbClient): Promise<void> {
+  try {
+    await supabase.rpc("cleanup_whatsapp_messages");
+    await supabase
+      .from("whatsapp_contact_pauses")
+      .delete()
+      .lt("paused_until", new Date().toISOString());
+  } catch (e) {
+    console.error("[whatsapp] falha no cleanup:", e);
+  }
+}
+
 interface OrderRow {
   id: string;
   numero: string | null;
@@ -393,6 +466,16 @@ async function notifyOne(
     cliente: order.cliente ?? "cliente",
   });
   const r = await sendNotif(destino, text, notif);
+  await logWhatsAppMessage(supabase, {
+    phone: phoneFromDest(destino),
+    chatId: destino,
+    direction: "out",
+    texto: text,
+    tipo: `notificacao:${notif.regra}`,
+    status: r.ok ? "enviado" : "erro",
+    error: r.ok ? null : r.message,
+    refOrderId: order.id,
+  });
   return r.ok;
 }
 
@@ -418,6 +501,13 @@ async function doNotify(
   if (tipo === "recebido") {
     if (!clientePhone) {
       return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
+    }
+    if (await isContactPaused(supabase, clientePhone)) {
+      return {
+        ok: false,
+        message: "Envio pausado para este contato.",
+        enviados: 0,
+      };
     }
     const notif = notifications.find((n) => n.regra === "pedido_recebido" && n.ativo);
     if (!order.whatsapp_notified_at || mode === "manual") {
@@ -463,6 +553,13 @@ async function doNotify(
   // tipo === "pronto"
   if (!clientePhone) {
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
+  }
+  if (await isContactPaused(supabase, clientePhone)) {
+    return {
+      ok: false,
+      message: "Envio pausado para este contato.",
+      enviados: 0,
+    };
   }
   if (!order.whatsapp_ready_notified_at || mode === "manual") {
     const notif = notifications.find((n) => n.regra === "pedido_pronto" && n.ativo);
@@ -567,6 +664,13 @@ export async function notifyStatusMessageWhatsApp(
   if (!clientePhone) {
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
   }
+  if (await isContactPaused(supabase, clientePhone)) {
+    return {
+      ok: false,
+      message: "Envio pausado para este contato.",
+      enviados: 0,
+    };
+  }
 
   const text = renderTemplate(notif.mensagem, {
     numero: data.numero ?? data.external_order_id ?? "",
@@ -574,6 +678,16 @@ export async function notifyStatusMessageWhatsApp(
     cliente: data.cliente ?? "cliente",
   });
   const r = await sendNotif(clientePhone, text, notif);
+  await logWhatsAppMessage(supabase, {
+    phone: phoneFromDest(clientePhone),
+    chatId: clientePhone,
+    direction: "out",
+    texto: text,
+    tipo: `status:${data.check_status}`,
+    status: r.ok ? "enviado" : "erro",
+    error: r.ok ? null : r.message,
+    refOrderId: data.id,
+  });
   if (r.ok) {
     await supabase
       .from("anota_orders")
@@ -664,6 +778,13 @@ export async function notifyKeywordRulesWhatsApp(
   if (!clientePhone) {
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
   }
+  if (await isContactPaused(supabase, clientePhone)) {
+    return {
+      ok: false,
+      message: "Envio pausado para este contato.",
+      enviados: 0,
+    };
+  }
 
   const itens = await orderItemsText(supabase, orderId);
   const alvo = [data.cliente ?? "", data.numero ?? "", itens, JSON.stringify(data.payload ?? {})]
@@ -681,6 +802,16 @@ export async function notifyKeywordRulesWhatsApp(
       cliente: data.cliente ?? "cliente",
     });
     const r = await sendNotif(clientePhone, text, rule);
+    await logWhatsAppMessage(supabase, {
+      phone: phoneFromDest(clientePhone),
+      chatId: clientePhone,
+      direction: "out",
+      texto: text,
+      tipo: `keyword:${rule.regra}`,
+      status: r.ok ? "enviado" : "erro",
+      error: r.ok ? null : r.message,
+      refOrderId: data.id,
+    });
     if (r.ok) {
       enviados++;
       novosNotificados.push(rule.regra);
@@ -1176,4 +1307,255 @@ export const saveWhatsAppKeywordRules = createServerFn({ method: "POST" })
       }
     }
     return { ok: true, message: "Regras por palavra-chave salvas com sucesso." };
+  });
+
+// ---------------------------------------------------------------------------
+// Conversas (aba Mensagens)
+// ---------------------------------------------------------------------------
+
+export interface WhatsAppMessageRow {
+  id: string;
+  phone: string;
+  chatId: string | null;
+  direction: "in" | "out";
+  texto: string;
+  tipo: string | null;
+  status: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+export interface WhatsAppConversation {
+  phone: string;
+  nome: string;
+  lastMessage: string;
+  lastMessageAt: string;
+  count: number;
+  unread: number;
+  paused_until: string | null;
+}
+
+export interface GetWhatsAppConversationsResult {
+  ok: boolean;
+  conversations: WhatsAppConversation[];
+}
+
+/** Resolve o nome do cliente a partir dos pedidos Anota recentes (best-effort). */
+async function contactNameByPhone(
+  supabase: DbClient,
+  phones: string[],
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (!phones.length) return map;
+  const { data: orders } = await supabase
+    .from("anota_orders")
+    .select("cliente, payload")
+    .gte("imported_at", new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString())
+    .not("cliente", "is", null);
+  for (const o of orders ?? []) {
+    const p = orderPhone(o.payload);
+    if (p && !map.has(p)) map.set(p, (o.cliente ?? "").trim());
+  }
+  return map;
+}
+
+function fmtPhoneBR(phone: string): string {
+  const d = phone.replace(/\D/g, "").replace(/^55/, "");
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return phone;
+}
+
+/** Lista as conversas iniciadas no dia atual (retidas por até 2 dias). */
+export const getWhatsAppConversations = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<GetWhatsAppConversationsResult> => {
+    await ensureRole(context);
+    await cleanupWhatsAppData(context.supabase);
+
+    const hojeInicio = new Date();
+    hojeInicio.setHours(0, 0, 0, 0);
+
+    // Agrupa por telefone as mensagens da janela de retenção (2 dias), mas
+    // expõe apenas conversas cuja primeira mensagem foi hoje.
+    const { data: rows, error } = await context.supabase
+      .from("whatsapp_messages")
+      .select("id, phone, chat_id, direction, texto, tipo, status, error, created_at")
+      .gte("created_at", hojeInicio.toISOString())
+      .order("created_at", { ascending: true });
+    if (error) return { ok: false, conversations: [] };
+
+    // Busca a primeira mensagem de cada telefone (para filtrar iniciadas hoje)
+    // mantendo a visibilidade de 2 dias.
+    const byPhone = new Map<string, WhatsAppMessageRow[]>();
+    for (const r of rows ?? []) {
+      const item: WhatsAppMessageRow = {
+        id: r.id,
+        phone: r.phone,
+        chatId: r.chat_id,
+        direction: r.direction as "in" | "out",
+        texto: r.texto,
+        tipo: r.tipo,
+        status: r.status,
+        error: r.error,
+        created_at: r.created_at,
+      };
+      const list = byPhone.get(r.phone) ?? [];
+      list.push(item);
+      byPhone.set(r.phone, list);
+    }
+
+    const nomes = await contactNameByPhone(context.supabase, [...byPhone.keys()]);
+
+    const { data: pauses } = await context.supabase
+      .from("whatsapp_contact_pauses")
+      .select("phone, paused_until")
+      .gte("paused_until", new Date().toISOString());
+    const pausedMap = new Map<string, string>();
+    for (const p of pauses ?? []) pausedMap.set(p.phone, p.paused_until);
+
+    const conversations: WhatsAppConversation[] = [...byPhone.entries()].map(([phone, msgs]) => {
+      const sorted = [...msgs].sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at));
+      const first = sorted[0];
+      const last = sorted[sorted.length - 1];
+      return {
+        phone,
+        nome: nomes.get(phone) || fmtPhoneBR(phone),
+        lastMessage: last.texto,
+        lastMessageAt: last.created_at,
+        count: sorted.length,
+        unread: sorted.filter(
+          (m) => m.direction === "in" && +new Date(m.created_at) >= +new Date(hojeInicio),
+        ).length,
+        paused_until: pausedMap.get(phone) ?? null,
+      };
+    });
+
+    conversations.sort((a, b) => +new Date(b.lastMessageAt) - +new Date(a.lastMessageAt));
+
+    return { ok: true, conversations };
+  });
+
+export interface GetWhatsAppConversationResult {
+  ok: boolean;
+  messages: WhatsAppMessageRow[];
+  nome: string;
+}
+
+/** Retorna as mensagens (até 2 dias) de um contato específico. */
+export const getWhatsAppConversation = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: { phone?: string }) => {
+    if (!input || !input.phone) throw new Error("Telefone inválido.");
+    return { phone: input.phone };
+  })
+  .handler(async ({ context, data }): Promise<GetWhatsAppConversationResult> => {
+    await ensureRole(context);
+    await cleanupWhatsAppData(context.supabase);
+
+    const limite = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: rows, error } = await context.supabase
+      .from("whatsapp_messages")
+      .select("id, phone, chat_id, direction, texto, tipo, status, error, created_at")
+      .eq("phone", data.phone)
+      .gte("created_at", limite)
+      .order("created_at", { ascending: true });
+    if (error) return { ok: false, messages: [], nome: data.phone };
+
+    const nomes = await contactNameByPhone(context.supabase, [data.phone]);
+    return {
+      ok: true,
+      messages: (rows ?? []).map((r) => ({
+        id: r.id,
+        phone: r.phone,
+        chatId: r.chat_id,
+        direction: r.direction as "in" | "out",
+        texto: r.texto,
+        tipo: r.tipo,
+        status: r.status,
+        error: r.error,
+        created_at: r.created_at,
+      })),
+      nome: nomes.get(data.phone) || fmtPhoneBR(data.phone),
+    };
+  });
+
+export interface SetWhatsAppPauseInput {
+  phone: string;
+  minutes: number;
+}
+
+export interface SetWhatsAppPauseResult {
+  ok: boolean;
+  message: string;
+  paused_until: string | null;
+}
+
+/** Pausa temporariamente o envio de mensagens para um contato por X minutos. */
+export const pauseWhatsAppContact = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: SetWhatsAppPauseInput) => {
+    if (!input || !input.phone) throw new Error("Telefone inválido.");
+    const minutes = Number(input.minutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      throw new Error("Informe um período maior que zero.");
+    }
+    return { phone: input.phone, minutes: Math.min(minutes, 24 * 60) };
+  })
+  .handler(async ({ context, data }): Promise<SetWhatsAppPauseResult> => {
+    await ensureRole(context);
+    const until = new Date(Date.now() + data.minutes * 60 * 1000).toISOString();
+    const { error } = await context.supabase
+      .from("whatsapp_contact_pauses")
+      .upsert(
+        { phone: data.phone, paused_until: until, updated_at: new Date().toISOString() },
+        { onConflict: "phone" },
+      );
+    if (error)
+      return { ok: false, message: `Erro ao pausar: ${error.message}`, paused_until: null };
+    await context.supabase.from("activity_logs").insert({
+      modulo: "whatsapp",
+      acao: "pausou_contato",
+      user_id: context.userId,
+      registro_id: null,
+      detalhes: { phone: data.phone, minutes: data.minutes, paused_until: until },
+    });
+    return {
+      ok: true,
+      message: `Envio pausado por ${data.minutes} min para este contato.`,
+      paused_until: until,
+    };
+  });
+
+export interface ClearWhatsAppPauseInput {
+  phone: string;
+}
+
+export interface ClearWhatsAppPauseResult {
+  ok: boolean;
+  message: string;
+}
+
+/** Reativa imediatamente o envio de mensagens para um contato. */
+export const unpauseWhatsAppContact = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: ClearWhatsAppPauseInput) => {
+    if (!input || !input.phone) throw new Error("Telefone inválido.");
+    return { phone: input.phone };
+  })
+  .handler(async ({ context, data }): Promise<ClearWhatsAppPauseResult> => {
+    await ensureRole(context);
+    const { error } = await context.supabase
+      .from("whatsapp_contact_pauses")
+      .delete()
+      .eq("phone", data.phone);
+    if (error) return { ok: false, message: `Erro ao reativar: ${error.message}` };
+    await context.supabase.from("activity_logs").insert({
+      modulo: "whatsapp",
+      acao: "reativou_contato",
+      user_id: context.userId,
+      registro_id: null,
+      detalhes: { phone: data.phone },
+    });
+    return { ok: true, message: "Envio reativado para este contato." };
   });
