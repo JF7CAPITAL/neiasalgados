@@ -135,6 +135,7 @@ function AnotaPage() {
   const [filtro, setFiltro] = useState<Filtro>("todos");
   const [buscaData, setBuscaData] = useState(new Date().toISOString().split("T")[0]);
   const [buscaStatus, setBuscaStatus] = useState<"todos" | "producao" | "finalizados">("todos");
+  const [buscaTexto, setBuscaTexto] = useState("");
 
   useEffect(() => {
     const unsub = onSyncToggle((enabled) => setSyncEnabledState(enabled));
@@ -232,6 +233,17 @@ function AnotaPage() {
       return data;
     },
   });
+
+  const filteredBusca = useMemo(() => {
+    const termo = buscaTexto.trim().toLowerCase();
+    if (!termo) return buscaResults;
+    return buscaResults.filter((o) => {
+      const cliente = (o.cliente ?? "").toLowerCase();
+      const numero = String(o.numero ?? "").toLowerCase();
+      const ext = String(o.external_order_id ?? "").toLowerCase();
+      return cliente.includes(termo) || numero.includes(termo) || ext.includes(termo);
+    });
+  }, [buscaResults, buscaTexto]);
 
   const { data: products = [] } = useQuery({
     queryKey: ["products-lite"],
@@ -901,6 +913,16 @@ function AnotaPage() {
         <TabsContent value="buscar" className="pt-4">
           <div className="mb-4 flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
+              <Search className="size-4 text-muted-foreground" />
+              <input
+                type="text"
+                value={buscaTexto}
+                onChange={(e) => setBuscaTexto(e.target.value)}
+                placeholder="Buscar por cliente ou comanda"
+                className="w-56 rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
               <CalendarDays className="size-4 text-muted-foreground" />
               <input
                 type="date"
@@ -929,6 +951,12 @@ function AnotaPage() {
               description={`Nenhum pedido sincronizado em ${new Date(buscaData).toLocaleDateString("pt-BR")}.`}
               icon={Search}
             />
+          ) : filteredBusca.length === 0 ? (
+            <EmptyState
+              title="Nenhum pedido encontrado"
+              description={`Nenhum pedido corresponde a "${buscaTexto}".`}
+              icon={Search}
+            />
           ) : (
             <div className="overflow-x-auto rounded-xl border border-border">
               <table className="w-full text-sm">
@@ -943,7 +971,7 @@ function AnotaPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {buscaResults.map((o: any) => (
+                  {filteredBusca.map((o: any) => (
                     <tr key={o.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <button
