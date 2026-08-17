@@ -125,7 +125,7 @@ function OrdensPage() {
       if (error) throw error;
       await logActivity("ordens", "recebeu compra", r.order.id, { qtd: r.qtd });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orders"] }); qc.invalidateQueries({ queryKey: ["ingredients"] }); toast.success("Compra recebida — insumo atualizado!"); setReceive(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orders"] }); qc.invalidateQueries({ queryKey: ["ingredients"] }); qc.invalidateQueries({ queryKey: ["products"] }); qc.invalidateQueries({ queryKey: ["stock"] }); qc.invalidateQueries({ queryKey: ["dashboard"] }); toast.success("Compra recebida — insumo atualizado!"); setReceive(null); },
     onError: (e: Error) => toast.error(e.message),
   });
 
