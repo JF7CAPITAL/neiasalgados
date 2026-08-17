@@ -575,6 +575,30 @@ export type Database = {
           },
         ]
       }
+      product_groups: {
+        Row: {
+          created_at: string
+          id: string
+          nome: string
+          ordem: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          nome: string
+          ordem?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          nome?: string
+          ordem?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       product_movements: {
         Row: {
           created_at: string
@@ -731,6 +755,7 @@ export type Database = {
           estoque_maximo: number
           estoque_minimo: number
           foto_url: string | null
+          group_id: string | null
           id: string
           nome: string
           peso: number
@@ -752,6 +777,7 @@ export type Database = {
           estoque_maximo?: number
           estoque_minimo?: number
           foto_url?: string | null
+          group_id?: string | null
           id?: string
           nome: string
           peso?: number
@@ -773,6 +799,7 @@ export type Database = {
           estoque_maximo?: number
           estoque_minimo?: number
           foto_url?: string | null
+          group_id?: string | null
           id?: string
           nome?: string
           peso?: number
@@ -785,7 +812,15 @@ export type Database = {
           unidade?: string
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "products_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "product_groups"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {

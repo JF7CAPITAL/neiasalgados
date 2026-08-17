@@ -1018,42 +1018,37 @@ function AnotaPage() {
                           </td>
                           <td className="px-4 py-3 text-center text-muted-foreground">{d.count}</td>
                           <td className="px-4 py-3">
-                            {hasRecipe ? (
-                              <div className="flex items-center gap-2">
-                                <span className="max-w-64 truncate text-xs text-muted-foreground">
-                                  {comboItems.length} produto(s):{" "}
-                                  {comboItems
-                                    .map(
-                                      (ci) =>
-                                        `${products.find((p) => p.id === ci.product_id)?.nome ?? "?"} x${ci.quantidade}`,
-                                    )
-                                    .join(", ")}
-                                </span>
-                                <Button variant="outline" size="sm" onClick={() => openComboEditor(d.ref)}>
-                                  Editar composição
-                                </Button>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-2">
-                                <Select
-                                  value={value}
-                                  onValueChange={(v) => setMapDraft((s) => ({ ...s, [d.ref]: v }))}
-                                >
-                                  <SelectTrigger className="w-64">
-                                    <SelectValue placeholder="Selecionar produto..." />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="none">— Não vincular —</SelectItem>
-                                    {products.map((p) => (
-                                      <SelectItem key={p.id} value={p.id}>
-                                        {p.nome}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                                <Button variant="outline" size="sm" onClick={() => openComboEditor(d.ref)}>
-                                  <Plus className="mr-1 size-3" /> Configurar composição
-                                </Button>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Select
+                                value={value}
+                                onValueChange={(v) => setMapDraft((s) => ({ ...s, [d.ref]: v }))}
+                              >
+                                <SelectTrigger className="w-64">
+                                  <SelectValue placeholder="Selecionar produto..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">— Não vincular —</SelectItem>
+                                  {products.map((p) => (
+                                    <SelectItem key={p.id} value={p.id}>
+                                      {p.nome}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Button variant="outline" size="sm" onClick={() => openComboEditor(d.ref)}>
+                                <Plus className="mr-1 size-3" />
+                                {hasRecipe ? "Editar composição" : "Configurar composição"}
+                              </Button>
+                            </div>
+                            {hasRecipe && (
+                              <div className="mt-1 max-w-md truncate text-xs text-muted-foreground">
+                                Composição:{" "}
+                                {comboItems
+                                  .map(
+                                    (ci) =>
+                                      `${products.find((p) => p.id === ci.product_id)?.nome ?? "?"} x${ci.quantidade}`,
+                                  )
+                                  .join(", ")}
                               </div>
                             )}
                           </td>

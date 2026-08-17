@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Package, Plus, Pencil, Search, Trash2, Loader2, ChefHat } from "lucide-react";
+import { Package, Plus, Pencil, Search, Trash2, Loader2, ChefHat, Folder, FolderPlus } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -44,12 +44,19 @@ type Product = {
   estoque_minimo: number;
   estoque_ideal: number;
   estoque_maximo: number;
+  group_id: string | null;
+};
+
+type ProductGroup = {
+  id: string;
+  nome: string;
+  ordem: number;
 };
 
 const empty: Partial<Product> = {
   nome: "", categoria: "", codigo: "", tipo: "frito", unidade: "un",
   peso: 0, peso_recheio: 0, peso_massa: 0, status: true,
-  estoque_minimo: 0, estoque_ideal: 0, estoque_maximo: 0,
+  estoque_minimo: 0, estoque_ideal: 0, estoque_maximo: 0, group_id: null,
 };
 
 function ProdutosPage() {
@@ -71,6 +78,54 @@ function ProdutosPage() {
     },
   });
 
+  const { data: groups = [] } = useQuery({
+    queryKey: ["product-groups"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("product_groups").select("*").order("ordem").order("nome");
+      if (error) throw error;
+      return data as ProductGroup[];
+    },
+  });
+
+  const [groupOpen, setGroupOpen] = useState(false);
+  const [groupEditing, setGroupEditing] = useState<{ id?: string; nome: string } | null>(null);
+  const [groupToDelete, setGroupToDelete] = useState<ProductGroup | null>(null);
+
+  const saveGroup = useMutation({
+    mutationFn: async (g: { id?: string; nome: string }) => {
+      const nome = g.nome.trim();
+      if (!nome) throw new Error("Informe o nome do grupo.");
+      if (g.id) {
+        const { error } = await supabase.from("product_groups").update({ nome }).eq("id", g.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("product_groups").insert({ nome });
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["product-groups"] });
+      toast.success("Grupo salvo!");
+      setGroupOpen(false); setGroupEditing(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const removeGroup = useMutation({
+    mutationFn: async (g: ProductGroup) => {
+      const { error } = await supabase.from("product_groups").delete().eq("id", g.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["product-groups"] });
+      qc.invalidateQueries({ queryKey: ["products"] });
+      toast.success("Grupo removido. Produtos do grupo ficaram sem grupo.");
+      setGroupToDelete(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const save = useMutation({
     mutationFn: async (p: Partial<Product>) => {
       const payload = {
@@ -81,6 +136,7 @@ function ProdutosPage() {
         estoque_minimo: Number(p.estoque_minimo) || 0,
         estoque_ideal: Number(p.estoque_ideal) || 0,
         estoque_maximo: Number(p.estoque_maximo) || 0,
+        group_id: p.group_id || null,
       };
       if (p.id) {
         const { error } = await supabase.from("products").update(payload).eq("id", p.id);
@@ -117,6 +173,16 @@ function ProdutosPage() {
   const filtered = products.filter((p) =>
     [p.nome, p.categoria, p.codigo].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()));
 
+  const groupedBy = useMemo(() => {
+    const map = new Map<string, Product[]>();
+    for (const p of filtered) {
+      const key = p.group_id ?? "";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(p);
+    }
+    return map;
+  }, [filtered]);
+
   function openNew() { setEditing({ ...empty }); setOpen(true); }
   function openEdit(p: Product) { setEditing({ ...p }); setOpen(true); }
 
@@ -127,9 +193,14 @@ function ProdutosPage() {
         actions={<Button onClick={openNew}><Plus className="mr-1.5 size-4" /> Novo produto</Button>}
       />
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input className="pl-9" placeholder="Buscar produto..." value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="relative max-w-sm flex-1">
+          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-9" placeholder="Buscar produto..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Button variant="outline" onClick={() => { setGroupEditing(null); setGroupOpen(true); }}>
+          <FolderPlus className="mr-1.5 size-4" /> Novo grupo
+        </Button>
       </div>
 
       {isLoading ? (
@@ -138,42 +209,45 @@ function ProdutosPage() {
         <EmptyState icon={Package} title="Nenhum produto" description="Cadastre seu primeiro salgado para começar."
           action={<Button onClick={openNew}><Plus className="mr-1.5 size-4" /> Novo produto</Button>} />
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Produto</TableHead>
-                <TableHead>Categoria</TableHead>
-                <TableHead>Tipo</TableHead>
-                <TableHead className="text-right">Estoque</TableHead>
-                <TableHead className="text-right">Mín/Ideal</TableHead>
-                <TableHead>Situação</TableHead>
-                <TableHead className="w-24 text-right">Ações</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((p) => {
-                const lvl = stockLevel(p.quantidade_atual, p.estoque_minimo, p.estoque_ideal);
-                return (
-                  <TableRow key={p.id}>
-                    <TableCell>
-                      <div className="font-medium">{p.nome}</div>
-                      {p.codigo && <div className="text-xs text-muted-foreground">{p.codigo}</div>}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{p.categoria || "—"}</TableCell>
-                    <TableCell className="capitalize">{p.tipo}</TableCell>
-                    <TableCell className="text-right tabular font-medium">{fmtNum(p.quantidade_atual)}</TableCell>
-                    <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.estoque_minimo)} / {fmtNum(p.estoque_ideal)}</TableCell>
-                    <TableCell><StockBadge level={lvl} /></TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => openEdit(p)}><Pencil className="size-4" /></Button>
-                      <Button variant="ghost" size="icon" onClick={() => setToDelete(p)}><Trash2 className="size-4 text-destructive" /></Button>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+        <div className="space-y-6">
+          {groups.map((g) => {
+            const items = groupedBy.get(g.id) ?? [];
+            if (!items.length) return null;
+            return (
+              <section key={g.id}>
+                <div className="mb-2 flex items-center gap-2">
+                  <Folder className="size-4 text-muted-foreground" />
+                  <h3 className="font-semibold">{g.nome}</h3>
+                  <span className="text-xs text-muted-foreground">{items.length}</span>
+                  <div className="ml-auto flex gap-1">
+                    <Button variant="ghost" size="icon" title="Renomear grupo"
+                      onClick={() => { setGroupEditing({ id: g.id, nome: g.nome }); setGroupOpen(true); }}>
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" title="Excluir grupo"
+                      onClick={() => setGroupToDelete(g)}>
+                      <Trash2 className="size-4 text-destructive" />
+                    </Button>
+                  </div>
+                </div>
+                <ProductTable items={items} onEdit={openEdit} onDelete={setToDelete} />
+              </section>
+            );
+          })}
+          {(() => {
+            const items = groupedBy.get("") ?? [];
+            if (!items.length) return null;
+            return (
+              <section>
+                <div className="mb-2 flex items-center gap-2">
+                  <Folder className="size-4 text-muted-foreground" />
+                  <h3 className="font-semibold text-muted-foreground">Sem grupo</h3>
+                  <span className="text-xs text-muted-foreground">{items.length}</span>
+                </div>
+                <ProductTable items={items} onEdit={openEdit} onDelete={setToDelete} />
+              </section>
+            );
+          })()}
         </div>
       )}
 
@@ -196,6 +270,20 @@ function ProdutosPage() {
                   </Field>
                   <Field label="Categoria">
                     <Input value={editing.categoria ?? ""} onChange={(e) => setEditing({ ...editing, categoria: e.target.value })} />
+                  </Field>
+                  <Field label="Grupo">
+                    <Select
+                      value={editing.group_id ?? "none"}
+                      onValueChange={(v) => setEditing({ ...editing, group_id: v === "none" ? null : v })}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Sem grupo" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">— Sem grupo —</SelectItem>
+                        {groups.map((g) => (
+                          <SelectItem key={g.id} value={g.id}>{g.nome}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </Field>
                   <Field label="Código interno">
                     <Input value={editing.codigo ?? ""} onChange={(e) => setEditing({ ...editing, codigo: e.target.value })} />
@@ -253,6 +341,52 @@ function ProdutosPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={groupOpen} onOpenChange={(o) => { setGroupOpen(o); if (!o) setGroupEditing(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{groupEditing?.id ? "Renomear grupo" : "Novo grupo"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs">Nome do grupo</Label>
+            <Input
+              autoFocus
+              value={groupEditing?.nome ?? ""}
+              onChange={(e) => setGroupEditing((s) => ({ ...(s ?? {}), nome: e.target.value }))}
+              placeholder="Ex.: Fritos, Assados..."
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && groupEditing?.nome?.trim() && !saveGroup.isPending) {
+                  saveGroup.mutate(groupEditing);
+                }
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGroupOpen(false)}>Cancelar</Button>
+            <Button onClick={() => groupEditing && saveGroup.mutate(groupEditing)}
+              disabled={!groupEditing?.nome?.trim() || saveGroup.isPending}>
+              {saveGroup.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!groupToDelete} onOpenChange={(o) => !o && setGroupToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir grupo "{groupToDelete?.nome}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Os produtos deste grupo ficarão sem grupo. O histórico dos produtos é mantido.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => groupToDelete && removeGroup.mutate(groupToDelete)}>
+              Excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -268,4 +402,52 @@ function Field({ label, children, className }: { label: string; children: React.
 
 function NumInput({ v, set }: { v: number | undefined; set: (n: number) => void }) {
   return <Input type="number" step="any" value={v ?? 0} onChange={(e) => set(Number(e.target.value))} />;
+}
+
+function ProductTable({
+  items,
+  onEdit,
+  onDelete,
+}: {
+  items: Product[];
+  onEdit: (p: Product) => void;
+  onDelete: (p: Product) => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-card">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Produto</TableHead>
+            <TableHead>Tipo</TableHead>
+            <TableHead className="text-right">Estoque</TableHead>
+            <TableHead className="text-right">Mín/Ideal</TableHead>
+            <TableHead>Situação</TableHead>
+            <TableHead className="w-24 text-right">Ações</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {items.map((p) => {
+            const lvl = stockLevel(p.quantidade_atual, p.estoque_minimo, p.estoque_ideal);
+            return (
+              <TableRow key={p.id}>
+                <TableCell>
+                  <div className="font-medium">{p.nome}</div>
+                  {p.codigo && <div className="text-xs text-muted-foreground">{p.codigo}</div>}
+                </TableCell>
+                <TableCell className="capitalize">{p.tipo}</TableCell>
+                <TableCell className="text-right tabular font-medium">{fmtNum(p.quantidade_atual)}</TableCell>
+                <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.estoque_minimo)} / {fmtNum(p.estoque_ideal)}</TableCell>
+                <TableCell><StockBadge level={lvl} /></TableCell>
+                <TableCell className="text-right">
+                  <Button variant="ghost" size="icon" onClick={() => onEdit(p)}><Pencil className="size-4" /></Button>
+                  <Button variant="ghost" size="icon" onClick={() => onDelete(p)}><Trash2 className="size-4 text-destructive" /></Button>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </div>
+  );
 }
