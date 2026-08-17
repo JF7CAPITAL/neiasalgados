@@ -57,7 +57,7 @@ function MensagensPage() {
   const qc = useQueryClient();
   const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
   const [pauseMinutes, setPauseMinutes] = useState("60");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const threadScrollRef = useRef<HTMLDivElement>(null);
 
   const conversationsFn = useServerFn(getWhatsAppConversations);
   const conversationFn = useServerFn(getWhatsAppConversation);
@@ -90,7 +90,8 @@ function MensagensPage() {
   });
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = threadScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [thread.messages.length, selectedPhone]);
 
   const pause = useMutation({
@@ -200,7 +201,7 @@ function MensagensPage() {
               </div>
             </div>
 
-            <div className="flex-1 space-y-3 overflow-y-auto bg-card/40 p-4">
+            <div ref={threadScrollRef} className="flex-1 space-y-3 overflow-y-auto bg-card/40 p-4">
               {thread.messages.length === 0 ? (
                 <p className="py-10 text-center text-sm text-muted-foreground">
                   Nenhuma mensagem nos últimos 2 dias.
@@ -208,7 +209,6 @@ function MensagensPage() {
               ) : (
                 thread.messages.map((m) => <MessageBubble key={m.id} msg={m} />)
               )}
-              <div ref={bottomRef} />
             </div>
 
             <div className="border-t border-border bg-background p-4">
