@@ -212,20 +212,28 @@ function AnotaPage() {
   });
 
   const { data: buscaResults = [] } = useQuery({
-    queryKey: ["anota-busca", buscaData, buscaStatus],
+    queryKey: ["anota-busca", buscaData, buscaStatus, buscaTexto],
     queryFn: async () => {
-      const from = new Date(buscaData);
-      from.setHours(0, 0, 0, 0);
-      const to = new Date(from);
-      to.setDate(to.getDate() + 1);
+      const termo = buscaTexto.trim();
       let query = supabase
         .from("anota_orders")
         .select(
           "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at",
-        )
-        .gte("imported_at", from.toISOString())
-        .lt("imported_at", to.toISOString())
-        .order("imported_at", { ascending: false });
+        );
+      if (termo) {
+        query = query.or(
+          `cliente.ilike.%${termo}%,numero.ilike.%${termo}%,external_order_id.ilike.%${termo}%`,
+        );
+      } else {
+        const from = new Date(buscaData);
+        from.setHours(0, 0, 0, 0);
+        const to = new Date(from);
+        to.setDate(to.getDate() + 1);
+        query = query
+          .gte("imported_at", from.toISOString())
+          .lt("imported_at", to.toISOString());
+      }
+      query = query.order("imported_at", { ascending: false });
       if (buscaStatus === "producao") query = query.eq("check_status", 1);
       else if (buscaStatus === "finalizados") query = query.eq("check_status", 3);
       const { data, error } = await query;
@@ -233,17 +241,6 @@ function AnotaPage() {
       return data;
     },
   });
-
-  const filteredBusca = useMemo(() => {
-    const termo = buscaTexto.trim().toLowerCase();
-    if (!termo) return buscaResults;
-    return buscaResults.filter((o) => {
-      const cliente = (o.cliente ?? "").toLowerCase();
-      const numero = String(o.numero ?? "").toLowerCase();
-      const ext = String(o.external_order_id ?? "").toLowerCase();
-      return cliente.includes(termo) || numero.includes(termo) || ext.includes(termo);
-    });
-  }, [buscaResults, buscaTexto]);
 
   const { data: products = [] } = useQuery({
     queryKey: ["products-lite"],
@@ -948,13 +945,11 @@ function AnotaPage() {
           {buscaResults.length === 0 ? (
             <EmptyState
               title="Nenhum pedido encontrado"
-              description={`Nenhum pedido sincronizado em ${new Date(buscaData).toLocaleDateString("pt-BR")}.`}
-              icon={Search}
-            />
-          ) : filteredBusca.length === 0 ? (
-            <EmptyState
-              title="Nenhum pedido encontrado"
-              description={`Nenhum pedido corresponde a "${buscaTexto}".`}
+              description={
+                buscaTexto.trim()
+                  ? `Nenhum pedido corresponde a "${buscaTexto}".`
+                  : `Nenhum pedido sincronizado em ${new Date(buscaData).toLocaleDateString("pt-BR")}.`
+              }
               icon={Search}
             />
           ) : (
@@ -971,7 +966,7 @@ function AnotaPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {filteredBusca.map((o: any) => (
+                  {buscaResults.map((o: any) => (
                     <tr key={o.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
                         <button
