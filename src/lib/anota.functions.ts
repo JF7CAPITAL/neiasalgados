@@ -228,6 +228,10 @@ interface ParsedItem {
   ref: string;
   nome: string | null;
   quantidade: number;
+  /** true quando o item é um combo (contêiner) — a baixa usa a composição configurada. */
+  isCombo?: boolean;
+  /** ref do combo pai, para itens que vieram de dentro de um combo. */
+  comboRef?: string | null;
 }
 
 interface ParsedOrder {
@@ -338,7 +342,8 @@ const CONTAINER_FIELDS = [
 function extractItem(raw: unknown): ParsedItem[] {
   const it = asRecord(raw);
   if (!it) return [];
-  // Se o objeto for um contêiner com arrays de itens, extrai apenas os filhos
+  // Se o objeto for um contêiner com arrays de itens, extrai o combo pai
+  // (marcado is_combo) mais os filhos (marcados com combo_ref)
   for (const key of CONTAINER_FIELDS) {
     const arr = it[key];
     if (Array.isArray(arr) && arr.length > 0) {
@@ -347,7 +352,29 @@ function extractItem(raw: unknown): ParsedItem[] {
         firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]),
         parentNome,
       );
+      const parentRef =
+        firstString(it, [
+          "external_id",
+          "externalId",
+          "externalCode",
+          "code",
+          "product_id",
+          "productId",
+          "id",
+          "_id",
+        ]) ?? cleanItemName(parentNome);
       const result: ParsedItem[] = [];
+      // Emite o próprio combo como item para permitir configurar a composição
+      // e debitar a receita em vez dos filhos. Não é mapeado para um produto.
+      if (parentRef) {
+        result.push({
+          ref: parentRef,
+          nome: parentNome,
+          quantidade: parentQtd,
+          isCombo: true,
+          comboRef: null,
+        });
+      }
       for (const sub of arr) {
         const s = asRecord(sub);
         if (!s) continue;
@@ -370,7 +397,7 @@ function extractItem(raw: unknown): ParsedItem[] {
             nome,
           ) * parentQtd;
         if (!ref) continue;
-        result.push({ ref, nome, quantidade });
+        result.push({ ref, nome, quantidade, comboRef: parentRef ?? null });
       }
       return result;
     }
@@ -626,8 +653,9 @@ async function insertOrderItems(
   await supabase.from("anota_order_items").delete().eq("order_id", orderId);
   let todosMapeados = true;
   const rows = items.map((it) => {
-    const productId = mapByRef.has(it.ref) ? (mapByRef.get(it.ref) ?? null) : null;
-    if (!productId) todosMapeados = false;
+    // Combos não são mapeados para um produto único: a baixa usa a composição.
+    const productId = it.isCombo ? null : mapByRef.has(it.ref) ? (mapByRef.get(it.ref) ?? null) : null;
+    if (!productId && !it.isCombo) todosMapeados = false;
     return {
       order_id: orderId,
       anota_item_ref: it.ref,
@@ -635,6 +663,8 @@ async function insertOrderItems(
       quantidade: it.quantidade,
       product_id: productId,
       mapeado: !!productId,
+      is_combo: !!it.isCombo,
+      combo_ref: it.comboRef ?? null,
     };
   });
   const { error: insErr } = await supabase.from("anota_order_items").insert(rows);
@@ -642,6 +672,218 @@ async function insertOrderItems(
     console.error("[insertOrderItems] insert error:", insErr);
   }
   return todosMapeados;
+}
+
+/** Status definitivos de cancelamento/negação no Anota AI. */
+function isCancelledStatus(check: number): boolean {
+  return check === 4 || check === 5;
+}
+
+/**
+ * Status ativos que mantêm o estoque debitado: produção (1), pronto (2) e
+ * finalizado (3). O check de estoque só some quando o pedido é cancelado.
+ */
+function isActiveStatus(check: number): boolean {
+  return check >= 1 && check <= 3;
+}
+
+/**
+ * Credita de volta ao estoque os itens debitados de um pedido cancelado (4)
+ * ou negado (5). Idempotente: só age quando estoque_aplicado = true e o
+ * check_status é de cancelamento; ao final marca estoque_aplicado = false.
+ * Respeita a composição de combos: devolve cada produto da receita configurada.
+ */
+async function revertAnotaOrderStock(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  orderId: string,
+  userId: string,
+): Promise<boolean> {
+  const { data: order } = await supabase
+    .from("anota_orders")
+    .select("id, numero, external_order_id, check_status, estoque_aplicado")
+    .eq("id", orderId)
+    .maybeSingle();
+  if (!order) return false;
+  if (!order.estoque_aplicado) return true;
+  if (!isCancelledStatus(order.check_status)) return true;
+
+  const { data: itens } = await supabase
+    .from("anota_order_items")
+    .select("anota_item_ref, combo_ref, is_combo, product_id, quantidade, mapeado")
+    .eq("order_id", orderId);
+  if (!itens || itens.length === 0) return false;
+
+  const { data: recipes } = await supabase
+    .from("anota_combo_item_map")
+    .select("combo_ref, product_id, quantidade");
+  const recipeByRef = new Map<string, { product_id: string; quantidade: number }[]>();
+  for (const r of recipes ?? []) {
+    if (!recipeByRef.has(r.combo_ref)) recipeByRef.set(r.combo_ref, []);
+    recipeByRef.get(r.combo_ref)!.push({ product_id: r.product_id, quantidade: r.quantidade });
+  }
+
+  const ref = order.numero ?? order.external_order_id ?? orderId;
+  const rows: {
+    product_id: string;
+    tipo: "entrada";
+    quantidade: number;
+    destino: string;
+    observacoes: string;
+    user_id: string;
+    ref_order_id: string;
+  }[] = [];
+  for (const it of itens as {
+    anota_item_ref: string | null;
+    combo_ref: string | null;
+    is_combo: boolean;
+    product_id: string | null;
+    quantidade: number;
+    mapeado: boolean;
+  }[]) {
+    if (it.quantidade <= 0) continue;
+    // Combo (ou item avulso) com composição configurada: devolve cada produto
+    if (it.combo_ref == null && it.anota_item_ref && recipeByRef.has(it.anota_item_ref)) {
+      for (const r of recipeByRef.get(it.anota_item_ref)!) {
+        if (r.quantidade <= 0) continue;
+        rows.push({
+          product_id: r.product_id,
+          tipo: "entrada",
+          quantidade: r.quantidade * it.quantidade,
+          destino: "Anota AI",
+          observacoes: `Cancelamento Anota AI – Combo ${ref}`,
+          user_id: userId,
+          ref_order_id: orderId,
+        });
+      }
+      continue;
+    }
+    // Filho de combo configurado: ignorado (o combo já devolveu a receita)
+    if (it.combo_ref && recipeByRef.has(it.combo_ref)) continue;
+    // Item normal / filho de combo sem composição
+    if (!it.mapeado || !it.product_id) continue;
+    rows.push({
+      product_id: it.product_id,
+      tipo: "entrada",
+      quantidade: it.quantidade,
+      destino: "Anota AI",
+      observacoes: `Cancelamento Anota AI – Pedido ${ref}`,
+      user_id: userId,
+      ref_order_id: orderId,
+    });
+  }
+
+  if (!rows.length) return false;
+
+  const { error: insErr } = await supabase.from("product_movements").insert(rows);
+  if (insErr) {
+    console.error("[revertAnotaOrderStock] insert error:", insErr);
+    return false;
+  }
+  const { error: updErr } = await supabase
+    .from("anota_orders")
+    .update({ estoque_aplicado: false })
+    .eq("id", orderId);
+  if (updErr) {
+    console.error("[revertAnotaOrderStock] update error:", updErr);
+    return false;
+  }
+  return true;
+}
+
+interface ApplyOrderDetailResult {
+  newCheck: number;
+  statusChanged: boolean;
+  updated: boolean;
+  revertedStock: boolean;
+}
+
+/**
+ * Aplica o detalhe de um pedido já existente: atualiza status/dados, reescreve
+ * os itens e ajusta o estoque. Uma vez debitado (estoque_aplicado = true), a
+ * baixa persiste enquanto o pedido estiver ativo (produção/pronto/finalizado);
+ * o estoque só é devolvido quando o pedido é cancelado/negado.
+ */
+async function applyAnotaOrderDetail(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  prev: { id: string; check_status: number; estoque_aplicado: boolean },
+  detail: ParsedOrder,
+  mapByRef: Map<string, string | null>,
+  userId: string,
+): Promise<ApplyOrderDetailResult> {
+  const newCheck = effectiveCheckStatus(detail.raw, detail.check);
+  const statusChanged = prev.check_status !== newCheck;
+  const { error: updErr } = await supabase
+    .from("anota_orders")
+    .update({
+      numero: detail.numero,
+      check_status: newCheck,
+      total: detail.total,
+      cliente: detail.cliente,
+      pedido_em: detail.pedidoEm,
+      payload: detail.raw as never,
+    })
+    .eq("id", prev.id);
+  if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
+  const updated = !updErr;
+  await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
+
+  let revertedStock = false;
+  if (statusChanged && prev.estoque_aplicado && isCancelledStatus(newCheck)) {
+    // Pedido cancelado/negado: devolve ao estoque os itens que foram debitados
+    revertedStock = await revertAnotaOrderStock(supabase, prev.id, userId);
+  }
+  return { newCheck, statusChanged, updated, revertedStock };
+}
+
+/** Refs de itens que possuem composição de combo configurada. */
+async function loadComboRecipeRefs(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+): Promise<Set<string>> {
+  const { data } = await supabase.from("anota_combo_item_map").select("combo_ref");
+  return new Set((data ?? []).map((c: { combo_ref: string }) => c.combo_ref));
+}
+
+/** Reaplica baixa de estoque em pedidos finalizados ainda sem baixa. */
+async function aplicarBaixasPendentes(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  comboRecipeRefs: Set<string>,
+  userId: string,
+): Promise<number> {
+  const { data: pendentes, error: pendentesErr } = await supabase
+    .from("anota_orders")
+    .select("id")
+    .eq("check_status", 3)
+    .eq("estoque_aplicado", false);
+  if (pendentesErr) {
+    console.error("[aplicarBaixasPendentes] query pendentes error:", pendentesErr);
+    return 0;
+  }
+  let baixasAplicadas = 0;
+  for (const ord of pendentes ?? []) {
+    const { data: itens, error: itensErr } = await supabase
+      .from("anota_order_items")
+      .select("anota_item_ref, mapeado")
+      .eq("order_id", ord.id);
+    if (itensErr) {
+      console.error("[aplicarBaixasPendentes] query itens error:", itensErr);
+      continue;
+    }
+    const temMapeado = (itens ?? []).some(
+      (i: { anota_item_ref: string | null; mapeado: boolean }) =>
+        i.mapeado || (i.anota_item_ref && comboRecipeRefs.has(i.anota_item_ref)),
+    );
+    if (!temMapeado) continue;
+    const { error } = await supabase.rpc("apply_anota_order_stock", {
+      p_order: ord.id,
+      p_user: userId,
+    });
+    if (!error) baixasAplicadas++;
+  }
+  return baixasAplicadas;
 }
 
 // ---------------------------------------------------------------------------
@@ -737,6 +979,7 @@ export interface AnotaSyncResult {
   importados: number;
   atualizados: number;
   baixasAplicadas: number;
+  cancelados: number;
   pendentesMapeamento: number;
 }
 
@@ -756,6 +999,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         importados: 0,
         atualizados: 0,
         baixasAplicadas: 0,
+        cancelados: 0,
         pendentesMapeamento: 0,
       };
     }
@@ -776,6 +1020,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         importados: 0,
         atualizados: 0,
         baixasAplicadas: 0,
+        cancelados: 0,
         pendentesMapeamento: 0,
       };
     }
@@ -790,6 +1035,9 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       mapByRef.set(m.anota_item_ref, m.product_id);
     }
 
+    // Combos com composição configurada
+    const comboRecipeRefs = await loadComboRecipeRefs(supabase);
+
     // Pedidos já existentes
     const externalIds = discovery.orders.map((o) => o.id);
     const { data: existingRows, error: existingErr } = await supabase
@@ -801,6 +1049,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
 
     let importados = 0;
     let atualizados = 0;
+    let cancelados = 0;
     let pendentesMapeamento = 0;
     const finalizadosParaBaixa: string[] = []; // ids internos (anota_orders.id)
     const novosParaNotificar: string[] = []; // ids internos de pedidos novos (notificação de recebimento)
@@ -814,43 +1063,23 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
         // Sempre busca o detalhe atualizado para garantir itens/quantidades corretas
         const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
         if (detail) {
-          // Se o Anota ainda reporta agendado (-2) mas o horário já venceu, mantém produção (1)
-          const newCheck = effectiveCheckStatus(detail.raw, detail.check);
-          const statusChanged = prev.check_status !== newCheck;
-          const { error: updErr } = await supabase
-            .from("anota_orders")
-            .update({
-              numero: detail.numero,
-              check_status: newCheck,
-              total: detail.total,
-              cliente: detail.cliente,
-              pedido_em: detail.pedidoEm,
-              payload: detail.raw as never,
-            })
-            .eq("id", prev.id);
-          if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
-          else atualizados++;
-          await insertOrderItems(supabase, prev.id, detail.items, mapByRef);
+          const applied = await applyAnotaOrderDetail(
+            supabase,
+            prev,
+            detail,
+            mapByRef,
+            context.userId,
+          );
+          if (applied.updated) atualizados++;
+          if (applied.revertedStock) cancelados++;
           if (detail.check === 3 && prev.check_status !== 3) {
             prontosParaNotificar.push(prev.id);
           }
-          if (statusChanged) {
+          if (applied.statusChanged) {
             statusMudouParaNotificar.push(prev.id);
           }
-          // Só apaga movimentos antigos se o status mudou, para preservar a data original
-          if (statusChanged && prev.estoque_aplicado) {
-            await supabase
-              .from("product_movements")
-              .delete()
-              .eq("ref_order_id", prev.id)
-              .eq("destino", "Anota AI");
-            await supabase
-              .from("anota_orders")
-              .update({ estoque_aplicado: false })
-              .eq("id", prev.id);
-          }
           // apply_anota_order_stock internamente verifica estoque_aplicado e retorna se já foi aplicado
-          if (newCheck === 1 || newCheck === 3) {
+          if (isActiveStatus(applied.newCheck) && !prev.estoque_aplicado) {
             finalizadosParaBaixa.push(prev.id);
           }
           continue;
@@ -866,9 +1095,14 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           else {
             atualizados++;
             statusMudouParaNotificar.push(prev.id);
+            // Pedido cancelado/negado fora do detalhe: devolve o estoque debitado
+            if (isCancelledStatus(fallbackCheck) && prev.estoque_aplicado) {
+              const reverteu = await revertAnotaOrderStock(supabase, prev.id, context.userId);
+              if (reverteu) cancelados++;
+            }
           }
         }
-        if ((fallbackCheck === 1 || fallbackCheck === 3) && !prev.estoque_aplicado) {
+        if (isActiveStatus(fallbackCheck) && !prev.estoque_aplicado) {
           finalizadosParaBaixa.push(prev.id);
         }
         continue;
@@ -909,8 +1143,47 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       }
       statusMudouParaNotificar.push(inserted.id);
 
-      if (check === 1 || check === 3) {
+      if (isActiveStatus(check)) {
         finalizadosParaBaixa.push(inserted.id);
+      }
+    }
+
+    // Verifica pedidos ativos que NÃO estão na listagem do Anota: pedidos
+    // cancelados/negados saem da listagem, então o sync nunca atualizaria o
+    // status sem consultar o detalhe diretamente. Ex: pedido cancelado após
+    // entrar em produção fica "preso" em produção com o estoque debitado.
+    const naListagem = new Set(externalIds);
+    const { data: ativos, error: ativosErr } = await supabase
+      .from("anota_orders")
+      .select("id, external_order_id, check_status, estoque_aplicado, payload")
+      .in("check_status", [0, 1, 2, 3])
+      .order("updated_at", { ascending: false })
+      .limit(100);
+    if (ativosErr) console.error("[syncAnotaOrders] query ativos error:", ativosErr);
+
+    for (const ativo of ativos ?? []) {
+      if (naListagem.has(ativo.external_order_id)) continue;
+      const detail = await fetchOrderDetail(token, discovery.path, ativo.external_order_id, pageId);
+      if (!detail) continue;
+      const newCheck = effectiveCheckStatus(detail.raw, detail.check);
+      if (newCheck === ativo.check_status) continue;
+      const applied = await applyAnotaOrderDetail(
+        supabase,
+        ativo,
+        detail,
+        mapByRef,
+        context.userId,
+      );
+      if (applied.updated) atualizados++;
+      if (applied.revertedStock) cancelados++;
+      if (detail.check === 3 && ativo.check_status !== 3) {
+        prontosParaNotificar.push(ativo.id);
+      }
+      if (applied.statusChanged) {
+        statusMudouParaNotificar.push(ativo.id);
+      }
+      if (isActiveStatus(applied.newCheck) && !ativo.estoque_aplicado) {
+        finalizadosParaBaixa.push(ativo.id);
       }
     }
 
@@ -920,12 +1193,14 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     for (const orderId of finalizadosParaBaixa) {
       const { data: itens } = await supabase
         .from("anota_order_items")
-        .select("mapeado")
+        .select("anota_item_ref, mapeado")
         .eq("order_id", orderId);
       if (!itens || itens.length === 0) {
         continue;
       }
-      const temMapeado = itens.some((i) => i.mapeado);
+      const temMapeado = itens.some(
+        (i) => i.mapeado || (i.anota_item_ref && comboRecipeRefs.has(i.anota_item_ref)),
+      );
       if (!temMapeado) {
         pendentesMapeamento++;
         continue;
@@ -957,13 +1232,14 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       `${atualizados} atualizado(s)`,
       `${baixasAplicadas} baixa(s) de estoque`,
     ];
+    if (cancelados) partes.push(`${cancelados} cancelado(s) com estoque devolvido`);
     if (pendentesMapeamento) partes.push(`${pendentesMapeamento} pedido(s) aguardando mapeamento`);
 
     await supabase.from("activity_logs").insert({
       modulo: "anota_sync",
       acao: "sincronizou",
       user_id: context.userId,
-      detalhes: { importados, atualizados, baixasAplicadas, pendentesMapeamento },
+      detalhes: { importados, atualizados, baixasAplicadas, cancelados, pendentesMapeamento },
     });
 
     return {
@@ -972,6 +1248,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       importados,
       atualizados,
       baixasAplicadas,
+      cancelados,
       pendentesMapeamento,
     };
   });
@@ -1032,39 +1309,8 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
     }
 
     // Reaplica baixa para pedidos finalizados agora completamente mapeados
-    const { data: pendentes, error: pendentesErr } = await supabase
-      .from("anota_orders")
-      .select("id")
-      .eq("check_status", 3)
-      .eq("estoque_aplicado", false);
-
-    if (pendentesErr) {
-      console.error("[saveAnotaMapping] query pendentes error:", pendentesErr);
-      return {
-        ok: false,
-        message: `Erro ao buscar pedidos pendentes: ${pendentesErr.message}`,
-        baixasAplicadas: 0,
-      };
-    }
-
-    let baixasAplicadas = 0;
-    for (const ord of pendentes ?? []) {
-      const { data: itens, error: itensErr } = await supabase
-        .from("anota_order_items")
-        .select("mapeado")
-        .eq("order_id", ord.id);
-      if (itensErr) {
-        console.error("[saveAnotaMapping] query itens error:", itensErr);
-        continue;
-      }
-      const temMapeado = (itens ?? []).some((i) => i.mapeado);
-      if (!temMapeado) continue;
-      const { error } = await supabase.rpc("apply_anota_order_stock", {
-        p_order: ord.id,
-        p_user: context.userId,
-      });
-      if (!error) baixasAplicadas++;
-    }
+    const comboRecipeRefs = await loadComboRecipeRefs(supabase);
+    const baixasAplicadas = await aplicarBaixasPendentes(supabase, comboRecipeRefs, context.userId);
 
     return {
       ok: true,
@@ -1072,6 +1318,77 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
         baixasAplicadas > 0
           ? `Mapeamento salvo. ${baixasAplicadas} pedido(s) finalizado(s) tiveram baixa de estoque aplicada.`
           : "Mapeamento salvo com sucesso.",
+      baixasAplicadas,
+    };
+  });
+
+export interface SaveComboItemInput {
+  product_id: string;
+  quantidade: number;
+}
+
+export interface SaveComboInput {
+  combos: {
+    combo_ref: string;
+    nome?: string | null;
+    items: SaveComboItemInput[];
+  }[];
+}
+
+export interface SaveComboResult {
+  ok: boolean;
+  message: string;
+  baixasAplicadas: number;
+}
+
+/** Salva a composição (produtos + quantidades) de combos/itens do Anota AI. */
+export const saveAnotaCombo = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: SaveComboInput) => {
+    if (!input || !Array.isArray(input.combos)) throw new Error("Dados de combo inválidos.");
+    return input;
+  })
+  .handler(async ({ context, data }): Promise<SaveComboResult> => {
+    await ensureRole(context);
+    const supabase = context.supabase;
+
+    for (const c of data.combos) {
+      if (!c.combo_ref) continue;
+      const rows = (c.items ?? [])
+        .filter((i) => i.product_id && i.quantidade > 0)
+        .map((i) => ({
+          combo_ref: c.combo_ref,
+          nome: c.nome ?? null,
+          product_id: i.product_id,
+          quantidade: i.quantidade,
+        }));
+
+      const { error: delErr } = await supabase
+        .from("anota_combo_item_map")
+        .delete()
+        .eq("combo_ref", c.combo_ref);
+      if (delErr) {
+        console.error("[saveAnotaCombo] delete error:", delErr);
+        return { ok: false, message: `Erro ao salvar composição: ${delErr.message}`, baixasAplicadas: 0 };
+      }
+      if (rows.length) {
+        const { error: insErr } = await supabase.from("anota_combo_item_map").insert(rows);
+        if (insErr) {
+          console.error("[saveAnotaCombo] insert error:", insErr);
+          return { ok: false, message: `Erro ao salvar composição: ${insErr.message}`, baixasAplicadas: 0 };
+        }
+      }
+    }
+
+    const comboRecipeRefs = await loadComboRecipeRefs(supabase);
+    const baixasAplicadas = await aplicarBaixasPendentes(supabase, comboRecipeRefs, context.userId);
+
+    return {
+      ok: true,
+      message:
+        baixasAplicadas > 0
+          ? `Composição salva. ${baixasAplicadas} pedido(s) finalizado(s) tiveram baixa de estoque aplicada.`
+          : "Composição salva com sucesso.",
       baixasAplicadas,
     };
   });

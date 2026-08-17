@@ -29,6 +29,7 @@ import {
   testAnotaConnection,
   syncAnotaOrders,
   saveAnotaMapping,
+  saveAnotaCombo,
   ANOTA_CHECK_LABELS,
 } from "@/lib/anota.functions";
 import {
@@ -56,6 +57,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -142,6 +144,7 @@ function AnotaPage() {
   const testFn = useServerFn(testAnotaConnection);
   const syncFn = useServerFn(syncAnotaOrders);
   const saveMapFn = useServerFn(saveAnotaMapping);
+  const saveComboFn = useServerFn(saveAnotaCombo);
   const whatsSettingsFn = useServerFn(getWhatsAppSettings);
   const saveWhatsSettingsFn = useServerFn(saveWhatsAppSettings);
   const getNotifsFn = useServerFn(getWhatsAppNotifications);
@@ -175,7 +178,18 @@ function AnotaPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("anota_order_items")
-        .select("anota_item_ref, nome, product_id, mapeado");
+        .select("anota_item_ref, nome, product_id, mapeado, is_combo, combo_ref");
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const { data: comboMap = [] } = useQuery({
+    queryKey: ["anota-combo-map"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("anota_combo_item_map")
+        .select("combo_ref, nome, product_id, quantidade");
       if (error) throw error;
       return data;
     },
@@ -405,21 +419,30 @@ function AnotaPage() {
   const distinctItems = useMemo(() => {
     const map = new Map<
       string,
-      { ref: string; nome: string | null; product_id: string | null; count: number }
+      {
+        ref: string;
+        nome: string | null;
+        product_id: string | null;
+        count: number;
+        is_combo: boolean;
+      }
     >();
     for (const it of items) {
       const ref = it.anota_item_ref;
       if (!ref) continue;
+      const isCombo = !!it.is_combo || /^combo\s/i.test(it.nome ?? "");
       const cur = map.get(ref);
       if (cur) {
         cur.count++;
         if (!cur.product_id && it.product_id) cur.product_id = it.product_id;
+        cur.is_combo = cur.is_combo || isCombo;
       } else {
         map.set(ref, {
           ref,
           nome: it.nome,
           product_id: it.product_id,
           count: 1,
+          is_combo: isCombo,
         });
       }
     }
@@ -428,7 +451,19 @@ function AnotaPage() {
     );
   }, [items]);
 
-  const pendentes = distinctItems.filter((d) => !d.product_id).length;
+  // Composição configurada por combo: ref -> produtos com quantidade
+  const comboByRef = useMemo(() => {
+    const map = new Map<string, { product_id: string; quantidade: number }[]>();
+    for (const c of comboMap) {
+      if (!map.has(c.combo_ref)) map.set(c.combo_ref, []);
+      map.get(c.combo_ref)!.push({ product_id: c.product_id, quantidade: c.quantidade });
+    }
+    return map;
+  }, [comboMap]);
+
+  const pendentes = distinctItems.filter(
+    (d) => !d.product_id && !comboByRef.has(d.ref),
+  ).length;
   const finalizadosSemBaixa = orders.filter(
     (o) => o.check_status === 3 && !o.estoque_aplicado,
   ).length;
@@ -436,6 +471,25 @@ function AnotaPage() {
   // Estado local dos selects de mapeamento
   const [mapDraft, setMapDraft] = useState<Record<string, string>>({});
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+
+  // Editor de composição de combo
+  const [comboEditingRef, setComboEditingRef] = useState<string | null>(null);
+  const [comboDraft, setComboDraft] = useState<{ product_id: string; quantidade: string }[]>([]);
+
+  function openComboEditor(ref: string) {
+    const existing = comboByRef.get(ref) ?? [];
+    setComboDraft(
+      existing.length
+        ? existing.map((e) => ({ product_id: e.product_id, quantidade: String(e.quantidade) }))
+        : [{ product_id: "", quantidade: "" }],
+    );
+    setComboEditingRef(ref);
+  }
+
+  const comboEditingNome =
+    comboEditingRef != null
+      ? (distinctItems.find((x) => x.ref === comboEditingRef)?.nome ?? comboEditingRef)
+      : "";
 
   const { data: orderItems = [] } = useQuery({
     queryKey: ["anota-order-items", selectedOrderId],
@@ -527,6 +581,28 @@ function AnotaPage() {
       qc.invalidateQueries({ queryKey: ["anota-orders"] });
       qc.invalidateQueries({ queryKey: ["anota-items"] });
       qc.invalidateQueries({ queryKey: ["anota-scheduled"] });
+      qc.invalidateQueries({ queryKey: ["stock"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const saveCombo = useMutation({
+    mutationFn: () => {
+      if (!comboEditingRef) throw new Error("Nenhum combo selecionado.");
+      const items = comboDraft
+        .filter((i) => i.product_id && Number(i.quantidade) > 0)
+        .map((i) => ({ product_id: i.product_id, quantidade: Number(i.quantidade) }));
+      const d = distinctItems.find((x) => x.ref === comboEditingRef);
+      return saveComboFn({
+        data: { combos: [{ combo_ref: comboEditingRef, nome: d?.nome ?? null, items }] },
+      });
+    },
+    onSuccess: (r) => {
+      toast.success(r.message);
+      setComboEditingRef(null);
+      qc.invalidateQueries({ queryKey: ["anota-combo-map"] });
+      qc.invalidateQueries({ queryKey: ["anota-items"] });
+      qc.invalidateQueries({ queryKey: ["anota-orders"] });
       qc.invalidateQueries({ queryKey: ["stock"] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -923,11 +999,18 @@ function AnotaPage() {
                   <tbody className="divide-y divide-border">
                     {distinctItems.map((d) => {
                       const value = mapDraft[d.ref] ?? d.product_id ?? "none";
+                      const hasCombo = d.is_combo && comboByRef.has(d.ref);
+                      const comboItems = comboByRef.get(d.ref) ?? [];
                       return (
                         <tr key={d.ref} className="hover:bg-muted/30">
                           <td className="px-4 py-3">
                             <span className="font-medium">{d.nome ?? d.ref}</span>
-                            {!d.product_id && !mapDraft[d.ref] && (
+                            {d.is_combo && (
+                              <Badge variant="secondary" className="ml-2">
+                                Combo
+                              </Badge>
+                            )}
+                            {!d.product_id && !mapDraft[d.ref] && !hasCombo && (
                               <Badge variant="outline" className="ml-2 text-warning">
                                 Pendente
                               </Badge>
@@ -935,22 +1018,43 @@ function AnotaPage() {
                           </td>
                           <td className="px-4 py-3 text-center text-muted-foreground">{d.count}</td>
                           <td className="px-4 py-3">
-                            <Select
-                              value={value}
-                              onValueChange={(v) => setMapDraft((s) => ({ ...s, [d.ref]: v }))}
-                            >
-                              <SelectTrigger className="w-64">
-                                <SelectValue placeholder="Selecionar produto..." />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="none">— Não vincular —</SelectItem>
-                                {products.map((p) => (
-                                  <SelectItem key={p.id} value={p.id}>
-                                    {p.nome}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            {d.is_combo ? (
+                              <div className="flex items-center gap-2">
+                                {hasCombo ? (
+                                  <span className="max-w-56 truncate text-xs text-muted-foreground">
+                                    {comboItems.length} produto(s):{" "}
+                                    {comboItems
+                                      .map(
+                                        (ci) =>
+                                          `${products.find((p) => p.id === ci.product_id)?.nome ?? "?"} x${ci.quantidade}`,
+                                      )
+                                      .join(", ")}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-warning">Sem composição</span>
+                                )}
+                                <Button variant="outline" size="sm" onClick={() => openComboEditor(d.ref)}>
+                                  {hasCombo ? "Editar composição" : "Configurar composição"}
+                                </Button>
+                              </div>
+                            ) : (
+                              <Select
+                                value={value}
+                                onValueChange={(v) => setMapDraft((s) => ({ ...s, [d.ref]: v }))}
+                              >
+                                <SelectTrigger className="w-64">
+                                  <SelectValue placeholder="Selecionar produto..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">— Não vincular —</SelectItem>
+                                  {products.map((p) => (
+                                    <SelectItem key={p.id} value={p.id}>
+                                      {p.nome}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
                           </td>
                         </tr>
                       );
@@ -1552,6 +1656,88 @@ function AnotaPage() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!comboEditingRef}
+        onOpenChange={(open) => {
+          if (!open) setComboEditingRef(null);
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Composição — {comboEditingNome}</DialogTitle>
+          </DialogHeader>
+          <p className="-mt-2 text-sm text-muted-foreground">
+            Defina os produtos e quantidades que compõem este combo. Ao finalizar um pedido com
+            este combo, a baixa de estoque usa essa composição.
+          </p>
+          <div className="space-y-2">
+            {comboDraft.map((row, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <Select
+                  value={row.product_id}
+                  onValueChange={(v) =>
+                    setComboDraft((d) =>
+                      d.map((r, i) => (i === idx ? { ...r, product_id: v } : r)),
+                    )
+                  }
+                >
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder="Selecionar produto..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className="w-24"
+                  value={row.quantidade}
+                  onChange={(e) =>
+                    setComboDraft((d) =>
+                      d.map((r, i) => (i === idx ? { ...r, quantidade: e.target.value } : r)),
+                    )
+                  }
+                  placeholder="Qtd"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() =>
+                    setComboDraft((d) => d.filter((_, i) => i !== idx))
+                  }
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setComboDraft((d) => [...d, { product_id: "", quantidade: "" }])}
+            >
+              <Plus className="mr-1 size-4" /> Adicionar produto
+            </Button>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setComboEditingRef(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={() => saveCombo.mutate()} disabled={saveCombo.isPending}>
+              {saveCombo.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
+              Salvar composição
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

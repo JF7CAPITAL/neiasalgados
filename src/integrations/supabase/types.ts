@@ -1,4 +1,4 @@
-export type Json =
+﻿export type Json =
   | string
   | number
   | boolean
@@ -44,11 +44,51 @@ export type Database = {
         }
         Relationships: []
       }
+      anota_combo_item_map: {
+        Row: {
+          combo_ref: string
+          created_at: string
+          id: string
+          nome: string | null
+          product_id: string
+          quantidade: number
+          updated_at: string
+        }
+        Insert: {
+          combo_ref: string
+          created_at?: string
+          id?: string
+          nome?: string | null
+          product_id: string
+          quantidade?: number
+          updated_at?: string
+        }
+        Update: {
+          combo_ref?: string
+          created_at?: string
+          id?: string
+          nome?: string | null
+          product_id?: string
+          quantidade?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "anota_combo_item_map_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       anota_order_items: {
         Row: {
           anota_item_ref: string | null
+          combo_ref: string | null
           created_at: string
           id: string
+          is_combo: boolean
           mapeado: boolean
           nome: string | null
           order_id: string
@@ -57,8 +97,10 @@ export type Database = {
         }
         Insert: {
           anota_item_ref?: string | null
+          combo_ref?: string | null
           created_at?: string
           id?: string
+          is_combo?: boolean
           mapeado?: boolean
           nome?: string | null
           order_id: string
@@ -67,8 +109,10 @@ export type Database = {
         }
         Update: {
           anota_item_ref?: string | null
+          combo_ref?: string | null
           created_at?: string
           id?: string
+          is_combo?: boolean
           mapeado?: boolean
           nome?: string | null
           order_id?: string
@@ -107,10 +151,10 @@ export type Database = {
           pedido_em: string | null
           total: number
           updated_at: string
+          whatsapp_keywords_notified: string[]
           whatsapp_notified_at: string | null
           whatsapp_ready_notified_at: string | null
-          whatsapp_statuses_notified: string[] | null
-          whatsapp_keywords_notified: string[] | null
+          whatsapp_statuses_notified: string[]
         }
         Insert: {
           check_status?: number
@@ -126,10 +170,10 @@ export type Database = {
           pedido_em?: string | null
           total?: number
           updated_at?: string
+          whatsapp_keywords_notified?: string[]
           whatsapp_notified_at?: string | null
           whatsapp_ready_notified_at?: string | null
-          whatsapp_statuses_notified?: string[] | null
-          whatsapp_keywords_notified?: string[] | null
+          whatsapp_statuses_notified?: string[]
         }
         Update: {
           check_status?: number
@@ -145,10 +189,10 @@ export type Database = {
           pedido_em?: string | null
           total?: number
           updated_at?: string
+          whatsapp_keywords_notified?: string[]
           whatsapp_notified_at?: string | null
           whatsapp_ready_notified_at?: string | null
-          whatsapp_statuses_notified?: string[] | null
-          whatsapp_keywords_notified?: string[] | null
+          whatsapp_statuses_notified?: string[]
         }
         Relationships: [
           {
@@ -984,42 +1028,6 @@ export type Database = {
         }
         Relationships: []
       }
-      whatsapp_logs: {
-        Row: {
-          created_at: string
-          destino: string | null
-          error: string | null
-          id: string
-          mensagem: string | null
-          ref_id: string | null
-          ref_type: string | null
-          status: string
-          tipo: string | null
-        }
-        Insert: {
-          created_at?: string
-          destino?: string | null
-          error?: string | null
-          id?: string
-          mensagem?: string | null
-          ref_id?: string | null
-          ref_type?: string | null
-          status: string
-          tipo?: string | null
-        }
-        Update: {
-          created_at?: string
-          destino?: string | null
-          error?: string | null
-          id?: string
-          mensagem?: string | null
-          ref_id?: string | null
-          ref_type?: string | null
-          status?: string
-          tipo?: string | null
-        }
-        Relationships: []
-      }
       whatsapp_notifications: {
         Row: {
           ativo: boolean
@@ -1134,6 +1142,10 @@ export type Database = {
           p_quantidade: number
           p_user?: string
         }
+        Returns: undefined
+      }
+      revert_anota_order_stock: {
+        Args: { p_order: string; p_user?: string }
         Returns: undefined
       }
       start_production_order: {
