@@ -999,7 +999,7 @@ function AnotaPage() {
                   <tbody className="divide-y divide-border">
                     {distinctItems.map((d) => {
                       const value = mapDraft[d.ref] ?? d.product_id ?? "none";
-                      const hasCombo = d.is_combo && comboByRef.has(d.ref);
+                      const hasRecipe = comboByRef.has(d.ref);
                       const comboItems = comboByRef.get(d.ref) ?? [];
                       return (
                         <tr key={d.ref} className="hover:bg-muted/30">
@@ -1010,7 +1010,7 @@ function AnotaPage() {
                                 Combo
                               </Badge>
                             )}
-                            {!d.product_id && !mapDraft[d.ref] && !hasCombo && (
+                            {!d.product_id && !mapDraft[d.ref] && !hasRecipe && (
                               <Badge variant="outline" className="ml-2 text-warning">
                                 Pendente
                               </Badge>
@@ -1018,42 +1018,43 @@ function AnotaPage() {
                           </td>
                           <td className="px-4 py-3 text-center text-muted-foreground">{d.count}</td>
                           <td className="px-4 py-3">
-                            {d.is_combo ? (
+                            {hasRecipe ? (
                               <div className="flex items-center gap-2">
-                                {hasCombo ? (
-                                  <span className="max-w-56 truncate text-xs text-muted-foreground">
-                                    {comboItems.length} produto(s):{" "}
-                                    {comboItems
-                                      .map(
-                                        (ci) =>
-                                          `${products.find((p) => p.id === ci.product_id)?.nome ?? "?"} x${ci.quantidade}`,
-                                      )
-                                      .join(", ")}
-                                  </span>
-                                ) : (
-                                  <span className="text-xs text-warning">Sem composição</span>
-                                )}
+                                <span className="max-w-64 truncate text-xs text-muted-foreground">
+                                  {comboItems.length} produto(s):{" "}
+                                  {comboItems
+                                    .map(
+                                      (ci) =>
+                                        `${products.find((p) => p.id === ci.product_id)?.nome ?? "?"} x${ci.quantidade}`,
+                                    )
+                                    .join(", ")}
+                                </span>
                                 <Button variant="outline" size="sm" onClick={() => openComboEditor(d.ref)}>
-                                  {hasCombo ? "Editar composição" : "Configurar composição"}
+                                  Editar composição
                                 </Button>
                               </div>
                             ) : (
-                              <Select
-                                value={value}
-                                onValueChange={(v) => setMapDraft((s) => ({ ...s, [d.ref]: v }))}
-                              >
-                                <SelectTrigger className="w-64">
-                                  <SelectValue placeholder="Selecionar produto..." />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="none">— Não vincular —</SelectItem>
-                                  {products.map((p) => (
-                                    <SelectItem key={p.id} value={p.id}>
-                                      {p.nome}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                              <div className="flex items-center gap-2">
+                                <Select
+                                  value={value}
+                                  onValueChange={(v) => setMapDraft((s) => ({ ...s, [d.ref]: v }))}
+                                >
+                                  <SelectTrigger className="w-64">
+                                    <SelectValue placeholder="Selecionar produto..." />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="none">— Não vincular —</SelectItem>
+                                    {products.map((p) => (
+                                      <SelectItem key={p.id} value={p.id}>
+                                        {p.nome}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <Button variant="outline" size="sm" onClick={() => openComboEditor(d.ref)}>
+                                  <Plus className="mr-1 size-3" /> Configurar composição
+                                </Button>
+                              </div>
                             )}
                           </td>
                         </tr>
