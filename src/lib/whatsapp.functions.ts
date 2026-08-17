@@ -410,6 +410,88 @@ export function phoneFromDest(destino: string): string {
   return normalizePhone(raw) ?? raw;
 }
 
+// Cache local de resolução lid -> telefone real (evita chamadas repetidas ao Waha).
+const lidPhoneCache = new Map<string, string>();
+
+/**
+ * Tenta extrair o telefone real (E.164) de um payload GOWS/WEBJS quando o
+ * remetente chega como `@lid` (ID oculto do WhatsApp).
+ */
+function realPhoneFromPayload(payload: JsonRecord | null): string | null {
+  if (!payload) return null;
+  const data = asRecord(payload._data);
+  if (data) {
+    // NOWEB/GOWS: _data.key.remoteJidAlt = "5515...@s.whatsapp.net"
+    const key = asRecord(data.key);
+    const alt = typeof key?.remoteJidAlt === "string" ? key.remoteJidAlt : "";
+    if (alt.includes("@s.whatsapp.net")) {
+      const n = normalizePhone(alt.split("@")[0]);
+      if (n) return n;
+    }
+    // GOWS (versões novas): _data.Info.SenderAlt
+    const info = asRecord(data.Info);
+    const senderAlt = typeof info?.SenderAlt === "string" ? info.SenderAlt : "";
+    if (senderAlt) {
+      const raw = senderAlt.includes("@") ? senderAlt.split("@")[0] : senderAlt;
+      const n = normalizePhone(raw);
+      if (n) return n;
+    }
+  }
+  const sc = asRecord(payload.senderContact) ?? asRecord(payload.contact);
+  const num = typeof sc?.number === "string" ? sc.number : "";
+  if (num) {
+    const n = normalizePhone(num);
+    if (n) return n;
+  }
+  return null;
+}
+
+/**
+ * Resolve o telefone real (E.164) a partir do chatId do Waha.
+ * Se o chatId for `@lid`, tenta o payload, depois a API de LIDs do Waha e,
+ * por fim, retorna o número cru do lid (sem prefixar 55).
+ */
+export async function resolveRealPhone(
+  chatId: string,
+  payload: JsonRecord | null,
+): Promise<string> {
+  const raw = chatId.split("@")[0];
+  if (!chatId.includes("@lid")) return normalizePhone(raw) ?? raw;
+
+  const fromPayload = realPhoneFromPayload(payload);
+  if (fromPayload) return fromPayload;
+
+  const cached = lidPhoneCache.get(raw);
+  if (cached) return cached;
+
+  const env = wahaEnv();
+  if (!("error" in env) && env.enabled) {
+    try {
+      const res = await fetch(`${env.url}/api/${env.session}/lids/${encodeURIComponent(raw)}`, {
+        headers: { "X-Api-Key": env.key },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (res.ok) {
+        const body = (await res.json().catch(() => null)) as { pn?: string | null } | null;
+        const pn = body?.pn ?? "";
+        if (pn) {
+          const n = normalizePhone(pn.split("@")[0]);
+          if (n) {
+            lidPhoneCache.set(raw, n);
+            return n;
+          }
+        }
+      }
+    } catch {
+      // segue para o fallback
+    }
+  }
+
+  // Sem resolução: guarda o número cru do lid (não o normaliza com 55).
+  lidPhoneCache.set(raw, raw);
+  return raw;
+}
+
 /** Verifica se o envio de mensagens está temporariamente pausado para o contato. */
 export async function isContactPaused(supabase: DbClient, phone: string): Promise<boolean> {
   try {

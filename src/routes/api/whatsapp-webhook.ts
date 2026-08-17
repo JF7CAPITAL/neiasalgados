@@ -7,6 +7,7 @@ import {
   matchKeywordRules,
   normalizePhone,
   renderTemplate,
+  resolveRealPhone,
   sendWahaImage,
   sendWahaText,
   type WhatsAppKeywordRule,
@@ -180,7 +181,9 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
             return Response.json({ ok: true, ignored: "sem remetente ou grupo" });
           }
 
-          const phone = normalizePhone(chatId.split("@")[0]);
+          // O Waha (GOWS) pode entregar o remetente como `@lid` (ID oculto).
+          // Resolve o telefone real (payload/_data ou API de LIDs do Waha).
+          const phone = await resolveRealPhone(chatId, payload);
           if (!phone) {
             await log({ event, chatId, motivo: "telefone_invalido" });
             return Response.json({ ok: true, ignored: "telefone inválido" });
@@ -194,7 +197,35 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
 
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-          // Grava a mensagem recebida na conversa (aba Mensagens).
+          // Deduplicação por id único da mensagem: o Waha (engine GOWS) entrega
+          // o MESMO evento 2x (bug conhecido). Reivindica o id atomicamente;
+          // se já existir, a segunda entrega é ignorada (sem gravar nem responder).
+          const messageId = extractMessageId(root);
+          if (messageId) {
+            const { data: inserted, error: dedupErr } = await supabaseAdmin
+              .from("whatsapp_processed_messages")
+              .insert({
+                message_id: messageId,
+                phone,
+                regra: "incoming",
+              })
+              .select("message_id")
+              .single();
+            if (dedupErr || !inserted) {
+              await log({
+                event,
+                chatId,
+                phone,
+                texto,
+                motivo: "duplicada",
+                message_id: messageId,
+              });
+              return Response.json({ ok: true, ignored: "mensagem já processada" });
+            }
+          }
+
+          // Grava a mensagem recebida na conversa (aba Mensagens), apenas na
+          // primeira entrega (a duplicada já retornou acima).
           await logWhatsAppMessage(supabaseAdmin, {
             phone,
             chatId: chatId,
@@ -220,33 +251,6 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           if (!matched.length) {
             await log({ event, chatId, phone, texto, motivo: "sem_match" });
             return Response.json({ ok: true, ignored: "nenhuma palavra-chave bateu" });
-          }
-
-          // Deduplicação por id único da mensagem: o Waha (engine GOWS) entrega
-          // o MESMO evento 2x (bug conhecido). Reivindica o id atomicamente;
-          // se já existir, a segunda entrega é ignorada sem enviar resposta.
-          const messageId = extractMessageId(root);
-          if (messageId) {
-            const { data: inserted, error: dedupErr } = await supabaseAdmin
-              .from("whatsapp_processed_messages")
-              .insert({
-                message_id: messageId,
-                phone,
-                regra: matched[0].regra,
-              })
-              .select("message_id")
-              .single();
-            if (dedupErr || !inserted) {
-              await log({
-                event,
-                chatId,
-                phone,
-                texto,
-                motivo: "duplicada",
-                message_id: messageId,
-              });
-              return Response.json({ ok: true, ignored: "mensagem já processada" });
-            }
           }
 
           cleanupCooldown();
