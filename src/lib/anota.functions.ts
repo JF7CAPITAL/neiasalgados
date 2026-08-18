@@ -47,6 +47,13 @@ const API_PATH_CACHE_TTL_MS = 10 * 60 * 1000;
 /** Cooldown mínimo entre sincronizações para evitar rajadas (20 s). */
 const SYNC_COOLDOWN_MS = 20 * 1000;
 
+/** Carência (ms) para finalizar pedidos que retornaram 410/404 (sem resposta).
+ *  Pronto (2) ou que já passou da data agendada provavelmente foi finalizado,
+ *  então finaliza mais rápido; os demais esperam mais para evitar decisões
+ *  precipitadas diante de um 410 transitório. */
+const SEM_RESPOSTA_GRACE_PRONTO_MS = 24 * 60 * 60 * 1000; // 1 dia
+const SEM_RESPOSTA_GRACE_GENERICO_MS = 3 * 24 * 60 * 60 * 1000; // 3 dias
+
 /** Cache do caminho de listagem que respondeu no formato esperado. */
 let listPathCache: { path: string; expiresAt: number } | null = null;
 
@@ -634,12 +641,18 @@ async function discoverListPath(
 }
 
 /** Busca o detalhe completo de um pedido, tentando caminhos derivados. */
+interface FetchOrderDetailResult {
+  parsed: ParsedOrder | null;
+  /** true quando o Anota responde 410/404: o pedido não existe mais na API. */
+  gone: boolean;
+}
+
 async function fetchOrderDetail(
   token: string,
   listPath: string,
   id: string,
   pageId?: string,
-): Promise<ParsedOrder | null> {
+): Promise<FetchOrderDetailResult> {
   // Padrão que já funcionou para este caminho de listagem é tentado primeiro;
   // assim o sync faz 1 requisição de detalhe por pedido em vez de até 6.
   const cached =
@@ -657,7 +670,11 @@ async function fetchOrderDetail(
     try {
       const { ok, status, json } = await fetchJson(url, token, "GET", pageId);
       // Rate limit: para imediatamente, não tenta os demais candidatos.
-      if (status === 429) return null;
+      if (status === 429) return { parsed: null, gone: false };
+      // 410/404: o pedido saiu da listagem e foi removido da API. Todos os
+      // padrões usam o mesmo id, então qualquer resposta "não existe" é o
+      // veredito — evita gastar até 6 requisições por pedido fantasma.
+      if (status === 410 || status === 404) return { parsed: null, gone: true };
       if (ok && json) {
         const o = unwrapOrder(json);
         if (o) {
@@ -668,7 +685,7 @@ async function fetchOrderDetail(
               pattern,
               expiresAt: Date.now() + API_PATH_CACHE_TTL_MS,
             };
-            return parsed;
+            return { parsed, gone: false };
           }
         }
       }
@@ -676,7 +693,7 @@ async function fetchOrderDetail(
       // tenta o próximo
     }
   }
-  return null;
+  return { parsed: null, gone: false };
 }
 
 function statusQuery(filtro: "todos" | "analise" | "producao" | "finalizados"): string {
@@ -892,7 +909,12 @@ interface ApplyOrderDetailResult {
 async function applyAnotaOrderDetail(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
-  prev: { id: string; check_status: number; estoque_aplicado: boolean },
+  prev: {
+    id: string;
+    check_status: number;
+    estoque_aplicado: boolean;
+    sem_resposta_em?: string | null;
+  },
   detail: ParsedOrder,
   mapByRef: Map<string, string | null>,
   userId: string,
@@ -908,6 +930,8 @@ async function applyAnotaOrderDetail(
       cliente: detail.cliente,
       pedido_em: detail.pedidoEm,
       payload: detail.raw as never,
+      // Pedido voltou a responder na API: limpa o marcador de "sem resposta".
+      sem_resposta_em: prev.sem_resposta_em ? null : undefined,
     })
     .eq("id", prev.id);
   if (updErr) console.error("[syncAnotaOrders] update detail error:", updErr);
@@ -1036,6 +1060,48 @@ async function promoteExpiredScheduledOrders(supabase: any): Promise<number> {
   return promovidos;
 }
 
+/** Finaliza pedidos que não existem mais no Anota (marcados com sem_resposta_em
+ *  após retorno 410/404) cuja carência já venceu. Pronto (2) ou que já passou da
+ *  data agendada provavelmente foi finalizado, então tem carência menor. O estoque
+ *  continua debitado: pedido finalizado consome estoque (ver isActiveStatus). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function finalizeSemResposta(supabase: any): Promise<number> {
+  const { data: marcados, error } = await supabase
+    .from("anota_orders")
+    .select("id, check_status, payload, sem_resposta_em")
+    .not("sem_resposta_em", "is", null);
+  if (error) {
+    console.error("[finalizeSemResposta] query error:", error);
+    return 0;
+  }
+
+  const agora = Date.now();
+  let finalizados = 0;
+  for (const o of marcados ?? []) {
+    const marcadoEm = Date.parse(o.sem_resposta_em);
+    if (!Number.isFinite(marcadoEm)) continue;
+    const dtAgendado = getScheduledDateTime(o.payload);
+    const provavelFinalizado =
+      o.check_status === 2 || (dtAgendado && dtAgendado.getTime() <= agora);
+    const grace = provavelFinalizado
+      ? SEM_RESPOSTA_GRACE_PRONTO_MS
+      : SEM_RESPOSTA_GRACE_GENERICO_MS;
+    if (agora - marcadoEm < grace) continue;
+
+    const { error: updErr } = await supabase
+      .from("anota_orders")
+      .update({ check_status: 3, sem_resposta_em: null })
+      .eq("id", o.id)
+      .eq("sem_resposta_em", o.sem_resposta_em);
+    if (updErr) {
+      console.error("[finalizeSemResposta] update error:", updErr);
+      continue;
+    }
+    finalizados++;
+  }
+  return finalizados;
+}
+
 export interface PromoteScheduledResult {
   ok: boolean;
   message: string;
@@ -1066,6 +1132,8 @@ export interface AnotaSyncResult {
   baixasAplicadas: number;
   cancelados: number;
   pendentesMapeamento: number;
+  /** Pedidos que não existiam mais no Anota (410/404) e foram finalizados após a carência. */
+  finalizadosSemResposta?: number;
 }
 
 /** Resultado quando uma sincronização é ignorada por estar dentro do cooldown. */
@@ -1132,6 +1200,10 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     // assim não depende do Anota para refletir o status.
     await promoteExpiredScheduledOrders(supabase);
 
+    // Finaliza pedidos que não existem mais no Anota (410/404) com carência
+    // vencida, liberando-os da consulta e reduzindo a carga na API.
+    const finalizadosSemResposta = await finalizeSemResposta(supabase);
+
     const discovery = await discoverListPath(token, statusQuery(data.filtro), pageId);
     if ("error" in discovery) {
       return {
@@ -1162,7 +1234,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     const externalIds = discovery.orders.map((o) => o.id);
     const { data: existingRows, error: existingErr } = await supabase
       .from("anota_orders")
-      .select("id, external_order_id, check_status, estoque_aplicado, payload")
+      .select("id, external_order_id, check_status, estoque_aplicado, payload, sem_resposta_em")
       .in("external_order_id", externalIds.length ? externalIds : ["__none__"]);
     if (existingErr) console.error("[syncAnotaOrders] existing query error:", existingErr);
     const existing = new Map((existingRows ?? []).map((r) => [r.external_order_id, r] as const));
@@ -1182,17 +1254,17 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       if (prev) {
         // Sempre busca o detalhe atualizado para garantir itens/quantidades corretas
         const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
-        if (detail) {
+        if (detail.parsed) {
           const applied = await applyAnotaOrderDetail(
             supabase,
             prev,
-            detail,
+            detail.parsed,
             mapByRef,
             context.userId,
           );
           if (applied.updated) atualizados++;
           if (applied.revertedStock) cancelados++;
-          if (detail.check === 3 && prev.check_status !== 3) {
+          if (detail.parsed.check === 3 && prev.check_status !== 3) {
             prontosParaNotificar.push(prev.id);
           }
           if (applied.statusChanged) {
@@ -1231,20 +1303,20 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       // Novo pedido — busca detalhe
       const detail = await fetchOrderDetail(token, discovery.path, listed.id, pageId);
       const check = effectiveCheckStatus(
-        detail?.raw ?? null,
-        detail?.check ?? listed.check,
+        detail.parsed?.raw ?? null,
+        detail.parsed?.check ?? listed.check,
       );
 
       const { data: inserted, error: insErr } = await supabase
         .from("anota_orders")
         .insert({
           external_order_id: listed.id,
-          numero: detail?.numero ?? null,
+          numero: detail.parsed?.numero ?? null,
           check_status: check,
-          total: detail?.total ?? 0,
-          cliente: detail?.cliente ?? null,
-          pedido_em: detail?.pedidoEm ?? null,
-          payload: (detail?.raw ?? null) as never,
+          total: detail.parsed?.total ?? 0,
+          cliente: detail.parsed?.cliente ?? null,
+          pedido_em: detail.parsed?.pedidoEm ?? null,
+          payload: (detail.parsed?.raw ?? null) as never,
         })
         .select("id")
         .single();
@@ -1252,7 +1324,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       if (insErr || !inserted) continue;
       importados++;
 
-      const items = detail?.items ?? [];
+      const items = detail.parsed?.items ?? [];
       const todosMapeados = await insertOrderItems(supabase, inserted.id, items, mapByRef);
       if (items.length > 0 && !todosMapeados) pendentesMapeamento++;
 
@@ -1269,14 +1341,17 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     }
 
     // Verifica pedidos ativos que NÃO estão na listagem do Anota: pedidos
-    // cancelados/negados saem da listagem, então o sync nunca atualizaria o
-    // status sem consultar o detalhe diretamente. Ex: pedido cancelado após
-    // entrar em produção fica "preso" em produção com o estoque debitado.
+    // cancelados/negados/finalizados saem da listagem, então o sync nunca
+    // atualizaria o status sem consultar o detalhe diretamente. Ex: pedido
+    // cancelado após entrar em produção fica "preso" em produção com o estoque
+    // debitado. Finalizados (3) não são mais consultados — o status é definitivo
+    // — e pedidos marcados como "sem resposta" (410/404) também ficam de fora.
     const naListagem = new Set(externalIds);
     const { data: ativos, error: ativosErr } = await supabase
       .from("anota_orders")
-      .select("id, external_order_id, check_status, estoque_aplicado, payload")
-      .in("check_status", [0, 1, 2, 3])
+      .select("id, external_order_id, check_status, estoque_aplicado, payload, sem_resposta_em")
+      .in("check_status", [0, 1, 2])
+      .is("sem_resposta_em", null)
       .order("updated_at", { ascending: false })
       .limit(100);
     if (ativosErr) console.error("[syncAnotaOrders] query ativos error:", ativosErr);
@@ -1284,19 +1359,32 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     for (const ativo of ativos ?? []) {
       if (naListagem.has(ativo.external_order_id)) continue;
       const detail = await fetchOrderDetail(token, discovery.path, ativo.external_order_id, pageId);
-      if (!detail) continue;
-      const newCheck = effectiveCheckStatus(detail.raw, detail.check);
+      if (detail.gone) {
+        // Pedido não existe mais no Anota (410/404): marca para finalização
+        // com carência e para de consultá-lo (a consulta acima exclui os que
+        // já estão marcados). Isso reduz bastante a carga na API.
+        if (!ativo.sem_resposta_em) {
+          const { error: markErr } = await supabase
+            .from("anota_orders")
+            .update({ sem_resposta_em: new Date().toISOString() })
+            .eq("id", ativo.id);
+          if (markErr) console.error("[syncAnotaOrders] mark 410 error:", markErr);
+        }
+        continue;
+      }
+      if (!detail.parsed) continue;
+      const newCheck = effectiveCheckStatus(detail.parsed.raw, detail.parsed.check);
       if (newCheck === ativo.check_status) continue;
       const applied = await applyAnotaOrderDetail(
         supabase,
         ativo,
-        detail,
+        detail.parsed,
         mapByRef,
         context.userId,
       );
       if (applied.updated) atualizados++;
       if (applied.revertedStock) cancelados++;
-      if (detail.check === 3 && ativo.check_status !== 3) {
+      if (detail.parsed.check === 3 && ativo.check_status !== 3) {
         prontosParaNotificar.push(ativo.id);
       }
       if (applied.statusChanged) {
@@ -1354,12 +1442,22 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     ];
     if (cancelados) partes.push(`${cancelados} cancelado(s) com estoque devolvido`);
     if (pendentesMapeamento) partes.push(`${pendentesMapeamento} pedido(s) aguardando mapeamento`);
+    if (finalizadosSemResposta) {
+      partes.push(`${finalizadosSemResposta} sem resposta finalizado(s)`);
+    }
 
     await supabase.from("activity_logs").insert({
       modulo: "anota_sync",
       acao: "sincronizou",
       user_id: context.userId,
-      detalhes: { importados, atualizados, baixasAplicadas, cancelados, pendentesMapeamento },
+      detalhes: {
+        importados,
+        atualizados,
+        baixasAplicadas,
+        cancelados,
+        pendentesMapeamento,
+        finalizadosSemResposta,
+      },
     });
     lastSyncAtMemory = Date.now();
 
@@ -1371,6 +1469,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       baixasAplicadas,
       cancelados,
       pendentesMapeamento,
+      finalizadosSemResposta,
     };
   });
 

@@ -149,6 +149,7 @@ export type Database = {
           numero: string | null
           payload: Json | null
           pedido_em: string | null
+          sem_resposta_em: string | null
           total: number
           updated_at: string
           whatsapp_keywords_notified: string[]
@@ -168,6 +169,7 @@ export type Database = {
           numero?: string | null
           payload?: Json | null
           pedido_em?: string | null
+          sem_resposta_em?: string | null
           total?: number
           updated_at?: string
           whatsapp_keywords_notified?: string[]
@@ -187,6 +189,7 @@ export type Database = {
           numero?: string | null
           payload?: Json | null
           pedido_em?: string | null
+          sem_resposta_em?: string | null
           total?: number
           updated_at?: string
           whatsapp_keywords_notified?: string[]
