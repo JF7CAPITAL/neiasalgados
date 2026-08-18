@@ -25,6 +25,25 @@ export const Route = createFileRoute("/api/anota-webhook")({
           const token = url.searchParams.get("token") ?? "";
           const expected = process.env.ANOTA_WEBHOOK_SECRET;
           if (!expected || token !== expected) {
+            // Diagnóstico: registra tentativas rejeitadas para descobrir se o
+            // Anota está chamando o endpoint com token errado (ou não chamando).
+            try {
+              const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+              await supabaseAdmin.from("activity_logs").insert({
+                modulo: "anota_webhook",
+                acao: "recebeu_nao_autorizado",
+                registro_id: null,
+                user_id: null,
+                detalhes: {
+                  metodo: request.method,
+                  token_prefixo: token.slice(0, 10),
+                  token_len: token.length,
+                  secret_configurado: !!expected,
+                } as never,
+              });
+            } catch (e) {
+              console.error("[anota-webhook] falha ao logar 401:", e);
+            }
             return Response.json({ ok: false, error: "não autorizado" }, { status: 401 });
           }
 
