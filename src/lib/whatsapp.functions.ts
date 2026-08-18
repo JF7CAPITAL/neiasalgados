@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { fmtMoney } from "@/lib/format";
+import { fmtMoney, fmtDateTime } from "@/lib/format";
 
 /**
  * Integração WhatsApp via Waha (self-hosted HTTP API).
@@ -139,6 +139,155 @@ async function orderItemsText(supabase: DbClient, orderId: string): Promise<stri
   }
 }
 
+/** Rótulos legíveis para códigos de forma de pagamento do Anota AI. */
+const PAYMENT_LABELS: Record<string, string> = {
+  credit: "Cartão de crédito",
+  credit_card: "Cartão de crédito",
+  card: "Cartão de crédito",
+  cartao: "Cartão",
+  cartao_credito: "Cartão de crédito",
+  debit: "Cartão de débito",
+  debit_card: "Cartão de débito",
+  money: "Dinheiro",
+  cash: "Dinheiro",
+  dinheiro: "Dinheiro",
+  pix: "Pix",
+  online: "Online",
+  pagamento_online: "Online",
+  cardapio_online: "Online",
+  vale: "Vale",
+  ticket: "Vale",
+  meal: "Vale refeição",
+  nao_informado: "Não informado",
+};
+
+/** Extrai a forma de pagamento do payload do pedido Anota (defensivo). */
+export function orderPaymentText(payload: unknown): string {
+  const root = asRecord(payload);
+  if (!root) return "";
+
+  const rotulo = (raw: unknown): string | null => {
+    if (typeof raw !== "string" || !raw.trim()) return null;
+    const key = raw.trim().toLowerCase();
+    return PAYMENT_LABELS[key] ?? raw.trim();
+  };
+
+  const payments = root.payments;
+  if (Array.isArray(payments)) {
+    const lista: string[] = [];
+    for (const p of payments) {
+      const rec = asRecord(p);
+      if (!rec) continue;
+      const rot = rotulo(
+        rec.payment_method ??
+          rec.paymentMethod ??
+          rec.method ??
+          rec.type ??
+          rec.paymentType ??
+          rec.name ??
+          rec.description ??
+          rec.regra,
+      );
+      if (rot) lista.push(rot);
+    }
+    if (lista.length) return lista.join(", ");
+  }
+
+  return (
+    rotulo(
+      root.payment_type ??
+        root.paymentType ??
+        root.payment_method ??
+        root.paymentMethod ??
+        root.forma_pagamento,
+    ) ?? ""
+  );
+}
+
+/** Data/hora do agendamento do pedido, formatada para exibição. */
+export function orderScheduleText(payload: unknown): string {
+  const root = asRecord(payload);
+  if (!root) return "";
+  const schedule = asRecord(root.schedule_order);
+  const raw =
+    (typeof root.preparationStartDateTime === "string" && root.preparationStartDateTime.trim()) ||
+    (typeof root.preparationStartDate === "string" && root.preparationStartDate.trim()) ||
+    (typeof root.scheduledDateTime === "string" && root.scheduledDateTime.trim()) ||
+    (typeof root.schedule_date === "string" && root.schedule_date.trim()) ||
+    (schedule && typeof schedule.date === "string" && schedule.date.trim()) ||
+    (schedule && typeof schedule.dateTime === "string" && schedule.dateTime.trim()) ||
+    "";
+  if (!raw) return "";
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? raw : fmtDateTime(d);
+}
+
+/** Valor da taxa de entrega/motoboy do pedido, formatado em R$. */
+export function orderDeliveryFeeText(payload: unknown): string {
+  const root = asRecord(payload);
+  if (!root) return "";
+  const info =
+    asRecord(root.delivery_info) ?? asRecord(root.deliveryInfo) ?? asRecord(root.delivery);
+  const candidates: unknown[] = [
+    root.delivery_fee,
+    root.deliveryFee,
+    root.taxa_entrega,
+    root.taxaEntrega,
+    root.taxa_entrega_valor,
+    root.shipping_fee,
+    root.shippingFee,
+    root.fee,
+    info?.fee,
+    info?.valor,
+    info?.taxa,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "number" && isFinite(c)) return fmtMoney(c);
+    if (typeof c === "string" && c.trim() && !isNaN(Number(c))) return fmtMoney(Number(c));
+  }
+  return "";
+}
+
+/** Endereço de entrega do cliente (multilinha), se houver. */
+export function orderAddressText(payload: unknown): string {
+  return orderDeliveryInfo(payload)?.endereco ?? "";
+}
+
+/**
+ * Monta as variáveis disponíveis nos templates de mensagem.
+ * `{{pedido}}` só consulta os itens quando o template realmente o usa.
+ */
+async function orderTemplateVars(
+  supabase: DbClient,
+  order: {
+    id: string;
+    numero: string | null;
+    external_order_id: string;
+    cliente: string | null;
+    total: number;
+    payload: unknown;
+  },
+  template: string,
+): Promise<Record<string, string>> {
+  const numero = order.numero ?? order.external_order_id ?? "";
+  const taxa = orderDeliveryFeeText(order.payload);
+  const vars: Record<string, string> = {
+    numero,
+    total: fmtMoney(order.total),
+    cliente: order.cliente ?? "cliente",
+    pagamento: orderPaymentText(order.payload),
+    agendamento: orderScheduleText(order.payload),
+    taxa_entrega: taxa,
+    taxa_motoboy: taxa,
+    endereco: orderAddressText(order.payload),
+    pedido: "",
+  };
+  if (template.includes("{{pedido}}")) {
+    vars.pedido = await orderItemsText(supabase, order.id);
+  }
+  return vars;
+}
+
 /**
  * Monta a mensagem do motoboy: template + endereço, itens e link do Google Maps.
  * O bloco de entrega é SEMPRE anexado, mesmo se o template não tiver placeholders.
@@ -148,13 +297,9 @@ async function buildMotoboyText(
   order: OrderRow,
   notif: WhatsAppNotification | null | undefined,
 ): Promise<string> {
-  const numero = order.numero ?? order.external_order_id ?? "";
-  const vars: Record<string, string> = {
-    numero,
-    total: fmtMoney(order.total),
-    cliente: order.cliente ?? "cliente",
-  };
-  let text = renderTemplate(notif?.mensagem ?? "", vars);
+  const template = notif?.mensagem ?? "";
+  const vars = await orderTemplateVars(supabase, order, template);
+  let text = renderTemplate(template, vars);
 
   const block: string[] = [];
   const delivery = orderDeliveryInfo(order.payload);
@@ -541,12 +686,10 @@ async function notifyOne(
   destino: string | null,
 ): Promise<boolean> {
   if (!destino || !notif) return false;
-  const numero = order.numero ?? order.external_order_id ?? "";
-  const text = renderTemplate(notif.mensagem, {
-    numero,
-    total: fmtMoney(order.total),
-    cliente: order.cliente ?? "cliente",
-  });
+  const text = renderTemplate(
+    notif.mensagem,
+    await orderTemplateVars(supabase, order, notif.mensagem),
+  );
   const r = await sendNotif(destino, text, notif);
   await logWhatsAppMessage(supabase, {
     phone: phoneFromDest(destino),
@@ -754,11 +897,10 @@ export async function notifyStatusMessageWhatsApp(
     };
   }
 
-  const text = renderTemplate(notif.mensagem, {
-    numero: data.numero ?? data.external_order_id ?? "",
-    total: fmtMoney(data.total),
-    cliente: data.cliente ?? "cliente",
-  });
+  const text = renderTemplate(
+    notif.mensagem,
+    await orderTemplateVars(supabase, data, notif.mensagem),
+  );
   const r = await sendNotif(clientePhone, text, notif);
   await logWhatsAppMessage(supabase, {
     phone: phoneFromDest(clientePhone),
@@ -878,11 +1020,10 @@ export async function notifyKeywordRulesWhatsApp(
   for (const rule of matchKeywordRules(alvo, rules)) {
     if (novosNotificados.includes(rule.regra)) continue;
 
-    const text = renderTemplate(rule.mensagem, {
-      numero: data.numero ?? data.external_order_id ?? "",
-      total: fmtMoney(data.total),
-      cliente: data.cliente ?? "cliente",
-    });
+    const text = renderTemplate(
+      rule.mensagem,
+      await orderTemplateVars(supabase, data, rule.mensagem),
+    );
     const r = await sendNotif(clientePhone, text, rule);
     await logWhatsAppMessage(supabase, {
       phone: phoneFromDest(clientePhone),

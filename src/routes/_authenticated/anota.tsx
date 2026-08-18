@@ -128,7 +128,20 @@ const DEFAULT_NOTIF_TITLES: Record<string, string> = {
   pedido_recebido: "Pedido recebido",
   pedido_pronto: "Pedido pronto",
   motoboy: "Pedido pronto (motoboy)",
+  "status_-2": "Agendamento",
 };
+
+const TEMPLATE_VARIABLES = [
+  "{{numero}}",
+  "{{total}}",
+  "{{cliente}}",
+  "{{pagamento}}",
+  "{{agendamento}}",
+  "{{taxa_entrega}}",
+  "{{taxa_motoboy}}",
+  "{{endereco}}",
+  "{{pedido}}",
+];
 
 function AnotaPage() {
   const qc = useQueryClient();
@@ -1281,7 +1294,7 @@ function AnotaPage() {
                       placeholder="Texto enviado ao cliente/motoboy..."
                     />
                     <p className="text-xs text-muted-foreground">
-                      Variáveis disponíveis: {"{{numero}}"} {"{{total}}"} {"{{cliente}}"}
+                      Variáveis disponíveis: {TEMPLATE_VARIABLES.join("  ")}
                     </p>
                   </div>
 
@@ -1412,7 +1425,7 @@ function AnotaPage() {
               <p className="max-w-2xl text-sm text-muted-foreground">
                 Quando o pedido sincronizado contiver uma das palavras-chave nos itens, no nome do
                 cliente ou no payload, a mensagem configurada é enviada automaticamente ao cliente.
-                Suporta as variáveis {"{{numero}}"}, {"{{total}}"} e {"{{cliente}}"}.
+                Suporta as variáveis: {TEMPLATE_VARIABLES.join(", ")}.
               </p>
             </div>
           </div>

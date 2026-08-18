@@ -265,7 +265,17 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           // Usa o chatId completo (pode ser @c.us ou @lid) para responder no
           // mesmo chat de onde a mensagem veio.
           const rule = matched[0];
-          const msg = renderTemplate(rule.mensagem, { numero: "", total: "", cliente: "" });
+          const msg = renderTemplate(rule.mensagem, {
+            numero: "",
+            total: "",
+            cliente: "",
+            pagamento: "",
+            agendamento: "",
+            taxa_entrega: "",
+            taxa_motoboy: "",
+            endereco: "",
+            pedido: "",
+          });
           const r = await sendReply(chatId, rule, msg);
           if (r.ok) lastReplyBy.set(phone, now);
 
