@@ -88,7 +88,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Neia Salgados — Gestão para Fábrica de Salgados" },
+      { title: "Neia Salgados" },
       {
         name: "description",
         content:

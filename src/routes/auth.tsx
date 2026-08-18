@@ -5,7 +5,6 @@ import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
-import neiaLogo from "@/assets/neia-logo.png.asset.json";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -69,7 +68,7 @@ function AuthPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         <div className="mb-8 flex flex-col items-center text-center">
-          <img src={neiaLogo.url} alt="Neia Salgados" className="mb-4 h-24 w-auto object-contain" />
+          <img src="/neia-logo.png" alt="Neia Salgados" className="mb-4 h-24 w-auto object-contain" />
           <p className="mt-1 text-sm text-muted-foreground">
             Gestão industrial para fábricas de salgados
           </p>

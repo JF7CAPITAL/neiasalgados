@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import { Menu, LogOut, X } from "lucide-react";
-import neiaLogo from "@/assets/neia-logo.png.asset.json";
 
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -66,7 +65,7 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
 function Brand() {
   return (
     <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-4">
-      <img src={neiaLogo.url} alt="Neia Salgados" className="h-11 w-auto object-contain" />
+      <img src="/neia-logo.png" alt="Neia Salgados" className="h-11 w-auto object-contain" />
     </div>
   );
 }
@@ -99,7 +98,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-72 border-sidebar-border bg-sidebar p-0">
           <div className="flex items-center justify-between border-b border-sidebar-border px-4 py-3">
-            <img src={neiaLogo.url} alt="Neia Salgados" className="h-10 w-auto object-contain" />
+            <img src="/neia-logo.png" alt="Neia Salgados" className="h-10 w-auto object-contain" />
             <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)}>
               <X className="size-5" />
             </Button>
