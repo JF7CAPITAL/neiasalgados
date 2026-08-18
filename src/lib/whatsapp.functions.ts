@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { fmtMoney, fmtDateTime } from "@/lib/format";
+import { fmtMoney } from "@/lib/format";
 
 /**
  * Integração WhatsApp via Waha (self-hosted HTTP API).
@@ -212,6 +212,11 @@ export function orderScheduleText(payload: unknown): string {
   const root = asRecord(payload);
   if (!root) return "";
   const schedule = asRecord(root.schedule_order);
+  const tz =
+    typeof schedule?.timezone === "string" && schedule.timezone.trim()
+      ? schedule.timezone.trim()
+      : undefined;
+
   const raw =
     (typeof root.preparationStartDateTime === "string" && root.preparationStartDateTime.trim()) ||
     (typeof root.preparationStartDate === "string" && root.preparationStartDate.trim()) ||
@@ -221,8 +226,54 @@ export function orderScheduleText(payload: unknown): string {
     (schedule && typeof schedule.dateTime === "string" && schedule.dateTime.trim()) ||
     "";
   if (!raw) return "";
+
   const d = new Date(raw);
-  return isNaN(d.getTime()) ? raw : fmtDateTime(d);
+  if (isNaN(d.getTime())) return raw;
+
+  // A janela local (start–end) do schedule_order é a fonte confiável do horário;
+  // o ISO de schedule.date/preparationStartDateTime pode vir deslocado do fuso local.
+  const start = typeof schedule?.start === "string" ? schedule.start.trim() : "";
+  const end = typeof schedule?.end === "string" ? schedule.end.trim() : "";
+  const janela = start && end ? `${start} - ${end}` : scheduleTimeText(d, tz);
+  return `${scheduleDateText(d, tz)} às ${janela}`;
+}
+
+function scheduleTzValid(tz?: string): boolean {
+  if (!tz) return false;
+  try {
+    new Intl.DateTimeFormat("pt-BR", { timeZone: tz }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleDateText(d: Date, tz?: string): string {
+  if (scheduleTzValid(tz)) {
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: tz,
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+    }).format(d);
+  }
+  return d.toLocaleDateString("pt-BR");
+}
+
+function scheduleTimeText(d: Date, tz?: string): string {
+  if (scheduleTzValid(tz)) {
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(d);
+  }
+  return d.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 /** Valor da taxa de entrega/motoboy do pedido, formatado em R$. */
