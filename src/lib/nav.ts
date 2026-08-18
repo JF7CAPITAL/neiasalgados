@@ -31,6 +31,9 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Painel", to: "/painel", icon: LayoutDashboard, roles: ["admin", "producao", "estoque", "compras", "financeiro", "rh", "operacional"], group: "Visão geral" },
 
+  { label: "Anota AI", to: "/anota", icon: ShoppingBag, roles: ["admin", "estoque", "compras", "producao", "operacional"], group: "Integrações" },
+  { label: "Mensagens", to: "/mensagens", icon: MessageSquare, roles: ["admin", "estoque", "compras", "producao", "operacional"], group: "Integrações" },
+
   { label: "Produtos", to: "/produtos", icon: Package, roles: ["admin", "producao", "estoque"], group: "Produção" },
   { label: "Recheios", to: "/recheios", icon: UtensilsCrossed, roles: ["admin", "producao"], group: "Produção" },
   { label: "Ordens de Serviço", to: "/ordens", icon: ClipboardList, roles: ["admin", "producao", "compras", "estoque"], group: "Produção" },
@@ -41,9 +44,6 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Almoxarifado", to: "/almoxarifado", icon: Warehouse, roles: ["admin", "estoque", "compras"], group: "Estoque" },
   { label: "Fornecedores", to: "/fornecedores", icon: Truck, roles: ["admin", "compras"], group: "Estoque" },
-
-  { label: "Anota AI", to: "/anota", icon: ShoppingBag, roles: ["admin", "estoque", "compras", "producao", "operacional"], group: "Integrações" },
-  { label: "Mensagens", to: "/mensagens", icon: MessageSquare, roles: ["admin", "estoque", "compras", "producao", "operacional"], group: "Integrações" },
 
   { label: "Colaboradores", to: "/colaboradores", icon: Users, roles: ["admin", "rh"], group: "Gestão" },
   { label: "Relatório de Produção", to: "/relatorio-producao", icon: LineChart, roles: ["admin", "producao", "estoque", "financeiro"], group: "Gestão" },
