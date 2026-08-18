@@ -148,6 +148,7 @@ const TEMPLATE_VARIABLES = [
   "{{taxa_motoboy}}",
   "{{endereco}}",
   "{{endereço}}",
+  "{{entrega}}",
   "{{pedido}}",
 ];
 

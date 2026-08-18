@@ -91,7 +91,10 @@ export function orderDeliveryInfo(payload: unknown): DeliveryInfo | null {
   if (!addr) return null;
 
   const parts: string[] = [];
-  const formatted = typeof addr.formattedAddress === "string" ? addr.formattedAddress.trim() : "";
+  // O Anota costuma deixar ", " no final do formattedAddress (ex.: "Rua X, Nº 132, ").
+  const formatted = (
+    typeof addr.formattedAddress === "string" ? addr.formattedAddress.trim() : ""
+  ).replace(/[\s,]+$/, "");
   if (formatted) parts.push(formatted);
   const complement = typeof addr.complement === "string" ? addr.complement.trim() : "";
   if (complement) parts.push(`Complemento: ${complement}`);
@@ -289,6 +292,7 @@ async function orderTemplateVars(
     taxa_motoboy: taxa,
     endereco: address,
     endereço: address,
+    entrega: address,
     pedido: "",
   };
   if (template.includes("{{pedido}}")) {
