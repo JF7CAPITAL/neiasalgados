@@ -11,7 +11,7 @@ export const Route = createFileRoute("/_authenticated")({
     return { user: data.user };
   },
   component: () => {
-    useAutoSync(180000);
+    useAutoSync(30000);
     return (
       <AppShell>
         <Outlet />

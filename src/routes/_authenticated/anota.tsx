@@ -68,6 +68,7 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { isSyncEnabled, setSyncEnabled, onSyncToggle } from "@/lib/sync-toggle";
+import { useRealtime } from "@/hooks/useRealtime";
 
 export const Route = createFileRoute("/_authenticated/anota")({
   component: AnotaPage,
@@ -141,6 +142,13 @@ function AnotaPage() {
     const unsub = onSyncToggle((enabled) => setSyncEnabledState(enabled));
     return unsub;
   }, []);
+
+  // Atualiza a tela em tempo real quando qualquer cliente (ou o sync)
+  // altera os dados de pedidos/mapeamento do Anota.
+  useRealtime(
+    ["anota_orders", "anota_order_items", "anota_product_map", "anota_combo_item_map"],
+    ["anota-orders", "anota-items", "anota-combo-map", "anota-scheduled", "anota-busca", "dashboard"],
+  );
 
   const testFn = useServerFn(testAnotaConnection);
   const syncFn = useServerFn(syncAnotaOrders);
