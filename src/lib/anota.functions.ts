@@ -995,6 +995,157 @@ async function aplicarBaixasPendentes(
   return baixasAplicadas;
 }
 
+/** Aplica a baixa de estoque de um único pedido, somente se ele tiver itens
+ *  mapeados (produto ou combo com composição configurada). */
+async function aplicarBaixaSeMapeado(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  orderId: string,
+  comboRecipeRefs: Set<string>,
+  userId: string,
+): Promise<boolean> {
+  const { data: itens } = await supabase
+    .from("anota_order_items")
+    .select("anota_item_ref, mapeado")
+    .eq("order_id", orderId);
+  const temMapeado = (itens ?? []).some(
+    (i: { anota_item_ref: string | null; mapeado: boolean }) =>
+      i.mapeado || (i.anota_item_ref && comboRecipeRefs.has(i.anota_item_ref)),
+  );
+  if (!temMapeado) return false;
+  const { error } = await supabase.rpc("apply_anota_order_stock", {
+    p_order: orderId,
+    p_user: userId,
+  });
+  return !error;
+}
+
+export interface AnotaWebhookResult {
+  ok: boolean;
+  acao: "importado" | "atualizado" | "cancelado" | "ignorado";
+  externalId: string;
+  check: number;
+}
+
+/** Importa/atualiza um pedido recebido pelo webhook do Anota AI (Pedidos
+ *  Realizados/Atualizados/Cancelados), de forma idempotente por
+ *  external_order_id. Não depende da listagem: é o que garante que pedidos
+ *  agendados entrem no ERP mesmo quando o Anota não os expõe no ping/list.
+ *
+ *  O `userId` é usado apenas em campos de auditoria (sem sessão no webhook,
+ *  usa-se um identificador de sistema). */
+export async function processAnotaWebhookOrder(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  payload: unknown,
+  userId = "anota_webhook",
+): Promise<AnotaWebhookResult> {
+  const root = asRecord(payload);
+  const order = root ? unwrapOrder(root) : null;
+  const parsed = order ? parseOrder(order) : null;
+  if (!parsed || !parsed.externalId) {
+    return { ok: false, acao: "ignorado", externalId: "", check: 0 };
+  }
+
+  // Agendado com data futura entra como Agendado (-2) mesmo que o webhook
+  // reporte check 0 ("em análise"); o ERP promove para produção quando vence.
+  const dtAgendado = getScheduledDateTime(parsed.raw);
+  const check =
+    dtAgendado && dtAgendado.getTime() > Date.now()
+      ? -2
+      : effectiveCheckStatus(parsed.raw, parsed.check);
+
+  const { data: mapRows } = await supabase
+    .from("anota_product_map")
+    .select("anota_item_ref, product_id");
+  const mapByRef = new Map<string, string | null>();
+  for (const m of mapRows ?? []) {
+    mapByRef.set(m.anota_item_ref, m.product_id);
+  }
+  const comboRecipeRefs = await loadComboRecipeRefs(supabase);
+
+  const { data: existing } = await supabase
+    .from("anota_orders")
+    .select("id, external_order_id, check_status, estoque_aplicado, payload, sem_resposta_em")
+    .eq("external_order_id", parsed.externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const applied = await applyAnotaOrderDetail(supabase, existing, parsed, mapByRef, userId);
+    if (applied.statusChanged) {
+      await notifyStatusMessageWhatsApp(supabase, existing.id);
+      await notifyKeywordRulesWhatsApp(supabase, existing.id);
+    }
+    if (parsed.check === 3 && existing.check_status !== 3) {
+      await notifyOrderWhatsAppLogic(supabase, existing.id, "pronto", userId);
+    }
+    if (isActiveStatus(applied.newCheck) && !existing.estoque_aplicado) {
+      await aplicarBaixaSeMapeado(supabase, existing.id, comboRecipeRefs, userId);
+    }
+    return {
+      ok: true,
+      acao: isCancelledStatus(applied.newCheck) ? "cancelado" : "atualizado",
+      externalId: parsed.externalId,
+      check: applied.newCheck,
+    };
+  }
+
+  const { data: inserted, error: insErr } = await supabase
+    .from("anota_orders")
+    .insert({
+      external_order_id: parsed.externalId,
+      numero: parsed.numero,
+      check_status: check,
+      total: parsed.total,
+      cliente: parsed.cliente,
+      pedido_em: parsed.pedidoEm,
+      payload: parsed.raw as never,
+    })
+    .select("id")
+    .single();
+
+  // Webhook e sync podem importar o mesmo pedido quase ao mesmo tempo: se o
+  // insert falhar (conflito de chave), tenta atualizar o que já existe.
+  if (insErr || !inserted) {
+    const { data: again } = await supabase
+      .from("anota_orders")
+      .select("id, external_order_id, check_status, estoque_aplicado, payload, sem_resposta_em")
+      .eq("external_order_id", parsed.externalId)
+      .maybeSingle();
+    if (again) {
+      const applied = await applyAnotaOrderDetail(supabase, again, parsed, mapByRef, userId);
+      return {
+        ok: true,
+        acao: isCancelledStatus(applied.newCheck) ? "cancelado" : "atualizado",
+        externalId: parsed.externalId,
+        check: applied.newCheck,
+      };
+    }
+    return { ok: false, acao: "ignorado", externalId: parsed.externalId, check };
+  }
+
+  await insertOrderItems(supabase, inserted.id, parsed.items, mapByRef);
+
+  if (check === 3) {
+    await notifyOrderWhatsAppLogic(supabase, inserted.id, "pronto", userId);
+  } else {
+    await notifyOrderWhatsAppLogic(supabase, inserted.id, "recebido", userId);
+  }
+  await notifyStatusMessageWhatsApp(supabase, inserted.id);
+  await notifyKeywordRulesWhatsApp(supabase, inserted.id);
+
+  if (isActiveStatus(check)) {
+    await aplicarBaixaSeMapeado(supabase, inserted.id, comboRecipeRefs, userId);
+  }
+
+  return {
+    ok: true,
+    acao: isCancelledStatus(check) ? "cancelado" : "importado",
+    externalId: parsed.externalId,
+    check,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Server functions
 // ---------------------------------------------------------------------------
@@ -1276,8 +1427,13 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
           }
           continue;
         }
-        // fallback: lista — atualiza status se mudou
-        const fallbackCheck = effectiveCheckStatus(prev.payload, listed.check);
+        // fallback: lista — atualiza status se mudou.
+        // Pedido agendado (-2) preserva o status: a listagem reporta agendados
+        // como check 0 ("em análise"), e rebaixá-los seria incorreto.
+        const fallbackCheck = effectiveCheckStatus(
+          prev.payload,
+          prev.check_status === -2 ? -2 : listed.check,
+        );
         if (prev.check_status !== fallbackCheck) {
           const { error: updStatusErr } = await supabase
             .from("anota_orders")
