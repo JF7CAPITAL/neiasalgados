@@ -248,9 +248,16 @@ export function orderDeliveryFeeText(payload: unknown): string {
   return "";
 }
 
-/** Endereço de entrega do cliente (multilinha), se houver. */
+/** Texto exibido quando o pedido não tem endereço de entrega (cliente retira no local). */
+const RETIRADA_NO_LOCAL_TEXT =
+  "você optou por retirar no local o nosso endereço é Rua Los Angeles, n°249 no Jardim Parada do Alto";
+
+/**
+ * Endereço de entrega do cliente (multilinha), se houver.
+ * Sem endereço cadastrado, indica que o cliente retira no local.
+ */
 export function orderAddressText(payload: unknown): string {
-  return orderDeliveryInfo(payload)?.endereco ?? "";
+  return orderDeliveryInfo(payload)?.endereco ?? RETIRADA_NO_LOCAL_TEXT;
 }
 
 /**
@@ -271,6 +278,7 @@ async function orderTemplateVars(
 ): Promise<Record<string, string>> {
   const numero = order.numero ?? order.external_order_id ?? "";
   const taxa = orderDeliveryFeeText(order.payload);
+  const address = orderAddressText(order.payload);
   const vars: Record<string, string> = {
     numero,
     total: fmtMoney(order.total),
@@ -279,7 +287,8 @@ async function orderTemplateVars(
     agendamento: orderScheduleText(order.payload),
     taxa_entrega: taxa,
     taxa_motoboy: taxa,
-    endereco: orderAddressText(order.payload),
+    endereco: address,
+    endereço: address,
     pedido: "",
   };
   if (template.includes("{{pedido}}")) {
@@ -337,9 +346,9 @@ async function sendMotoboyMessage(
   return r.ok;
 }
 
-/** Renderiza um template substituindo {{chave}}. */
+/** Renderiza um template substituindo {{chave}}. Aceita chaves acentuadas (ex.: {{endereço}}). */
 export function renderTemplate(tpl: string, vars: Record<string, string>): string {
-  return tpl.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => vars[k] ?? `{{${k}}}`);
+  return tpl.replace(/\{\{([\p{L}\p{N}_]+)\}\}/gu, (_m, k: string) => vars[k] ?? `{{${k}}}`);
 }
 
 const DEFAULT_SETTINGS: Record<string, string> = {

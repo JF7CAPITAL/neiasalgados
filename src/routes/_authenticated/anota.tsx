@@ -103,12 +103,19 @@ const CHECK_TONE: Record<number, "default" | "secondary" | "destructive" | "outl
   6: "destructive",
 };
 
-function checkBadge(check: number, scheduledDate?: string | null) {
+function checkBadge(check: number, scheduledDate?: string | null, semResposta?: boolean) {
   if (check === -2) {
     const label = scheduledDate ? `Agendamento ${diasAte(scheduledDate)}` : "Agendamento";
     return (
       <Badge variant="outline" className="text-info border-info/30 bg-info/15">
         {label}
+      </Badge>
+    );
+  }
+  if (semResposta) {
+    return (
+      <Badge variant="outline" className="text-warning border-warning/30 bg-warning/15">
+        Esperando atualização
       </Badge>
     );
   }
@@ -140,6 +147,7 @@ const TEMPLATE_VARIABLES = [
   "{{taxa_entrega}}",
   "{{taxa_motoboy}}",
   "{{endereco}}",
+  "{{endereço}}",
   "{{pedido}}",
 ];
 
@@ -186,7 +194,7 @@ function AnotaPage() {
       const { data, error } = await supabase
         .from("anota_orders")
         .select(
-          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at",
+          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, sem_resposta_em",
         )
         .order("imported_at", { ascending: false })
         .limit(300);
@@ -239,7 +247,7 @@ function AnotaPage() {
       let query = supabase
         .from("anota_orders")
         .select(
-          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at",
+          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, sem_resposta_em",
         );
       if (termo) {
         query = query.or(
@@ -863,7 +871,7 @@ function AnotaPage() {
                       <td className="px-4 py-3">
                         {o.check_status === -2
                           ? checkBadge(-2, getScheduledDate(o as any))
-                          : checkBadge(o.check_status)}
+                          : checkBadge(o.check_status, null, !!o.sem_resposta_em)}
                       </td>
                       <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
                       <td className="px-4 py-3 text-center">
@@ -1001,7 +1009,7 @@ function AnotaPage() {
                       <td className="px-4 py-3 text-muted-foreground">
                         {fmtDateTime(o.pedido_em ?? o.imported_at)}
                       </td>
-                      <td className="px-4 py-3">{checkBadge(o.check_status)}</td>
+                      <td className="px-4 py-3">{checkBadge(o.check_status, null, !!o.sem_resposta_em)}</td>
                       <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
                       <td className="px-4 py-3 text-center">
                         {o.estoque_aplicado ? (
@@ -1612,7 +1620,7 @@ function AnotaPage() {
                 </div>
                 <div>
                   <span className="text-muted-foreground">Status:</span>{" "}
-                  {checkBadge(selectedOrder.check_status)}
+                  {checkBadge(selectedOrder.check_status, null, !!selectedOrder.sem_resposta_em)}
                 </div>
                 <div>
                   <span className="text-muted-foreground">Total:</span>{" "}

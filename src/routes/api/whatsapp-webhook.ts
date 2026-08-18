@@ -274,6 +274,7 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
             taxa_entrega: "",
             taxa_motoboy: "",
             endereco: "",
+            endereço: "",
             pedido: "",
           });
           const r = await sendReply(chatId, rule, msg);
