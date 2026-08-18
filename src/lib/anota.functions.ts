@@ -27,6 +27,35 @@ const LIST_PATHS = ["/ping/list", "/order/pull", "/order/ping", "/order", "/orde
 /** Caminhos candidatos para autenticação OAuth (client_credentials). */
 const AUTH_PATHS = ["/auth", "/oauth/token", "/token", "/login"];
 
+/** Padrões candidatos para o detalhe de um pedido (__PATH__ e __ID__ são substituídos). */
+const DETAIL_PATTERNS = [
+  "/ping/get/__ID__",
+  "__PATH__/__ID__",
+  "/order/__ID__",
+  "/order/pull/__ID__",
+  "/order?order_id=__ID__",
+  "__PATH__?order_id=__ID__",
+];
+
+/** Mensagem padrão para rate limit (HTTP 429 / Cloudflare Error 1015). */
+const RATE_LIMIT_MESSAGE =
+  "O Anota AI atingiu o limite de requisições (HTTP 429). Aguarde alguns minutos e tente novamente.";
+
+/** TTL do cache do caminho de listagem/detalhe da API (10 min). */
+const API_PATH_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/** Cooldown mínimo entre sincronizações para evitar rajadas (20 s). */
+const SYNC_COOLDOWN_MS = 20 * 1000;
+
+/** Cache do caminho de listagem que respondeu no formato esperado. */
+let listPathCache: { path: string; expiresAt: number } | null = null;
+
+/** Cache do padrão de URL de detalhe que funcionou por caminho de listagem. */
+let detailPatternCache: { listPath: string; pattern: string; expiresAt: number } | null = null;
+
+/** Timestamp (ms) da última sincronização bem-sucedida nesta instância. */
+let lastSyncAtMemory = 0;
+
 const ROLES_PERMITIDAS = ["admin", "estoque", "compras", "producao", "operacional"] as const;
 
 interface CachedToken {
@@ -102,6 +131,10 @@ async function getAnotaAccessToken(): Promise<
         const text = await res.text();
         lastStatus = res.status;
         lastText = text;
+        if (res.status === 429) {
+          // Rate limit: para imediatamente, não tenta os demais endpoints.
+          return { error: RATE_LIMIT_MESSAGE, status: 429 };
+        }
         if (!res.ok) continue;
         let json: unknown = null;
         try {
@@ -514,7 +547,7 @@ async function fetchJson(
   token: string,
   method: "GET" | "POST" = "GET",
   pageId?: string,
-): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+): Promise<{ ok: boolean; status: number; json: unknown; text: string; retryAfter?: number }> {
   const res = await fetch(url, { method, headers: anotaHeaders(token, pageId) });
   const text = await res.text();
   let json: unknown = null;
@@ -523,7 +556,14 @@ async function fetchJson(
   } catch {
     json = null;
   }
-  return { ok: res.ok, status: res.status, json, text };
+  const retryHeader = res.headers.get("retry-after");
+  const retryAfter =
+    retryHeader === null
+      ? undefined
+      : Number.isFinite(Number(retryHeader))
+        ? Math.max(0, Number(retryHeader)) * 1000
+        : undefined;
+  return { ok: res.ok, status: res.status, json, text, retryAfter };
 }
 
 /** Descobre qual caminho de listagem responde no formato esperado. */
@@ -534,19 +574,50 @@ async function discoverListPath(
 ): Promise<{ path: string; orders: ListedOrder[] } | { error: string; status: number }> {
   let lastStatus = 0;
   let lastText = "";
+
+  // Tenta uma única requisição de listagem em um caminho dado.
+  const fetchListOnce = async (
+    path: string,
+  ): Promise<
+    | { rateLimited: true; status: number; text: string; orders?: never }
+    | { rateLimited: false; status: number; text: string; orders?: ListedOrder[] }
+  > => {
+    const { ok, status, json, text } = await fetchJson(
+      `${ANOTA_BASE}${path}${query}`,
+      token,
+      "GET",
+      pageId,
+    );
+    if (status === 429) return { rateLimited: true, status, text };
+    if (ok && json) {
+      const orders = extractListedOrders(json);
+      if (orders) return { rateLimited: false, status, text, orders };
+    }
+    return { rateLimited: false, status, text };
+  };
+
+  // 1) Caminho já conhecido: uma só requisição, sem tentativas extras.
+  if (listPathCache && listPathCache.expiresAt > Date.now()) {
+    try {
+      const r = await fetchListOnce(listPathCache.path);
+      if (r.rateLimited) return { error: RATE_LIMIT_MESSAGE, status: 429 };
+      if (r.orders) return { path: listPathCache.path, orders: r.orders };
+    } catch {
+      // caminho cacheado falhou → faz a descoberta completa
+    }
+    listPathCache = null;
+  }
+
+  // 2) Descoberta completa pelos caminhos candidatos.
   for (const path of LIST_PATHS) {
     try {
-      const { ok, status, json, text } = await fetchJson(
-        `${ANOTA_BASE}${path}${query}`,
-        token,
-        "GET",
-        pageId,
-      );
-      lastStatus = status;
-      lastText = text;
-      if (ok && json) {
-        const orders = extractListedOrders(json);
-        if (orders) return { path, orders };
+      const r = await fetchListOnce(path);
+      lastStatus = r.status;
+      lastText = r.text;
+      if (r.rateLimited) return { error: RATE_LIMIT_MESSAGE, status: 429 };
+      if (r.orders) {
+        listPathCache = { path, expiresAt: Date.now() + API_PATH_CACHE_TTL_MS };
+        return { path, orders: r.orders };
       }
     } catch {
       // tenta o próximo caminho
@@ -569,22 +640,36 @@ async function fetchOrderDetail(
   id: string,
   pageId?: string,
 ): Promise<ParsedOrder | null> {
-  const candidates = [
-    `/ping/get/${id}`,
-    `${listPath}/${id}`,
-    `/order/${id}`,
-    `/order/pull/${id}`,
-    `/order?order_id=${id}`,
-    `${listPath}?order_id=${id}`,
-  ];
-  for (const c of candidates) {
+  // Padrão que já funcionou para este caminho de listagem é tentado primeiro;
+  // assim o sync faz 1 requisição de detalhe por pedido em vez de até 6.
+  const cached =
+    detailPatternCache &&
+    detailPatternCache.listPath === listPath &&
+    detailPatternCache.expiresAt > Date.now()
+      ? detailPatternCache.pattern
+      : null;
+  const patterns = cached
+    ? [cached, ...DETAIL_PATTERNS.filter((p) => p !== cached)]
+    : DETAIL_PATTERNS;
+
+  for (const pattern of patterns) {
+    const url = `${ANOTA_BASE}${pattern.replace("__PATH__", listPath).replace("__ID__", id)}`;
     try {
-      const { ok, json } = await fetchJson(`${ANOTA_BASE}${c}`, token, "GET", pageId);
+      const { ok, status, json } = await fetchJson(url, token, "GET", pageId);
+      // Rate limit: para imediatamente, não tenta os demais candidatos.
+      if (status === 429) return null;
       if (ok && json) {
         const o = unwrapOrder(json);
         if (o) {
           const parsed = parseOrder(o);
-          if (parsed && parsed.externalId) return parsed;
+          if (parsed && parsed.externalId) {
+            detailPatternCache = {
+              listPath,
+              pattern,
+              expiresAt: Date.now() + API_PATH_CACHE_TTL_MS,
+            };
+            return parsed;
+          }
         }
       }
     } catch {
@@ -983,6 +1068,19 @@ export interface AnotaSyncResult {
   pendentesMapeamento: number;
 }
 
+/** Resultado quando uma sincronização é ignorada por estar dentro do cooldown. */
+function cooldownSyncResult(): AnotaSyncResult {
+  return {
+    ok: true,
+    message: "Sincronização recente — aguarde alguns segundos e tente novamente.",
+    importados: 0,
+    atualizados: 0,
+    baixasAplicadas: 0,
+    cancelados: 0,
+    pendentesMapeamento: 0,
+  };
+}
+
 /** Sincroniza pedidos do Anota AI: importa novos, atualiza status e dá baixa nos finalizados mapeados. */
 export const syncAnotaOrders = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -991,6 +1089,30 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
   }))
   .handler(async ({ context, data }): Promise<AnotaSyncResult> => {
     await ensureRole(context);
+    const supabase = context.supabase;
+
+    // Cooldown entre sincronizações: evita rajadas de requisições à API do
+    // Anota quando várias abas/disparos sobrepõem o mesmo sync (intervalo de
+    // 30s + realtime + foco + clique manual). Primeiro um gate em memória
+    // (por instância) e depois um gate persistido via activity_logs, que vale
+    // entre abas e instâncias serverless.
+    if (lastSyncAtMemory > 0 && Date.now() - lastSyncAtMemory < SYNC_COOLDOWN_MS) {
+      return cooldownSyncResult();
+    }
+    const { data: lastLog, error: logErr } = await supabase
+      .from("activity_logs")
+      .select("created_at")
+      .eq("modulo", "anota_sync")
+      .eq("acao", "sincronizou")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (!logErr && lastLog && lastLog.length > 0) {
+      const lastAt = Date.parse(lastLog[0].created_at);
+      if (Number.isFinite(lastAt) && Date.now() - lastAt < SYNC_COOLDOWN_MS) {
+        return cooldownSyncResult();
+      }
+    }
+
     const auth = await getAnotaAccessToken();
     if ("error" in auth) {
       return {
@@ -1005,8 +1127,6 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
     }
     const token = auth.token;
     const pageId = process.env.ANOTA_AI_STORE_ID;
-
-    const supabase = context.supabase;
 
     // O ERP promove os agendados vencidos para produção antes de sincronizar,
     // assim não depende do Anota para refletir o status.
@@ -1241,6 +1361,7 @@ export const syncAnotaOrders = createServerFn({ method: "POST" })
       user_id: context.userId,
       detalhes: { importados, atualizados, baixasAplicadas, cancelados, pendentesMapeamento },
     });
+    lastSyncAtMemory = Date.now();
 
     return {
       ok: true,
