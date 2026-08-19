@@ -276,10 +276,10 @@ function scheduleTimeText(d: Date, tz?: string): string {
   });
 }
 
-/** Valor da taxa de entrega/motoboy do pedido, formatado em R$. */
-export function orderDeliveryFeeText(payload: unknown): string {
+/** Valor da taxa de entrega/motoboy do pedido (número). */
+export function orderDeliveryFeeNumber(payload: unknown): number {
   const root = asRecord(payload);
-  if (!root) return "";
+  if (!root) return 0;
   const info =
     asRecord(root.delivery_info) ?? asRecord(root.deliveryInfo) ?? asRecord(root.delivery);
   const candidates: unknown[] = [
@@ -296,10 +296,15 @@ export function orderDeliveryFeeText(payload: unknown): string {
     info?.taxa,
   ];
   for (const c of candidates) {
-    if (typeof c === "number" && isFinite(c)) return fmtMoney(c);
-    if (typeof c === "string" && c.trim() && !isNaN(Number(c))) return fmtMoney(Number(c));
+    if (typeof c === "number" && isFinite(c)) return c;
+    if (typeof c === "string" && c.trim() && !isNaN(Number(c))) return Number(c);
   }
-  return "";
+  return 0;
+}
+
+/** Valor da taxa de entrega/motoboy do pedido, formatado em R$. */
+export function orderDeliveryFeeText(payload: unknown): string {
+  return fmtMoney(orderDeliveryFeeNumber(payload));
 }
 
 /** Texto exibido quando o pedido não tem endereço de entrega (cliente retira no local). */
@@ -335,7 +340,7 @@ async function orderTemplateVars(
   const address = orderAddressText(order.payload);
   const vars: Record<string, string> = {
     numero,
-    total: fmtMoney(order.total),
+    total: fmtMoney(order.total + orderDeliveryFeeNumber(order.payload)),
     cliente: order.cliente ?? "cliente",
     pagamento: orderPaymentText(order.payload),
     agendamento: orderScheduleText(order.payload),
