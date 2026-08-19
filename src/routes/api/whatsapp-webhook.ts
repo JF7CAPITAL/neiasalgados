@@ -268,6 +268,7 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const msg = renderTemplate(rule.mensagem, {
             numero: "",
             total: "",
+            total_com_taxa: "",
             cliente: "",
             pagamento: "",
             agendamento: "",

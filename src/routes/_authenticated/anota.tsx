@@ -141,6 +141,7 @@ const DEFAULT_NOTIF_TITLES: Record<string, string> = {
 const TEMPLATE_VARIABLES = [
   "{{numero}}",
   "{{total}}",
+  "{{total_com_taxa}}",
   "{{cliente}}",
   "{{pagamento}}",
   "{{agendamento}}",

@@ -340,7 +340,8 @@ async function orderTemplateVars(
   const address = orderAddressText(order.payload);
   const vars: Record<string, string> = {
     numero,
-    total: fmtMoney(order.total + orderDeliveryFeeNumber(order.payload)),
+    total: fmtMoney(order.total),
+    total_com_taxa: fmtMoney(order.total + orderDeliveryFeeNumber(order.payload)),
     cliente: order.cliente ?? "cliente",
     pagamento: orderPaymentText(order.payload),
     agendamento: orderScheduleText(order.payload),
