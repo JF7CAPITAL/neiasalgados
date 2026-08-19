@@ -260,7 +260,9 @@ function MensagensPage() {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Enquanto pausado, o robô não envia nem responde mensagens a este contato.
+                  Enquanto pausado, o robô não responde a palavras-chave deste contato. As
+                  notificações de pedido (pronto, agendado, finalizado etc.) continuam sendo
+                  enviadas.
                 </p>
               </div>
             </div>

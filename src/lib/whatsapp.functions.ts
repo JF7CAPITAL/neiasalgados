@@ -791,13 +791,6 @@ async function doNotify(
     if (!clientePhone) {
       return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
     }
-    if (await isContactPaused(supabase, clientePhone)) {
-      return {
-        ok: false,
-        message: "Envio pausado para este contato.",
-        enviados: 0,
-      };
-    }
     const notif = notifications.find((n) => n.regra === "pedido_recebido" && n.ativo);
     if (!order.whatsapp_notified_at || mode === "manual") {
       const ok = await notifyOne(supabase, order, notif, clientePhone);
@@ -842,13 +835,6 @@ async function doNotify(
   // tipo === "pronto"
   if (!clientePhone) {
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
-  }
-  if (await isContactPaused(supabase, clientePhone)) {
-    return {
-      ok: false,
-      message: "Envio pausado para este contato.",
-      enviados: 0,
-    };
   }
   if (!order.whatsapp_ready_notified_at || mode === "manual") {
     const notif = notifications.find((n) => n.regra === "pedido_pronto" && n.ativo);
@@ -952,13 +938,6 @@ export async function notifyStatusMessageWhatsApp(
   const clientePhone = orderPhone(data.payload);
   if (!clientePhone) {
     return { ok: false, message: "Cliente sem telefone no payload do pedido.", enviados: 0 };
-  }
-  if (await isContactPaused(supabase, clientePhone)) {
-    return {
-      ok: false,
-      message: "Envio pausado para este contato.",
-      enviados: 0,
-    };
   }
 
   const text = renderTemplate(
