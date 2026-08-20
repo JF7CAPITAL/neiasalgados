@@ -123,7 +123,7 @@ export function orderDeliveryInfo(payload: unknown): DeliveryInfo | null {
   return { endereco, maps_link };
 }
 
-/** Resumo dos itens do pedido: "2x Coxinha de Frango, 1x Pastel". */
+/** Resumo dos itens do pedido, um por linha: "50 Coxinha\n20 Risoles\n10 Bolinho de queijo". */
 async function orderItemsText(supabase: DbClient, orderId: string): Promise<string> {
   try {
     const { data } = await supabase
@@ -134,9 +134,9 @@ async function orderItemsText(supabase: DbClient, orderId: string): Promise<stri
     return data
       .map(
         (it: { nome: string | null; quantidade: number }) =>
-          `${it.quantidade}x ${it.nome ?? "item"}`,
+          `${it.quantidade} ${it.nome ?? "item"}`,
       )
-      .join(", ");
+      .join("\n");
   } catch {
     return "";
   }
@@ -307,6 +307,141 @@ export function orderDeliveryFeeText(payload: unknown): string {
   return fmtMoney(orderDeliveryFeeNumber(payload));
 }
 
+/** Campos que indicam que um objeto agrupa itens aninhados (mesma lista do sync). */
+const ITEM_CONTAINER_FIELDS = [
+  "subItems",
+  "subitems",
+  "sub_itens",
+  "items",
+  "products",
+  "produtos",
+  "subgroups",
+  "subGroups",
+  "subgrupos",
+  "combo",
+  "comboItems",
+  "combo_itens",
+  "options",
+  "choices",
+];
+
+function numOrNull(v: unknown): number | null {
+  if (typeof v === "number" && isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() && !isNaN(Number(v))) return Number(v);
+  return null;
+}
+
+/** Total da linha do item (preço já multiplicado pela quantidade), se houver. */
+function itemLineTotal(rec: JsonRecord): number | null {
+  for (const k of [
+    "total",
+    "totalPrice",
+    "total_price",
+    "totalValue",
+    "total_value",
+    "valorTotal",
+    "valor_total",
+    "subtotal",
+    "subTotal",
+    "sub_total",
+    "lineTotal",
+    "totalItem",
+    "valor",
+  ]) {
+    const v = numOrNull(rec[k]);
+    if (v !== null) return v;
+  }
+  return null;
+}
+
+/** Preço unitário do item, se houver. */
+function itemUnitPrice(rec: JsonRecord): number | null {
+  for (const k of [
+    "price",
+    "unitPrice",
+    "unit_price",
+    "preco",
+    "preco_unitario",
+    "valor_unitario",
+    "priceValue",
+    "price_value",
+  ]) {
+    const v = numOrNull(rec[k]);
+    if (v !== null) return v;
+  }
+  return null;
+}
+
+/** Quantidade do item, com padrão 1. */
+function itemQuantity(rec: JsonRecord): number {
+  for (const k of ["qtd", "qty", "quantidade", "quantity", "count"]) {
+    const v = numOrNull(rec[k]);
+    if (v !== null) return v;
+  }
+  return 1;
+}
+
+/**
+ * Soma apenas o valor dos itens do pedido (sem taxa de entrega, adicionais ou
+ * outros acréscimos). Percorre o payload do Anota pelos mesmos containers de
+ * itens usados na sincronização e, quando nenhum preço de item for encontrado,
+ * recorre ao subtotal informado pela API ou a 0.
+ */
+function orderSubTotalNumber(payload: unknown): number {
+  const root = asRecord(payload);
+  if (!root) return 0;
+
+  const looksLikeItem = (rec: JsonRecord): boolean => {
+    for (const k of ["name", "nome", "description", "title", "productName", "product_name"]) {
+      if (typeof rec[k] === "string" && rec[k].trim()) return true;
+    }
+    return itemLineTotal(rec) !== null || itemUnitPrice(rec) !== null;
+  };
+
+  const sumNode = (value: unknown): number => {
+    if (Array.isArray(value)) return value.reduce((s, el) => s + sumNode(el), 0);
+    const rec = asRecord(value);
+    if (!rec) return 0;
+
+    // Contêiner com itens dentro: soma os filhos (evita contar o contêiner 2x).
+    for (const key of ITEM_CONTAINER_FIELDS) {
+      const arr = rec[key];
+      if (Array.isArray(arr) && arr.length > 0) {
+        const childSum = sumNode(arr);
+        if (childSum > 0) return childSum;
+      }
+    }
+
+    // Item folha com preço próprio.
+    if (looksLikeItem(rec)) {
+      const line = itemLineTotal(rec);
+      if (line !== null) return line;
+      const unit = itemUnitPrice(rec);
+      if (unit !== null) return unit * itemQuantity(rec);
+    }
+
+    // Sem preço direto: procura itens aninhados.
+    let nested = 0;
+    for (const key of Object.keys(rec)) {
+      if (key === "payments" || key === "additionalFees") continue;
+      nested += sumNode(rec[key]);
+    }
+    return nested;
+  };
+
+  let total = 0;
+  for (const key of Object.keys(root)) {
+    if (key === "payments" || key === "additionalFees") continue;
+    total += sumNode(root[key]);
+  }
+
+  if (total === 0) {
+    total =
+      numOrNull(root.subtotal) ?? numOrNull(root.subTotal) ?? numOrNull(root.sub_total) ?? 0;
+  }
+  return total;
+}
+
 /** Texto exibido quando o pedido não tem endereço de entrega (cliente retira no local). */
 const RETIRADA_NO_LOCAL_TEXT =
   "você optou por retirar no local o nosso endereço é Rua Los Angeles, n°249 no Jardim Parada do Alto";
@@ -338,10 +473,12 @@ async function orderTemplateVars(
   const numero = order.numero ?? order.external_order_id ?? "";
   const taxa = orderDeliveryFeeText(order.payload);
   const address = orderAddressText(order.payload);
+  const subTotal = orderSubTotalNumber(order.payload);
   const vars: Record<string, string> = {
     numero,
     total: fmtMoney(order.total),
     total_com_taxa: fmtMoney(order.total + orderDeliveryFeeNumber(order.payload)),
+    sub_total: fmtMoney(subTotal > 0 ? subTotal : order.total),
     cliente: order.cliente ?? "cliente",
     pagamento: orderPaymentText(order.payload),
     agendamento: orderScheduleText(order.payload),

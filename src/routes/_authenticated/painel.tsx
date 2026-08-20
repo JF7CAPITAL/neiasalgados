@@ -266,6 +266,8 @@ function DashboardPage() {
 
   const pBelowMin = () => printBelowMinimumReport(produtosAbaixo.map((p) => ({ nome: p.nome, atual: Number(p.quantidade_atual), minimo: Number(p.estoque_minimo) })));
 
+  const pInsumosBelowMin = () => printBelowMinimumReport(insumosAbaixo.map((i) => ({ nome: i.nome, atual: Number(i.quantidade_atual), minimo: Number(i.estoque_minimo) })), "Insumos Abaixo do Mínimo");
+
   const pConsumoHoje = () => {
     const rows = movements
       .filter((m) => isConsumoAnota(m, "hoje"))
@@ -413,7 +415,7 @@ function DashboardPage() {
             table: insumosAbaixo.length
               ? <Table><TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader><TableBody>{insumosAbaixo.map((i) => (<TableRow key={i.id}><TableCell className="font-medium">{i.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(i.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(i.estoque_minimo)}</TableCell></TableRow>))}</TableBody></Table>
               : <p className="py-8 text-center text-muted-foreground">Nenhum insumo abaixo do mínimo.</p>,
-            onPrint: () => {}, // no dedicated print for ingredients yet
+            onPrint: pInsumosBelowMin,
           })} />
       </div>
 

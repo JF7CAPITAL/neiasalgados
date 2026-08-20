@@ -142,6 +142,7 @@ const TEMPLATE_VARIABLES = [
   "{{numero}}",
   "{{total}}",
   "{{total_com_taxa}}",
+  "{{sub_total}}",
   "{{cliente}}",
   "{{pagamento}}",
   "{{agendamento}}",

@@ -269,6 +269,7 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
             numero: "",
             total: "",
             total_com_taxa: "",
+            sub_total: "",
             cliente: "",
             pagamento: "",
             agendamento: "",

@@ -168,13 +168,16 @@ export function printStockReport(products: { nome: string; atual: number; reserv
   printHTML(html);
 }
 
-// ─── Relatório de produtos abaixo do mínimo ──────────────────────
-export function printBelowMinimumReport(products: { nome: string; atual: number; minimo: number }[]) {
-  const html = pageWrap("Produtos Abaixo do Mínimo", `
+// ─── Relatório de produtos/insumos abaixo do mínimo ────────────────
+export function printBelowMinimumReport(
+  products: { nome: string; atual: number; minimo: number }[],
+  title = "Produtos Abaixo do Mínimo",
+) {
+  const html = pageWrap(title, `
     <style>${TABLE_STYLE}</style>
-    <p style="color:#666;font-size:12px">${products.length} produto(s) com estoque crítico</p>
+    <p style="color:#666;font-size:12px">${products.length} registro(s) com estoque crítico</p>
     ${tableHtml(
-      ["Produto", "Estoque Atual", "Mínimo"],
+      ["Item", "Estoque Atual", "Mínimo"],
       products.map((p) => [p.nome, String(p.atual), String(p.minimo)]),
       ["left", "right", "right"],
     )}`);
