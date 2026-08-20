@@ -472,13 +472,15 @@ async function orderTemplateVars(
 ): Promise<Record<string, string>> {
   const numero = order.numero ?? order.external_order_id ?? "";
   const taxa = orderDeliveryFeeText(order.payload);
+  const taxaNumber = orderDeliveryFeeNumber(order.payload);
   const address = orderAddressText(order.payload);
   const subTotal = orderSubTotalNumber(order.payload);
+  const subTotalValue = subTotal > 0 ? subTotal : order.total;
   const vars: Record<string, string> = {
     numero,
     total: fmtMoney(order.total),
-    total_com_taxa: fmtMoney(order.total + orderDeliveryFeeNumber(order.payload)),
-    sub_total: fmtMoney(subTotal > 0 ? subTotal : order.total),
+    total_com_taxa: fmtMoney(subTotalValue + taxaNumber),
+    sub_total: fmtMoney(subTotalValue),
     cliente: order.cliente ?? "cliente",
     pagamento: orderPaymentText(order.payload),
     agendamento: orderScheduleText(order.payload),
