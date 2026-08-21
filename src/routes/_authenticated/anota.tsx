@@ -1459,6 +1459,13 @@ function AnotaPage() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    <Label className="text-xs">Alerta sonoro</Label>
+                    <Switch
+                      checked={rule.alerta_sonoro ?? true}
+                      onCheckedChange={(v) => upsertKeywordRule({ ...rule, alerta_sonoro: v })}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
                     <Badge variant="outline" className="text-xs">
                       {rule.regra}
                     </Badge>
@@ -1580,6 +1587,7 @@ function AnotaPage() {
                   mensagem: "",
                   imagem_url: null,
                   ativo: true,
+                  alerta_sonoro: true,
                 });
               }}
             >

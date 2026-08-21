@@ -585,6 +585,7 @@ export interface WhatsAppKeywordRule {
   mensagem: string;
   imagem_url: string | null;
   ativo: boolean;
+  alerta_sonoro: boolean;
 }
 
 async function loadSettings(supabase: DbClient): Promise<Record<string, string>> {

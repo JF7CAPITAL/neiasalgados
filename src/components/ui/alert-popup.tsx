@@ -48,7 +48,7 @@ export function AlertPopup() {
           event: "INSERT",
           schema: "public",
           table: "whatsapp_messages",
-          filter: "tipo=like.keyword:%",
+          filter: "tipo=like.keyword_alerta:%",
         },
         (payload) => {
           const newMsg = payload.new as {
@@ -59,7 +59,7 @@ export function AlertPopup() {
             created_at: string;
           };
 
-          const ruleName = newMsg.tipo?.replace("keyword:", "") || "desconhecida";
+          const ruleName = newMsg.tipo?.replace("keyword_alerta:", "") || "desconhecida";
 
           const alert: KeywordAlert = {
             id: `${newMsg.phone}-${Date.now()}`,

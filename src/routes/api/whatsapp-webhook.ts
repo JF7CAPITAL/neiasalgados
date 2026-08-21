@@ -284,12 +284,14 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
           const r = await sendReply(chatId, rule, msg);
 
           // Grava a resposta na conversa (aba Mensagens).
+          // Usa prefixo "keyword_alerta" se a regra tiver alerta_sonoro=true
+          const tipoPrefixo = rule.alerta_sonoro ? "keyword_alerta" : "keyword";
           await logWhatsAppMessage(supabaseAdmin, {
             phone,
             chatId: chatId,
             direction: "out",
             texto: msg,
-            tipo: `keyword:${rule.regra}`,
+            tipo: `${tipoPrefixo}:${rule.regra}`,
             status: r.ok ? "enviado" : "erro",
             error: r.ok ? null : r.message,
           });
