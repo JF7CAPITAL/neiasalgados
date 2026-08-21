@@ -17,11 +17,28 @@ export function AlertPopup() {
   const [alerts, setAlerts] = useState<KeywordAlert[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(false);
+  const pendingSoundRef = useRef(false);
 
   useEffect(() => {
-    audioRef.current = new Audio("/sounds/service-bell.mp3");
-    audioRef.current.loop = true;
-    audioRef.current.volume = 0.5;
+    const audio = new Audio("/sounds/service-bell.mp3");
+    audio.loop = true;
+    audio.volume = 0.5;
+    audioRef.current = audio;
+
+    // Se o navegador bloquear o autoplay (política de mídia), toca assim
+    // que o operador interagir com a página.
+    if (pendingSoundRef.current) tryPlay(audio);
+
+    const handleInteraction = () => {
+      if (pendingSoundRef.current && audioRef.current) {
+        tryPlay(audioRef.current);
+        pendingSoundRef.current = false;
+      }
+      document.removeEventListener("click", handleInteraction);
+      document.removeEventListener("keydown", handleInteraction);
+    };
+    document.addEventListener("click", handleInteraction);
+    document.addEventListener("keydown", handleInteraction);
 
     const channel = supabase
       .channel("keyword-alerts")
@@ -54,7 +71,7 @@ export function AlertPopup() {
           };
 
           setAlerts((prev) => [...prev, alert]);
-          playSound();
+          startAlertSound();
         }
       )
       .subscribe();
@@ -62,32 +79,47 @@ export function AlertPopup() {
     return () => {
       supabase.removeChannel(channel);
       stopSound();
+      document.removeEventListener("click", handleInteraction);
+      document.removeEventListener("keydown", handleInteraction);
     };
   }, []);
 
-  const playSound = () => {
-    if (!isPlayingRef.current && audioRef.current) {
-      isPlayingRef.current = true;
-      audioRef.current.play().catch((err) => {
-        console.warn("Audio play failed:", err);
+  function tryPlay(audio: HTMLAudioElement) {
+    const p = audio.play();
+    if (p) {
+      p.then(() => {
+        isPlayingRef.current = true;
+      }).catch(() => {
+        // Autoplay bloqueado: aguarda interação do usuário
         isPlayingRef.current = false;
+        pendingSoundRef.current = true;
       });
     }
-  };
+  }
 
-  const stopSound = () => {
+  function startAlertSound() {
+    pendingSoundRef.current = false;
+    if (!isPlayingRef.current && audioRef.current) {
+      tryPlay(audioRef.current);
+    }
+  }
+
+  function stopSound() {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
     isPlayingRef.current = false;
-  };
+    pendingSoundRef.current = false;
+  }
 
   const dismissAlert = (id: string) => {
-    setAlerts((prev) => prev.filter((a) => a.id !== id));
-    if (alerts.length === 1) {
-      stopSound();
-    }
+    setAlerts((prev) => {
+      const next = prev.filter((a) => a.id !== id);
+      // Para o som somente quando o último alerta for fechado
+      if (next.length === 0) stopSound();
+      return next;
+    });
   };
 
   if (alerts.length === 0) return null;
@@ -97,7 +129,7 @@ export function AlertPopup() {
       {alerts.map((alert) => (
         <div
           key={alert.id}
-          className="bg-destructive/95 border border-destructive/50 rounded-xl shadow-xl p-4 animate-slide-in"
+          className="bg-destructive/95 border border-destructive/50 rounded-xl shadow-xl p-4 alert-popup-slide-in"
           role="alert"
           aria-live="assertive"
         >
@@ -135,19 +167,13 @@ export function AlertPopup() {
           </div>
         </div>
       ))}
-      <style jsx>{`
-        @keyframes slide-in {
-          from {
-            opacity: 0;
-            transform: translateX(100%);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
+      <style>{`
+        @keyframes alert-popup-slide-in-kf {
+          from { opacity: 0; transform: translateX(100%); }
+          to { opacity: 1; transform: translateX(0); }
         }
-        .animate-slide-in {
-          animation: slide-in 0.3s ease-out;
+        .alert-popup-slide-in {
+          animation: alert-popup-slide-in-kf 0.3s ease-out;
         }
       `}</style>
     </div>
