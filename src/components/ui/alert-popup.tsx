@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { X, AlertTriangle, MessageSquare } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -18,6 +19,7 @@ export function AlertPopup() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(false);
   const pendingSoundRef = useRef(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const audio = new Audio("/sounds/service-bell.mp3");
@@ -122,6 +124,12 @@ export function AlertPopup() {
     });
   };
 
+  const openConversation = (alert: KeywordAlert) => {
+    setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
+    stopSound();
+    navigate({ to: "/mensagens", search: { phone: alert.phone } });
+  };
+
   if (alerts.length === 0) return null;
 
   return (
@@ -129,9 +137,10 @@ export function AlertPopup() {
       {alerts.map((alert) => (
         <div
           key={alert.id}
-          className="bg-destructive/95 border border-destructive/50 rounded-xl shadow-xl p-4 alert-popup-slide-in"
+          className="bg-destructive/95 border border-destructive/50 rounded-xl shadow-xl p-4 alert-popup-slide-in cursor-pointer transition-transform hover:scale-[1.02]"
           role="alert"
           aria-live="assertive"
+          onClick={() => openConversation(alert)}
         >
           <div className="flex items-start gap-3">
             <div className="flex-shrink-0 size-10 rounded-full bg-destructive/20 flex items-center justify-center">
@@ -143,7 +152,10 @@ export function AlertPopup() {
                   Palavra-chave detectada
                 </h3>
                 <button
-                  onClick={() => dismissAlert(alert.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dismissAlert(alert.id);
+                  }}
                   className="flex-shrink-0 p-1 rounded hover:bg-destructive/20 text-destructive-foreground/70 transition-colors"
                   aria-label="Dispensar alerta"
                 >

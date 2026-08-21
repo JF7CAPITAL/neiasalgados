@@ -29,6 +29,9 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/mensagens")({
+  validateSearch: (search: Record<string, unknown>): { phone?: string } => ({
+    phone: typeof search.phone === "string" && search.phone ? search.phone : undefined,
+  }),
   component: MensagensPage,
 });
 
@@ -55,9 +58,15 @@ function useCountdown(pausedUntil: string | null): string | null {
 
 function MensagensPage() {
   const qc = useQueryClient();
-  const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
+  const { phone: phoneParam } = Route.useSearch();
+  const [selectedPhone, setSelectedPhone] = useState<string | null>(phoneParam ?? null);
   const [pauseMinutes, setPauseMinutes] = useState("60");
   const threadScrollRef = useRef<HTMLDivElement>(null);
+
+  // Seleciona a conversa vinda da URL (ex.: clique no popup de alerta)
+  useEffect(() => {
+    if (phoneParam) setSelectedPhone(phoneParam);
+  }, [phoneParam]);
 
   const conversationsFn = useServerFn(getWhatsAppConversations);
   const conversationFn = useServerFn(getWhatsAppConversation);
