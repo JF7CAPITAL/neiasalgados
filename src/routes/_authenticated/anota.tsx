@@ -394,6 +394,7 @@ function AnotaPage() {
   });
 
   const [keywordDraft, setKeywordDraft] = useState<WhatsAppKeywordRule[]>([]);
+  const [showRulesHelp, setShowRulesHelp] = useState(false);
   useEffect(() => {
     setKeywordDraft(keywordRules);
   }, [keywordRules]);
@@ -1431,15 +1432,33 @@ function AnotaPage() {
 
         <TabsContent value="palavras" className="space-y-4 pt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 className="text-base font-semibold">Regras por palavras-chave</h3>
-              <p className="max-w-2xl text-sm text-muted-foreground">
-                Quando o pedido sincronizado contiver uma das palavras-chave nos itens, no nome do
-                cliente ou no payload, a mensagem configurada é enviada automaticamente ao cliente.
-                Suporta as variáveis: {TEMPLATE_VARIABLES.join(", ")}.
-              </p>
-            </div>
+            <h3 className="text-base font-semibold">Regras por palavras-chave</h3>
+            <Button
+              size="sm"
+              className="bg-yellow-500 text-black hover:bg-yellow-600"
+              onClick={() => setShowRulesHelp(true)}
+            >
+              Ver regras
+            </Button>
           </div>
+
+          <Dialog open={showRulesHelp} onOpenChange={setShowRulesHelp}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Regras por palavras-chave</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <p>
+                  Quando o pedido sincronizado contiver uma das palavras-chave nos itens, no nome do
+                  cliente ou no payload, a mensagem configurada é enviada automaticamente ao cliente.
+                </p>
+                <p>
+                  Suporta as variáveis:{" "}
+                  <span className="font-mono text-xs">{TEMPLATE_VARIABLES.join(", ")}</span>.
+                </p>
+              </div>
+            </DialogContent>
+          </Dialog>
 
           {keywordDraft.length === 0 ? (
             <EmptyState
