@@ -20,6 +20,9 @@ dist-ssr
 # Environment variables (contains secrets)
 .env
 
+# Supabase temp
+supabase/.temp/
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars
