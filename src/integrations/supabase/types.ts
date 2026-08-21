@@ -1059,6 +1059,7 @@ export type Database = {
       }
       whatsapp_keyword_rules: {
         Row: {
+          alerta_sonoro: boolean
           ativo: boolean
           created_at: string
           id: string
@@ -1070,6 +1071,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          alerta_sonoro?: boolean
           ativo?: boolean
           created_at?: string
           id?: string
@@ -1081,6 +1083,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          alerta_sonoro?: boolean
           ativo?: boolean
           created_at?: string
           id?: string
