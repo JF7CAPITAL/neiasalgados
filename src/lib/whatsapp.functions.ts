@@ -1663,6 +1663,7 @@ export interface SaveWhatsAppKeywordRuleInput {
     mensagem: string;
     imagem_url: string | null;
     ativo: boolean;
+    alerta_sonoro: boolean;
   }[];
 }
 
@@ -1698,7 +1699,8 @@ export const saveWhatsAppKeywordRules = createServerFn({ method: "POST" })
       mensagem: r.mensagem,
       imagem_url: r.imagem_url ?? null,
       ativo: r.ativo ?? true,
-    }));
+      alerta_sonoro: r.alerta_sonoro ?? true,
+    } as any));
     const { error } = await context.supabase
       .from("whatsapp_keyword_rules")
       .upsert(upserts, { onConflict: "regra" });
