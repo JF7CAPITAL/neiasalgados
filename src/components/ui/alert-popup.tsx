@@ -15,30 +15,13 @@ interface KeywordAlert {
 
 export function AlertPopup() {
   const [alerts, setAlerts] = useState<KeywordAlert[]>([]);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const oscillatorRef = useRef<OscillatorNode | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(false);
 
   useEffect(() => {
-    // Initialize Web Audio API for alert sound
-    const initAudio = () => {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-        gainNodeRef.current = audioContextRef.current.createGain();
-        gainNodeRef.current.connect(audioContextRef.current.destination);
-        gainNodeRef.current.gain.value = 0.3;
-      }
-    };
-
-    // Initialize on first user interaction
-    const handleUserInteraction = () => {
-      initAudio();
-      document.removeEventListener("click", handleUserInteraction);
-      document.removeEventListener("keydown", handleUserInteraction);
-    };
-    document.addEventListener("click", handleUserInteraction);
-    document.addEventListener("keydown", handleUserInteraction);
+    audioRef.current = new Audio("/sounds/service-bell.mp3");
+    audioRef.current.loop = true;
+    audioRef.current.volume = 0.5;
 
     const channel = supabase
       .channel("keyword-alerts")
@@ -83,41 +66,19 @@ export function AlertPopup() {
   }, []);
 
   const playSound = () => {
-    if (!isPlayingRef.current && audioContextRef.current) {
+    if (!isPlayingRef.current && audioRef.current) {
       isPlayingRef.current = true;
-      // Resume audio context if suspended (browser policy)
-      if (audioContextRef.current.state === "suspended") {
-        audioContextRef.current.resume();
-      }
-      
-      oscillatorRef.current = audioContextRef.current.createOscillator();
-      oscillatorRef.current.type = "square";
-      oscillatorRef.current.frequency.setValueAtTime(800, audioContextRef.current.currentTime);
-      oscillatorRef.current.frequency.exponentialRampToValueAtTime(600, audioContextRef.current.currentTime + 0.1);
-      oscillatorRef.current.frequency.exponentialRampToValueAtTime(800, audioContextRef.current.currentTime + 0.2);
-      
-      oscillatorRef.current.connect(gainNodeRef.current!);
-      oscillatorRef.current.start();
-      
-      // Loop the sound
-      oscillatorRef.current.onended = () => {
-        if (isPlayingRef.current) {
-          playSound();
-        }
-      };
+      audioRef.current.play().catch((err) => {
+        console.warn("Audio play failed:", err);
+        isPlayingRef.current = false;
+      });
     }
   };
 
   const stopSound = () => {
-    if (oscillatorRef.current) {
-      try {
-        oscillatorRef.current.onended = null;
-        oscillatorRef.current.stop();
-        oscillatorRef.current.disconnect();
-      } catch {
-        // Already stopped
-      }
-      oscillatorRef.current = null;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
     }
     isPlayingRef.current = false;
   };
