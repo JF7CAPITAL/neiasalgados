@@ -13,18 +13,8 @@ import {
   type WhatsAppKeywordRule,
 } from "@/lib/whatsapp.functions";
 
-// ---------------------------------------------------------------------------
-// Webhook de mensagens recebidas do WhatsApp (Waha)
-//
-// O Waha faz um POST neste endpoint sempre que um evento acontece no número
-// conectado. Aqui processamos apenas mensagens TEXTO recebidas de clientes
-// (não as enviadas por nós, nem de grupos) e, se o conteúdo bater com alguma
-// regra de palavras-chave ativa, respondemos automaticamente.
-//
-// Configuração no Waha:
-//   WHATSAPP_HOOK_URL=https://<seu-dominio>/api/whatsapp-webhook
-//   WHATSAPP_HOOK_EVENTS=message
-// ---------------------------------------------------------------------------
+const PROBLEM_PHONES = ["5515998556007", "5515991674016"];
+const COOLDOWN_SECONDS = 30;
 
 type Json = Record<string, unknown>;
 
@@ -102,14 +92,21 @@ function isFromMe(root: Json): boolean {
   return false;
 }
 
-// Cooldown simples por remetente para evitar respostas repetidas em loop.
-const cooldownMs = 30_000;
-const lastReplyBy = new Map<string, number>();
-
-function cleanupCooldown() {
-  const now = Date.now();
-  for (const [key, ts] of lastReplyBy) {
-    if (now - ts > cooldownMs * 2) lastReplyBy.delete(key);
+/** Verifica e atualiza cooldown no banco (persistente entre restarts). */
+async function checkCooldown(supabase: any, phone: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("check_and_update_whatsapp_cooldown", {
+      p_phone: phone,
+      p_cooldown_seconds: COOLDOWN_SECONDS,
+    });
+    if (error) {
+      console.error("[whatsapp-webhook] erro cooldown:", error.message);
+      return true; // Em caso de erro, permite enviar (fail-open)
+    }
+    return data === true;
+  } catch (e) {
+    console.error("[whatsapp-webhook] exceção cooldown:", e);
+    return true; // Fail-open
   }
 }
 
@@ -253,12 +250,16 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
             return Response.json({ ok: true, ignored: "nenhuma palavra-chave bateu" });
           }
 
-          cleanupCooldown();
-          const now = Date.now();
-          const last = lastReplyBy.get(phone) ?? 0;
-          if (now - last < cooldownMs) {
+          // Cooldown persistente no banco (substitui Map em memória)
+          const canReply = await checkCooldown(supabaseAdmin, phone);
+          if (!canReply) {
             await log({ event, chatId, phone, texto, motivo: "cooldown" });
             return Response.json({ ok: true, ignored: "cooldown do remetente" });
+          }
+
+          // Debug extra para contatos problemáticos
+          if (PROBLEM_PHONES.includes(phone)) {
+            await log({ event, chatId, phone, texto, motivo: "DEBUG_PROBLEM_PHONE", matched: matched.map(m => m.regra) });
           }
 
           // Envia a mensagem da primeira regra que bateu.
@@ -281,7 +282,6 @@ export const Route = createFileRoute("/api/whatsapp-webhook")({
             pedido: "",
           });
           const r = await sendReply(chatId, rule, msg);
-          if (r.ok) lastReplyBy.set(phone, now);
 
           // Grava a resposta na conversa (aba Mensagens).
           await logWhatsAppMessage(supabaseAdmin, {

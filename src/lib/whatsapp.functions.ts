@@ -803,7 +803,7 @@ function realPhoneFromPayload(payload: JsonRecord | null): string | null {
 /**
  * Resolve o telefone real (E.164) a partir do chatId do Waha.
  * Se o chatId for `@lid`, tenta o payload, depois a API de LIDs do Waha e,
- * por fim, retorna o número cru do lid (sem prefixar 55).
+ * por fim, retorna o número normalizado com prefixo 55.
  */
 export async function resolveRealPhone(
   chatId: string,
@@ -841,9 +841,10 @@ export async function resolveRealPhone(
     }
   }
 
-  // Sem resolução: guarda o número cru do lid (não o normaliza com 55).
-  lidPhoneCache.set(raw, raw);
-  return raw;
+  // Sem resolução: normaliza o número cru do lid com prefixo 55
+  const normalized = normalizePhone(raw);
+  lidPhoneCache.set(raw, normalized ?? raw);
+  return normalized ?? raw;
 }
 
 /** Verifica se o envio de mensagens está temporariamente pausado para o contato. */
