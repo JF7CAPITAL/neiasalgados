@@ -75,12 +75,14 @@ function FinanceiroPage() {
     return d.toISOString().split("T")[0];
   });
   const [periodoFim, setPeriodoFim] = useState(() => new Date().toISOString().split("T")[0]);
-  const [passwordModal, setPasswordModal] = useState(false);
+  const [passwordModal, setPasswordModal] = useState(true);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isFirstAccess, setIsFirstAccess] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [checkingAccess, setCheckingAccess] = useState(true);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [dreEntries, setDreEntries] = useState<DreEntry[]>([]);
   const [editingEntry, setEditingEntry] = useState<DreEntry | null>(null);
   const [newEntryOpen, setNewEntryOpen] = useState(false);
@@ -109,30 +111,43 @@ function FinanceiroPage() {
   }, []);
 
   const checkPasswordSetup = async () => {
-    const { data } = await supabase.from("finance_access").select("id, password_hash").single();
-    if (data && !data.password_hash) {
-      setIsFirstAccess(true);
-      setPasswordModal(true);
-    } else {
-      setPasswordModal(true);
+    try {
+      const { data, error } = await supabase.from("finance_access").select("id, password_hash").maybeSingle();
+      if (error) throw error;
+      
+      if (!data) {
+        // No row exists - create one
+        const { data: newRow, error: insertError } = await supabase
+          .from("finance_access")
+          .insert({ password_hash: "" })
+          .select("id")
+          .single();
+        if (insertError) throw insertError;
+        setIsFirstAccess(true);
+      } else if (!data.password_hash) {
+        // Row exists but no password set
+        setIsFirstAccess(true);
+      }
+      // If password_hash exists, isFirstAccess stays false
+    } catch (e) {
+      console.error("Erro ao verificar acesso:", e);
+      setAccessError("Erro ao verificar acesso. Recarregue a página.");
+    } finally {
+      setCheckingAccess(false);
     }
   };
 
   const verifyPassword = useCallback(async (pwd: string) => {
     const { data } = await supabase.from("finance_access").select("password_hash").single();
     if (!data) return false;
-    if (!data.password_hash) return true; // first access
-    // Simple hash comparison (in production, use proper hashing)
+    if (!data.password_hash) return true;
     return data.password_hash === btoa(pwd);
   }, []);
 
   const setPasswordHash = useMutation({
     mutationFn: async (pwd: string) => {
       const hash = btoa(pwd);
-      // First get the ID
-      const { data: accessData, error: selectError } = await supabase.from("finance_access").select("id").single();
-      if (selectError || !accessData?.id) throw new Error("Não foi possível identificar o registro de acesso");
-      const { error } = await supabase.from("finance_access").update({ password_hash: hash }).eq("id", accessData.id);
+      const { error } = await supabase.from("finance_access").update({ password_hash: hash }).eq("id", (await supabase.from("finance_access").select("id").single()).data?.id);
       if (error) throw error;
       await logActivity("financeiro", "definiu senha de acesso", null, {});
     },
@@ -339,6 +354,42 @@ function FinanceiroPage() {
   };
 
   // Password modal - must render first
+  if (checkingAccess) {
+    return (
+      <Dialog open={true} onOpenChange={() => {}}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <div className="flex size-10 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                <Loader2 className="size-5 animate-spin" />
+              </div>
+              <DialogTitle className="text-center">Verificando acesso...</DialogTitle>
+            </div>
+            <p className="text-center text-sm text-muted-foreground">Aguarde um momento</p>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  if (accessError) {
+    return (
+      <Dialog open={true} onOpenChange={() => {}}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <div className="flex size-10 items-center justify-center rounded-lg bg-destructive/15 text-destructive">
+                <AlertTriangle className="size-5" />
+              </div>
+              <DialogTitle className="text-center">Erro de Acesso</DialogTitle>
+            </div>
+            <p className="text-center text-sm text-destructive">{accessError}</p>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
   if (passwordModal) {
     return (
       <Dialog open={true} onOpenChange={() => {}}>
