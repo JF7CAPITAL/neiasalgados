@@ -109,7 +109,7 @@ function FinanceiroPage() {
   }, []);
 
   const checkPasswordSetup = async () => {
-    const { data } = await supabase.from("finance_access").select("password_hash").single();
+    const { data } = await supabase.from("finance_access").select("id, password_hash").single();
     if (data && !data.password_hash) {
       setIsFirstAccess(true);
       setPasswordModal(true);
@@ -129,7 +129,10 @@ function FinanceiroPage() {
   const setPasswordHash = useMutation({
     mutationFn: async (pwd: string) => {
       const hash = btoa(pwd);
-      const { error } = await supabase.from("finance_access").update({ password_hash: hash }).eq("id", (await supabase.from("finance_access").select("id").single()).data?.id);
+      // First get the ID
+      const { data: accessData, error: selectError } = await supabase.from("finance_access").select("id").single();
+      if (selectError || !accessData?.id) throw new Error("Não foi possível identificar o registro de acesso");
+      const { error } = await supabase.from("finance_access").update({ password_hash: hash }).eq("id", accessData.id);
       if (error) throw error;
       await logActivity("financeiro", "definiu senha de acesso", null, {});
     },
