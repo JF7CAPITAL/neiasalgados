@@ -503,12 +503,20 @@ function AnotaPage() {
     return map;
   }, [comboMap]);
 
-  const pendentes = distinctItems.filter(
-    (d) => !d.product_id && !comboByRef.has(d.ref),
-  ).length;
-  const finalizadosSemBaixa = orders.filter(
-    (o) => o.check_status === 3 && !o.estoque_aplicado,
-  ).length;
+  const pendentesItems = useMemo(
+    () => distinctItems.filter((d) => !d.product_id && !comboByRef.has(d.ref)),
+    [distinctItems, comboByRef],
+  );
+  const pendentes = pendentesItems.length;
+
+  const finalizadosSemBaixaItems = useMemo(
+    () => orders.filter((o) => o.check_status === 3 && !o.estoque_aplicado),
+    [orders],
+  );
+  const finalizadosSemBaixa = finalizadosSemBaixaItems.length;
+
+  const [tabValue, setTabValue] = useState("pedidos");
+  const [kpiDialog, setKpiDialog] = useState<null | "pendentes" | "semBaixa">(null);
 
   // Estado local dos selects de mapeamento
   const [mapDraft, setMapDraft] = useState<Record<string, string>>({});
@@ -812,16 +820,18 @@ function AnotaPage() {
           icon={Link2}
           tone={pendentes ? "warning" : "success"}
           hint={pendentes ? "Vincule para permitir a baixa" : "Tudo mapeado"}
+          onClick={() => setKpiDialog("pendentes")}
         />
         <KpiCard
           label="Finalizados sem baixa"
           value={finalizadosSemBaixa}
           icon={AlertTriangle}
           tone={finalizadosSemBaixa ? "warning" : "success"}
+          onClick={() => setKpiDialog("semBaixa")}
         />
       </div>
 
-      <Tabs defaultValue="pedidos">
+      <Tabs value={tabValue} onValueChange={setTabValue}>
         <TabsList>
           <TabsTrigger value="pedidos">
             Pedidos{hojeOrders.length ? ` (${hojeOrders.length})` : ""}
@@ -1814,6 +1824,137 @@ function AnotaPage() {
             <Button onClick={() => saveCombo.mutate()} disabled={saveCombo.isPending}>
               {saveCombo.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               Salvar composição
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Itens sem mapeamento */}
+      <Dialog
+        open={kpiDialog === "pendentes"}
+        onOpenChange={(open) => !open && setKpiDialog(null)}
+      >
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Itens sem mapeamento ({pendentes})</DialogTitle>
+          </DialogHeader>
+          <p className="-mt-2 text-sm text-muted-foreground">
+            Estes itens não têm produto vinculado nem composição de combo configurada. A baixa de
+            estoque não será aplicada enquanto estiverem pendentes.
+          </p>
+          {pendentesItems.length > 0 ? (
+            <div className="overflow-x-auto mt-4">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3">Item no Anota AI</th>
+                    <th className="px-4 py-3 text-center">Ocorrências</th>
+                    <th className="px-4 py-3">Tipo</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {pendentesItems.map((d) => (
+                    <tr key={d.ref} className="hover:bg-muted/30">
+                      <td className="px-4 py-3 font-medium">{d.nome ?? d.ref}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{d.count}</td>
+                      <td className="px-4 py-3">
+                        {d.is_combo ? (
+                          <Badge variant="secondary">Combo</Badge>
+                        ) : (
+                          <Badge variant="outline">Item simples</Badge>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">Nenhum item pendente.</div>
+          )}
+          <div className="flex justify-end gap-2 mt-4 pt-4 border-t">
+            <Button variant="outline" onClick={() => setKpiDialog(null)}>
+              Fechar
+            </Button>
+            <Button
+              onClick={() => {
+                setKpiDialog(null);
+                setTabValue("mapeamento");
+              }}
+            >
+              Ir para mapeamento
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Finalizados sem baixa */}
+      <Dialog
+        open={kpiDialog === "semBaixa"}
+        onOpenChange={(open) => !open && setKpiDialog(null)}
+      >
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Finalizados sem baixa ({finalizadosSemBaixa})</DialogTitle>
+          </DialogHeader>
+          <p className="-mt-2 text-sm text-muted-foreground">
+            Pedidos com status finalizado (check_status = 3) mas sem estoque_aplicado. Verifique
+            itens sem mapeamento ou falhas na sincronização.
+          </p>
+          {finalizadosSemBaixaItems.length > 0 ? (
+            <div className="overflow-x-auto mt-4">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3">Pedido</th>
+                    <th className="px-4 py-3">Cliente</th>
+                    <th className="px-4 py-3">Data</th>
+                    <th className="px-4 py-3 text-right">Total</th>
+                    <th className="px-4 py-3 text-center">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {finalizadosSemBaixaItems.map((o) => (
+                    <tr key={o.id} className="hover:bg-muted/30">
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => {
+                            setSelectedOrderId(o.id);
+                            setKpiDialog(null);
+                          }}
+                          className="font-medium underline-offset-2 hover:underline cursor-pointer text-left"
+                        >
+                          {o.numero ?? o.external_order_id.slice(-6)}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3">{o.cliente ?? "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {fmtDateTime(o.pedido_em ?? o.imported_at)}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular">{fmtMoney(o.total)}</td>
+                      <td className="px-4 py-3 text-center">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setSelectedOrderId(o.id);
+                            setKpiDialog(null);
+                          }}
+                        >
+                          Ver detalhes
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">Nenhum pedido sem baixa.</div>
+          )}
+          <div className="flex justify-end mt-4 pt-4 border-t">
+            <Button variant="outline" onClick={() => setKpiDialog(null)}>
+              Fechar
             </Button>
           </div>
         </DialogContent>
