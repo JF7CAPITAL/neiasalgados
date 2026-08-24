@@ -22,6 +22,37 @@ export function downloadExcel(filename: string, rows: Record<string, unknown>[],
   triggerDownload(blob, filename.endsWith(".xls") ? filename : filename + ".xls");
 }
 
+export function downloadXLSX(filename: string, sheets: { name: string; headers: { key: string; label: string }[]; rows: Record<string, unknown>[] }[]) {
+  try {
+    const XLSX = require("xlsx");
+    const wb = XLSX.utils.book_new();
+
+    for (const sheet of sheets) {
+      const cols = sheet.headers ?? Object.keys(sheet.rows[0] ?? {}).map((k) => ({ key: k, label: k }));
+      const head = cols.map((c) => c.label);
+      const body = sheet.rows.map((r) => cols.map((c) => r[c.key] ?? ""));
+      const aoa = [head, ...body];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+      // Auto-width columns
+      const maxWidth = cols.map((c, i) => Math.max(c.label.length, ...body.map((r) => String(r[i] ?? "").length)));
+      ws["!cols"] = maxWidth.map((w) => ({ wch: Math.min(w + 2, 50) }));
+
+      XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+    }
+
+    const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    triggerDownload(blob, filename.endsWith(".xlsx") ? filename : filename + ".xlsx");
+  } catch (e) {
+    console.error("XLSX export failed, falling back to CSV:", e);
+    // Fallback to first sheet as CSV
+    if (sheets.length > 0) {
+      downloadCSV(filename, sheets[0].rows, sheets[0].headers);
+    }
+  }
+}
+
 /** Renderiza HTML em um iframe offscreen e dispara a impressão.
  *  Sem reflow na página visível, sem popup blocker, sem efeitos visuais. */
 export function printHTML(html: string) {
