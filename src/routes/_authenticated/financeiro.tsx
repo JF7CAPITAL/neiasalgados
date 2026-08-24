@@ -113,7 +113,15 @@ function FinanceiroPage() {
   const checkPasswordSetup = async () => {
     try {
       const { data, error } = await supabase.from("finance_access").select("id, password_hash").maybeSingle();
-      if (error) throw error;
+      if (error) {
+        // Check if table doesn't exist (migration not applied)
+        if (error.code === '42P01' || error.message?.includes('relation "finance_access" does not exist')) {
+          setAccessError("Tabela finance_access não existe. Aplique a migration 20260824000000_finance_module.sql no Supabase.");
+        } else {
+          throw error;
+        }
+        return;
+      }
       
       if (!data) {
         // No row exists - create one
@@ -131,7 +139,8 @@ function FinanceiroPage() {
       // If password_hash exists, isFirstAccess stays false
     } catch (e) {
       console.error("Erro ao verificar acesso:", e);
-      setAccessError("Erro ao verificar acesso. Recarregue a página.");
+      const msg = e instanceof Error ? e.message : "Erro desconhecido";
+      setAccessError(`Erro ao verificar acesso: ${msg}. Verifique se a migration foi aplicada.`);
     } finally {
       setCheckingAccess(false);
     }
