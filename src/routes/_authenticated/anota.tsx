@@ -191,7 +191,7 @@ function AnotaPage() {
   const getKeywordRulesFn = useServerFn(getWhatsAppKeywordRules);
   const saveKeywordRulesFn = useServerFn(saveWhatsAppKeywordRules);
 
-  const { data: orders = [] } = useQuery({
+  const { data: orders = [], refetch: refetchOrders } = useQuery({
     queryKey: ["anota-orders"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -204,6 +204,7 @@ function AnotaPage() {
       if (error) throw error;
       return data;
     },
+    refetchInterval: 30000,
   });
 
   const { data: items = [] } = useQuery({
@@ -606,6 +607,7 @@ function AnotaPage() {
       qc.invalidateQueries({ queryKey: ["anota-busca"] });
       qc.invalidateQueries({ queryKey: ["stock"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+      refetchOrders();
     },
     onError: (e: Error) => toast.error(e.message),
   });
