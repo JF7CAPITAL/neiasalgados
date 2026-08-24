@@ -3,10 +3,14 @@
 -- ===================================================================
 
 -- Enum for DRE entry types
-CREATE TYPE public.dre_entry_type AS ENUM ('receita', 'custo_direto', 'despesa_operacional', 'despesa_administrativa', 'despesa_financeira', 'outros');
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'dre_entry_type') THEN
+    CREATE TYPE public.dre_entry_type AS ENUM ('receita', 'custo_direto', 'despesa_operacional', 'despesa_administrativa', 'despesa_financeira', 'outros');
+  END IF;
+END $$;
 
 -- Custom DRE entries table (manual entries for accountant adjustments)
-CREATE TABLE public.finance_dre_entries (
+CREATE TABLE IF NOT EXISTS public.finance_dre_entries (
   id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   tipo dre_entry_type NOT NULL,
   categoria text NOT NULL,
@@ -36,7 +40,7 @@ CREATE INDEX idx_finance_dre_entries_competencia ON public.finance_dre_entries(c
 CREATE INDEX idx_finance_dre_entries_tipo ON public.finance_dre_entries(tipo);
 
 -- Finance access password table (single row for the module password)
-CREATE TABLE public.finance_access (
+CREATE TABLE IF NOT EXISTS public.finance_access (
   id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   password_hash text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -173,9 +177,9 @@ BEGIN
   RETURN QUERY
   SELECT 'RESULTADO LÍQUIDO'::text, ''::text, 'Lucro Bruto - Despesas'::text,
     (v_receita_bruta - v_custo_insumos) - v_folha - COALESCE((
-      SELECT SUM(valor) FROM public.finance_dre_entries
-      WHERE competencia >= p_inicio AND competencia <= p_fim
-        AND tipo IN ('despesa_operacional', 'despesa_administrativa', 'despesa_financeira', 'outros')
+      SELECT SUM(fd.valor) FROM public.finance_dre_entries fd
+      WHERE fd.competencia >= p_inicio AND fd.competencia <= p_fim
+        AND fd.tipo IN ('despesa_operacional', 'despesa_administrativa', 'despesa_financeira', 'outros')
     ), 0), 'auto'::text;
 END; $function$;
 
