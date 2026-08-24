@@ -59,24 +59,24 @@ export function KpiCard({
   return (
     <div
       className={cn(
-        "rounded-xl border border-border bg-card p-4 transition-colors",
+        "rounded-xl border border-border bg-card p-5 transition-colors min-w-0",
         onClick ? "cursor-pointer hover:border-primary/60 hover:shadow-sm" : "hover:border-primary/40",
       )}
       onClick={onClick}
     >
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
           {action}
           {printIcon}
           {Icon && (
-            <span className={cn("flex size-8 items-center justify-center rounded-lg", tones[tone])}>
-              <Icon className="size-4" />
+            <span className={cn("flex size-9 items-center justify-center rounded-lg", tones[tone])}>
+              <Icon className="size-4.5" />
             </span>
           )}
         </div>
       </div>
-      <div className="mt-3 font-display text-3xl font-semibold tabular">{value}</div>
+      <div className="mt-3 font-display text-3xl font-semibold tabular truncate">{value}</div>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
     </div>
   );
