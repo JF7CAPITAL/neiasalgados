@@ -314,6 +314,56 @@ export type Database = {
         }
         Relationships: []
       }
+      collaborator_documents: {
+        Row: {
+          id: string
+          collaborator_id: string
+          nome: string
+          tipo: string
+          arquivo_url: string
+          tamanho_bytes: number | null
+          mime_type: string | null
+          observacoes: string | null
+          created_at: string
+          updated_at: string
+          created_by: string | null
+        }
+        Insert: {
+          id?: string
+          collaborator_id: string
+          nome: string
+          tipo: string
+          arquivo_url: string
+          tamanho_bytes?: number | null
+          mime_type?: string | null
+          observacoes?: string | null
+          created_at?: string
+          updated_at?: string
+          created_by?: string | null
+        }
+        Update: {
+          id?: string
+          collaborator_id?: string
+          nome?: string
+          tipo?: string
+          arquivo_url?: string
+          tamanho_bytes?: number | null
+          mime_type?: string | null
+          observacoes?: string | null
+          created_at?: string
+          updated_at?: string
+          created_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "collaborator_documents_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       filling_movements: {
         Row: {
           created_at: string

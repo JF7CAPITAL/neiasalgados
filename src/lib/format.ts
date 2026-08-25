@@ -58,3 +58,10 @@ export function stockLevel(atual: number, minimo: number, ideal: number): "criti
   if (ideal > 0 && atual < ideal) return "baixo";
   return "ok";
 }
+
+export function formatFileSize(bytes: number | null | undefined): string {
+  if (!bytes) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
