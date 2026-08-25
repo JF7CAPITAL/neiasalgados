@@ -22,7 +22,6 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { formatFileSize } from "@/lib/format";
 
@@ -57,7 +56,6 @@ function ColaboradoresPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("dados");
   const [editing, setEditing] = useState<Partial<Collab> | null>(null);
   const [toDelete, setToDelete] = useState<Collab | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -212,7 +210,7 @@ function ColaboradoresPage() {
             <Button variant="outline" size="sm" onClick={handlePrint}>
               <Printer className="mr-1.5 size-4" /> Imprimir
             </Button>
-            <Button onClick={() => { setEditing({ ...empty }); setActiveTab("dados"); setOpen(true); }}>
+            <Button onClick={() => { setEditing({ ...empty }); setOpen(true); }}>
               <Plus className="mr-1.5 size-4" /> Novo
             </Button>
           </>
@@ -245,7 +243,7 @@ function ColaboradoresPage() {
                     <TableCell className="text-muted-foreground">{fmtDate(c.data_admissao)}</TableCell>
                     <TableCell>{c.em_turno ? "Sim" : "Não"}</TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { setEditing({ ...c }); setActiveTab("dados"); setOpen(true); }}><Pencil className="size-4" /></Button>
+                      <Button variant="ghost" size="icon" onClick={() => { setEditing({ ...c }); setOpen(true); }}><Pencil className="size-4" /></Button>
                       <Button variant="ghost" size="icon" onClick={() => setToDelete(c)}><Trash2 className="size-4 text-destructive" /></Button>
                     </TableCell>
                   </TableRow>
@@ -255,118 +253,105 @@ function ColaboradoresPage() {
           </div>
         )}
 
-      <Dialog open={open} onOpenChange={(o) => { if (!o) { setOpen(false); setEditing(null); setActiveTab("dados"); } }}>
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-hidden">
+      <Dialog open={open} onOpenChange={(o) => { if (!o) { setOpen(false); setEditing(null); } }}>
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto p-4 space-y-4">
           <DialogHeader><DialogTitle>{editing?.id ? "Editar" : "Novo"} colaborador</DialogTitle></DialogHeader>
           {editing && (
-            <div className="flex flex-col h-[calc(100%-80px)]">
-              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="dados">Dados do Colaborador</TabsTrigger>
-                  <TabsTrigger value="documentos">Documentos</TabsTrigger>
-                </TabsList>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <F label="Nome" cn="col-span-2"><Input value={editing.nome ?? ""} onChange={(e) => setEditing({ ...editing, nome: e.target.value })} /></F>
+                <F label="CPF"><Input value={editing.cpf ?? ""} onChange={(e) => setEditing({ ...editing, cpf: e.target.value })} /></F>
+                <F label="RG"><Input value={editing.rg ?? ""} onChange={(e) => setEditing({ ...editing, rg: e.target.value })} /></F>
+                <F label="Telefone"><Input value={editing.telefone ?? ""} onChange={(e) => setEditing({ ...editing, telefone: e.target.value })} /></F>
+                <F label="Celular"><Input value={editing.celular ?? ""} onChange={(e) => setEditing({ ...editing, celular: e.target.value })} /></F>
+                <F label="Email" cn="col-span-2"><Input type="email" value={editing.email ?? ""} onChange={(e) => setEditing({ ...editing, email: e.target.value })} /></F>
+                <F label="Endereço" cn="col-span-2"><Input value={editing.endereco ?? ""} onChange={(e) => setEditing({ ...editing, endereco: e.target.value })} /></F>
+                <F label="Cargo"><Input value={editing.cargo ?? ""} onChange={(e) => setEditing({ ...editing, cargo: e.target.value })} /></F>
+                <F label="Data admissão"><Input type="date" value={editing.data_admissao ?? ""} onChange={(e) => setEditing({ ...editing, data_admissao: e.target.value })} /></F>
+                <F label="Turno"><Input value={editing.turno ?? ""} onChange={(e) => setEditing({ ...editing, turno: e.target.value })} /></F>
+                <F label="Horário"><Input value={editing.horario ?? ""} onChange={(e) => setEditing({ ...editing, horario: e.target.value })} /></F>
+                <F label="Escala"><Input value={editing.escala ?? ""} onChange={(e) => setEditing({ ...editing, escala: e.target.value })} /></F>
+                <F label="Status"><Input value={editing.status ?? "ativo"} onChange={(e) => setEditing({ ...editing, status: e.target.value })} /></F>
+                <F label="Observações" cn="col-span-2"><Textarea value={editing.observacoes ?? ""} onChange={(e) => setEditing({ ...editing, observacoes: e.target.value })} /></F>
+                <div className="col-span-2 flex items-center gap-2">
+                  <Switch checked={editing.em_turno ?? false} onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })} />
+                  <Label>Em turno agora</Label>
+                </div>
+              </div>
 
-                <TabsContent value="dados" className="flex-1 overflow-y-auto p-4 space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <F label="Nome" cn="col-span-2"><Input value={editing.nome ?? ""} onChange={(e) => setEditing({ ...editing, nome: e.target.value })} /></F>
-                    <F label="CPF"><Input value={editing.cpf ?? ""} onChange={(e) => setEditing({ ...editing, cpf: e.target.value })} /></F>
-                    <F label="RG"><Input value={editing.rg ?? ""} onChange={(e) => setEditing({ ...editing, rg: e.target.value })} /></F>
-                    <F label="Telefone"><Input value={editing.telefone ?? ""} onChange={(e) => setEditing({ ...editing, telefone: e.target.value })} /></F>
-                    <F label="Celular"><Input value={editing.celular ?? ""} onChange={(e) => setEditing({ ...editing, celular: e.target.value })} /></F>
-                    <F label="Email" cn="col-span-2"><Input type="email" value={editing.email ?? ""} onChange={(e) => setEditing({ ...editing, email: e.target.value })} /></F>
-                    <F label="Endereço" cn="col-span-2"><Input value={editing.endereco ?? ""} onChange={(e) => setEditing({ ...editing, endereco: e.target.value })} /></F>
-                    <F label="Cargo"><Input value={editing.cargo ?? ""} onChange={(e) => setEditing({ ...editing, cargo: e.target.value })} /></F>
-                    <F label="Data admissão"><Input type="date" value={editing.data_admissao ?? ""} onChange={(e) => setEditing({ ...editing, data_admissao: e.target.value })} /></F>
-                    <F label="Turno"><Input value={editing.turno ?? ""} onChange={(e) => setEditing({ ...editing, turno: e.target.value })} /></F>
-                    <F label="Horário"><Input value={editing.horario ?? ""} onChange={(e) => setEditing({ ...editing, horario: e.target.value })} /></F>
-                    <F label="Escala"><Input value={editing.escala ?? ""} onChange={(e) => setEditing({ ...editing, escala: e.target.value })} /></F>
-                    <F label="Status"><Input value={editing.status ?? "ativo"} onChange={(e) => setEditing({ ...editing, status: e.target.value })} /></F>
-                    <F label="Observações" cn="col-span-2"><Textarea value={editing.observacoes ?? ""} onChange={(e) => setEditing({ ...editing, observacoes: e.target.value })} /></F>
-                    <div className="col-span-2 flex items-center gap-2">
-                      <Switch checked={editing.em_turno ?? false} onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })} />
-                      <Label>Em turno agora</Label>
-                    </div>
-
-                    <DialogFooter className="col-span-2">
-                      <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
-                      <Button onClick={() => save.mutate(editing)} disabled={!editing.nome || save.isPending}>
-                        {save.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Salvar
-                      </Button>
-                    </DialogFooter>
+              {editing.id && (
+                <div className="space-y-4 border-t pt-4">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Documentos anexados</Label>
                   </div>
-                </TabsContent>
 
-                <TabsContent value="documentos" className="flex-1 overflow-y-auto p-4 space-y-4">
-                  {editing.id ? (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-3 gap-3">
-                        {docTypes.map((tipo) => (
-                          <div key={tipo} className="space-y-1.5">
-                            <Label className="text-xs capitalize">{tipo}</Label>
-                            <Input
-                              type="file"
-                              accept="image/*,application/pdf"
-                              onChange={(e) => handleFileUpload(e, tipo)}
-                              className="cursor-pointer"
-                              disabled={uploadingDoc === tipo || uploadDocument.isPending}
-                            />
-                            {uploadingDoc && uploadingDoc !== tipo && (
-                              <Progress value={uploadProgress[uploadingDoc] || 0} className="h-1" />
-                            )}
+                  <div className="grid grid-cols-3 gap-3">
+                    {docTypes.map((tipo) => (
+                      <div key={tipo} className="space-y-1.5">
+                        <Label className="text-xs capitalize">{tipo}</Label>
+                        <Input
+                          type="file"
+                          accept="image/*,application/pdf"
+                          onChange={(e) => handleFileUpload(e, tipo)}
+                          className="cursor-pointer"
+                          disabled={uploadingDoc === tipo || uploadDocument.isPending}
+                        />
+                        {uploadingDoc && uploadingDoc !== tipo && (
+                          <Progress value={uploadProgress[uploadingDoc] || 0} className="h-1" />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {docs.length > 0 && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                        {docs.map((doc) => (
+                          <div key={doc.id} className="relative border rounded-lg p-3 bg-card hover:shadow-md transition-shadow">
+                            <div className="aspect-square mb-2 rounded bg-muted flex items-center justify-center overflow-hidden relative">
+                              {isImage(doc.mime_type) ? (
+                                <img src={doc.arquivo_url} alt={doc.nome} className="w-full h-full object-cover" />
+                              ) : (
+                                <FileText className="size-12 text-muted-foreground" />
+                              )}
+                              <div className="absolute inset-0 bg-black/50 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                <Button variant="ghost" size="icon" onClick={() => window.open(doc.arquivo_url, "_blank")}><Eye className="size-4" /></Button>
+                                <Button variant="ghost" size="icon" onClick={() => {
+                                  const a = document.createElement("a");
+                                  a.href = doc.arquivo_url;
+                                  a.download = doc.nome;
+                                  a.click();
+                                }}><Download className="size-4" /></Button>
+                              </div>
+                            </div>
+                            <div className="space-y-1 text-xs">
+                              <p className="font-medium truncate" title={doc.nome}>{doc.nome}</p>
+                              <p className="text-muted-foreground capitalize">{doc.tipo}</p>
+                              <p className="text-muted-foreground">{formatFileSize(doc.tamanho_bytes)}</p>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="absolute top-1 right-1 text-destructive hover:bg-destructive/10"
+                              onClick={() => deleteDocument.mutate(doc)}
+                              disabled={deleteDocument.isPending}
+                            >
+                              <X className="size-3" />
+                            </Button>
                           </div>
                         ))}
                       </div>
-
-                      {docs.length > 0 && (
-                        <div className="space-y-3">
-                          <Label className="text-xs font-medium">Documentos anexados</Label>
-                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                            {docs.map((doc) => (
-                              <div key={doc.id} className="relative border rounded-lg p-3 bg-card hover:shadow-md transition-shadow">
-                                <div className="aspect-square mb-2 rounded bg-muted flex items-center justify-center overflow-hidden relative">
-                                  {isImage(doc.mime_type) ? (
-                                    <img src={doc.arquivo_url} alt={doc.nome} className="w-full h-full object-cover" />
-                                  ) : (
-                                    <FileText className="size-12 text-muted-foreground" />
-                                  )}
-                                  <div className="absolute inset-0 bg-black/50 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                                    <Button variant="ghost" size="icon" onClick={() => window.open(doc.arquivo_url, "_blank")}><Eye className="size-4" /></Button>
-                                    <Button variant="ghost" size="icon" onClick={() => {
-                                      const a = document.createElement("a");
-                                      a.href = doc.arquivo_url;
-                                      a.download = doc.nome;
-                                      a.click();
-                                    }}><Download className="size-4" /></Button>
-                                  </div>
-                                </div>
-                                <div className="space-y-1 text-xs">
-                                  <p className="font-medium truncate" title={doc.nome}>{doc.nome}</p>
-                                  <p className="text-muted-foreground capitalize">{doc.tipo}</p>
-                                  <p className="text-muted-foreground">{formatFileSize(doc.tamanho_bytes)}</p>
-                                </div>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="absolute top-1 right-1 text-destructive hover:bg-destructive/10"
-                                  onClick={() => deleteDocument.mutate(doc)}
-                                  disabled={deleteDocument.isPending}
-                                >
-                                  <X className="size-3" />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="text-center py-12 text-muted-foreground">
-                      <FileText className="size-12 mx-auto mb-2 opacity-50" />
-                      <p>Salve o colaborador primeiro para anexar documentos</p>
                     </div>
                   )}
-                </TabsContent>
-              </Tabs>
+                </div>
+              )}
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
+                <Button onClick={() => save.mutate(editing)} disabled={!editing.nome || save.isPending}>
+                  {save.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Salvar
+                </Button>
+              </DialogFooter>
             </div>
           )}
         </DialogContent>
