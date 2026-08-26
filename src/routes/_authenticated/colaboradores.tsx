@@ -38,6 +38,7 @@ type Collab = {
   foto_url: string | null;
   salario: number | null;
   saldo_devedor: number | null;
+  pagamento: number | null;
 };
 
 type CollabDoc = {
@@ -52,7 +53,7 @@ type CollabDoc = {
   created_at: string;
 };
 
-const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, saldo_devedor: 0 };
+const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, saldo_devedor: 0, pagamento: 0 };
 const docTypes = ["documento", "foto", "comprovante", "contrato", "outro"] as const;
 
 function ColaboradoresPage() {
@@ -73,7 +74,7 @@ function ColaboradoresPage() {
     queryFn: async () => {
       const { data, error } = await supabase.from("collaborators").select("*").is("deleted_at", null).order("nome");
       if (error) throw error;
-      return data as Collab[];
+      return (data ?? []) as unknown as Collab[];
     },
   });
 
@@ -100,8 +101,8 @@ function ColaboradoresPage() {
         cargo: c.cargo || null, data_admissao: c.data_admissao || null, status: c.status || "ativo",
         em_turno: c.em_turno ?? false, turno: c.turno || null, horario: c.horario || null,
         escala: c.escala || null, observacoes: c.observacoes || null,
-        salario: c.salario ?? 0, saldo_devedor: c.saldo_devedor ?? 0,
-      };
+        salario: c.salario ?? 0, saldo_devedor: c.saldo_devedor ?? 0, pagamento: c.pagamento ?? 0,
+      } as any;
       if (c.id) {
         const { error } = await supabase.from("collaborators").update(payload).eq("id", c.id);
         if (error) throw error;
@@ -285,6 +286,7 @@ function ColaboradoresPage() {
                     <F label="Escala"><Input value={editing.escala ?? ""} onChange={(e) => setEditing({ ...editing, escala: e.target.value })} /></F>
                     <F label="Status"><Input value={editing.status ?? "ativo"} onChange={(e) => setEditing({ ...editing, status: e.target.value })} /></F>
                     <F label="Salário (R$)"><Input type="number" step="0.01" value={editing.salario ?? 0} onChange={(e) => setEditing({ ...editing, salario: Number(e.target.value) })} /></F>
+                    <F label="Pagamento (R$)"><Input type="number" step="0.01" value={editing.pagamento ?? 0} onChange={(e) => setEditing({ ...editing, pagamento: Number(e.target.value) })} /></F>
                     <F label="Saldo devedor (R$)"><Input type="number" step="0.01" value={editing.saldo_devedor ?? 0} onChange={(e) => setEditing({ ...editing, saldo_devedor: Number(e.target.value) })} /></F>
                     <F label="Observações" cn="col-span-2"><Textarea value={editing.observacoes ?? ""} onChange={(e) => setEditing({ ...editing, observacoes: e.target.value })} /></F>
                     <div className="col-span-2 flex items-center gap-2">

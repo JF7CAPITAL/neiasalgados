@@ -287,12 +287,12 @@ function FinanceiroPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("collaborators")
-        .select("id, nome, cargo, salario, saldo_devedor")
+        .select("id, nome, cargo, salario, saldo_devedor, pagamento")
         .eq("status", "ativo")
         .is("deleted_at", null)
         .lte("data_admissao", periodoFim);
       if (error) throw error;
-      return (data ?? []) as { id: string; nome: string; cargo: string | null; salario: number | null; saldo_devedor: number | null }[];
+      return (data ?? []) as any;
     },
     enabled: unlocked,
   });
@@ -351,7 +351,7 @@ function FinanceiroPage() {
   const quartasFeiras = useMemo(() => getProximasQuartas(periodoInicio, periodoFim), [periodoInicio, periodoFim]);
 
   // Computed values for KPIs (must come after queries that provide the data)
-  const folhaTotal = useMemo(() => collaborators.reduce((s, c) => s + (Number(c.salario) || 0), 0), [collaborators]);
+  const folhaTotal = useMemo(() => collaborators.reduce((s: number, c: any) => s + (Number(c.pagamento) || 0), 0), [collaborators]);
   const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) * Number(o.quantidade_necessaria) || 0), 0), [receivedPurchaseOrders]);
   const insumosAvgPrice = useMemo(() => receivedPurchaseOrders.length > 0
     ? receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) || 0), 0) / receivedPurchaseOrders.length
@@ -416,7 +416,7 @@ function FinanceiroPage() {
     mutationFn: async ({ collaboratorId, valor }: { collaboratorId: string; valor: number }) => {
       const { error } = await supabase
         .from("collaborators")
-        .update({ saldo_devedor: supabase.raw(`saldo_devedor + ${valor}`) })
+        .update({ saldo_devedor: supabase.raw(`saldo_devedor + ${valor}`) } as any)
         .eq("id", collaboratorId);
       if (error) throw error;
       await logActivity("financeiro", "adiantou pagamento colaborador", collaboratorId, { valor });
@@ -714,7 +714,7 @@ if (!unlocked) return null;
         <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint="Vendas Anota AI finalizadas" onClick={() => setShowReceitaDetail(true)} />
         <KpiCard label="Custo Direto (CMV)" value={fmtMoney(kpis.custoDireto)} icon={Package} tone="warning" hint="Insumos consumidos no período" />
         <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV" />
-        <KpiCard label="Folha dos colaboradores" value={fmtMoney(folhaTotal)} icon={Users} tone="info" hint="Salários dos colaboradores ativos" onClick={() => setShowFolhaDetail(true)} />
+        <KpiCard label="Folha dos colaboradores" value={fmtMoney(folhaTotal)} icon={Users} tone="info" hint="Pagamento dos colaboradores ativos" onClick={() => setShowFolhaDetail(true)} />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas · Média: ${fmtMoney(insumosAvgPrice)}`} onClick={() => setShowInsumosDetail(true)} />
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais" />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
@@ -926,17 +926,17 @@ if (!unlocked) return null;
                   <TableRow className="bg-muted/50">
                     <TableHead>Colaborador</TableHead>
                     <TableHead>Cargo</TableHead>
-                    <TableHead className="text-right">Salário</TableHead>
+                    <TableHead className="text-right">Pagamento</TableHead>
                     <TableHead className="text-right">Saldo Devedor</TableHead>
                     <TableHead className="text-right">Adiantar Pagamento</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {collaborators.map((c) => (
+                  {collaborators.map((c: any) => (
                     <TableRow key={c.id}>
                       <TableCell className="font-medium">{c.nome}</TableCell>
                       <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
-                      <TableCell className="text-right tabular font-medium">{fmtMoney(c.salario)}</TableCell>
+                      <TableCell className="text-right tabular font-medium">{fmtMoney(c.pagamento)}</TableCell>
                       <TableCell className="text-right tabular">{fmtMoney(c.saldo_devedor)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center gap-2 justify-end">
@@ -970,7 +970,7 @@ if (!unlocked) return null;
             </div>
             <div className="flex justify-between items-center text-sm">
               <span>Total colaboradores: {collaborators.length}</span>
-              <span className="font-semibold">Total folha: {fmtMoney(folhaTotal)}</span>
+              <span className="font-semibold">Total folha (pagamento): {fmtMoney(folhaTotal)}</span>
             </div>
           </div>
           <DialogFooter>
