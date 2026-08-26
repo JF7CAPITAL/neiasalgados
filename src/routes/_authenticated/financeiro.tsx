@@ -268,25 +268,6 @@ function FinanceiroPage() {
     return { receita, custoDireto, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
   }, [allDreRows]);
 
-  // Computed values for KPIs
-  const folhaTotal = useMemo(() => collaborators.reduce((s, c) => s + (Number(c.salario) || 0), 0), [collaborators]);
-  const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) * Number(o.quantidade_necessaria) || 0), 0), [receivedPurchaseOrders]);
-  const insumosAvgPrice = useMemo(() => receivedPurchaseOrders.length > 0
-    ? receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) || 0), 0) / receivedPurchaseOrders.length
-    : 0, [receivedPurchaseOrders]);
-  const anotaTotal = useMemo(() => anotaOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
-  const anotaD1 = useMemo(() => anotaOrders
-    .filter(o => {
-      const imported = new Date(o.imported_at);
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return imported <= tomorrow;
-    })
-    .reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
-  const ifoodFuture = useMemo(() => quartasFeiras.length > 0
-    ? anotaTotal * 0.3
-    : 0, [quartasFeiras, anotaTotal]);
-
   // Fetch collaborators with salaries for Folha dos Colaboradores
   const { data: collaborators = [] } = useQuery({
     queryKey: ["collaborators-salaries", periodoFim],
@@ -355,6 +336,25 @@ function FinanceiroPage() {
   };
 
   const quartasFeiras = useMemo(() => getProximasQuartas(periodoInicio, periodoFim), [periodoInicio, periodoFim]);
+
+  // Computed values for KPIs (must come after queries that provide the data)
+  const folhaTotal = useMemo(() => collaborators.reduce((s, c) => s + (Number(c.salario) || 0), 0), [collaborators]);
+  const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) * Number(o.quantidade_necessaria) || 0), 0), [receivedPurchaseOrders]);
+  const insumosAvgPrice = useMemo(() => receivedPurchaseOrders.length > 0
+    ? receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) || 0), 0) / receivedPurchaseOrders.length
+    : 0, [receivedPurchaseOrders]);
+  const anotaTotal = useMemo(() => anotaOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
+  const anotaD1 = useMemo(() => anotaOrders
+    .filter(o => {
+      const imported = new Date(o.imported_at);
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return imported <= tomorrow;
+    })
+    .reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
+  const ifoodFuture = useMemo(() => quartasFeiras.length > 0
+    ? anotaTotal * 0.3
+    : 0, [quartasFeiras, anotaTotal]);
 
   const saveEntry = useMutation({
     mutationFn: async (entry: Partial<DreEntry> & { id?: string }) => {
