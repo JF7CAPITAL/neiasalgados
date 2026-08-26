@@ -36,6 +36,8 @@ type Collab = {
   data_admissao: string | null; status: string; em_turno: boolean;
   turno: string | null; horario: string | null; escala: string | null; observacoes: string | null;
   foto_url: string | null;
+  salario: number | null;
+  saldo_devedor: number | null;
 };
 
 type CollabDoc = {
@@ -50,7 +52,7 @@ type CollabDoc = {
   created_at: string;
 };
 
-const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false };
+const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, saldo_devedor: 0 };
 const docTypes = ["documento", "foto", "comprovante", "contrato", "outro"] as const;
 
 function ColaboradoresPage() {
@@ -98,6 +100,7 @@ function ColaboradoresPage() {
         cargo: c.cargo || null, data_admissao: c.data_admissao || null, status: c.status || "ativo",
         em_turno: c.em_turno ?? false, turno: c.turno || null, horario: c.horario || null,
         escala: c.escala || null, observacoes: c.observacoes || null,
+        salario: c.salario ?? 0, saldo_devedor: c.saldo_devedor ?? 0,
       };
       if (c.id) {
         const { error } = await supabase.from("collaborators").update(payload).eq("id", c.id);
@@ -281,6 +284,8 @@ function ColaboradoresPage() {
                     <F label="Horário"><Input value={editing.horario ?? ""} onChange={(e) => setEditing({ ...editing, horario: e.target.value })} /></F>
                     <F label="Escala"><Input value={editing.escala ?? ""} onChange={(e) => setEditing({ ...editing, escala: e.target.value })} /></F>
                     <F label="Status"><Input value={editing.status ?? "ativo"} onChange={(e) => setEditing({ ...editing, status: e.target.value })} /></F>
+                    <F label="Salário (R$)"><Input type="number" step="0.01" value={editing.salario ?? 0} onChange={(e) => setEditing({ ...editing, salario: Number(e.target.value) })} /></F>
+                    <F label="Saldo devedor (R$)"><Input type="number" step="0.01" value={editing.saldo_devedor ?? 0} onChange={(e) => setEditing({ ...editing, saldo_devedor: Number(e.target.value) })} /></F>
                     <F label="Observações" cn="col-span-2"><Textarea value={editing.observacoes ?? ""} onChange={(e) => setEditing({ ...editing, observacoes: e.target.value })} /></F>
                     <div className="col-span-2 flex items-center gap-2">
                       <Switch checked={editing.em_turno ?? false} onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })} />

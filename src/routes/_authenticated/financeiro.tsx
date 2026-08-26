@@ -4,7 +4,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Wallet, TrendingUp, TrendingDown, PiggyBank, Calculator, FileSpreadsheet,
   Plus, Pencil, Trash2, Lock, Unlock, Eye, EyeOff, Loader2, AlertTriangle,
-  ChevronDown, ChevronUp, Save, X, RefreshCw, DollarSign, Users, Package
+  ChevronDown, ChevronUp, Save, X, RefreshCw, DollarSign, Users, Package,
+  CreditCard, ShoppingCart, ArrowUpRight, ArrowDownRight, List
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -88,8 +89,12 @@ function FinanceiroPage() {
   const [newEntryOpen, setNewEntryOpen] = useState(false);
   const [toDelete, setToDelete] = useState<DreEntry | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [showFolhaDetail, setShowFolhaDetail] = useState(false);
+  const [showInsumosDetail, setShowInsumosDetail] = useState(false);
+  const [showReceitaDetail, setShowReceitaDetail] = useState(false);
+  const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
 
-  useRealtime(["finance_dre_entries", "finance_access"], ["finance-dre", "finance-access"]);
+  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders"], ["finance-dre", "finance-access", "collaborators", "purchase-orders", "anota-orders"]);
 
   // Fetch orders count for ticket médio
   const { data: ordersCount = 0 } = useQuery({
@@ -263,6 +268,94 @@ function FinanceiroPage() {
     return { receita, custoDireto, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
   }, [allDreRows]);
 
+  // Computed values for KPIs
+  const folhaTotal = useMemo(() => collaborators.reduce((s, c) => s + (Number(c.salario) || 0), 0), [collaborators]);
+  const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) * Number(o.quantidade_necessaria) || 0), 0), [receivedPurchaseOrders]);
+  const insumosAvgPrice = useMemo(() => receivedPurchaseOrders.length > 0
+    ? receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) || 0), 0) / receivedPurchaseOrders.length
+    : 0, [receivedPurchaseOrders]);
+  const anotaTotal = useMemo(() => anotaOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
+  const anotaD1 = useMemo(() => anotaOrders
+    .filter(o => {
+      const imported = new Date(o.imported_at);
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return imported <= tomorrow;
+    })
+    .reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
+  const ifoodFuture = useMemo(() => quartasFeiras.length > 0
+    ? anotaTotal * 0.3
+    : 0, [quartasFeiras, anotaTotal]);
+
+  // Fetch collaborators with salaries for Folha dos Colaboradores
+  const { data: collaborators = [] } = useQuery({
+    queryKey: ["collaborators-salaries", periodoFim],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("collaborators")
+        .select("id, nome, cargo, salario, saldo_devedor")
+        .eq("status", "ativo")
+        .is("deleted_at", null)
+        .lte("data_admissao", periodoFim);
+      if (error) throw error;
+      return (data ?? []) as { id: string; nome: string; cargo: string | null; salario: number | null; saldo_devedor: number | null }[];
+    },
+    enabled: unlocked,
+  });
+
+  // Fetch received purchase orders for Despesas com Insumos
+  const { data: receivedPurchaseOrders = [] } = useQuery({
+    queryKey: ["purchase-orders-received", periodoInicio, periodoFim],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("purchase_orders")
+        .select("id, numero, ingredient_id, quantidade_necessaria, preco_medio, created_at, ingredients(nome, unidade)")
+        .eq("status", "recebida")
+        .gte("created_at", periodoInicio)
+        .lte("created_at", periodoFim)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as { id: string; numero: number; ingredient_id: string; quantidade_necessaria: number; preco_medio: number; created_at: string; ingredients: { nome: string; unidade: string } | null }[];
+    },
+    enabled: unlocked,
+  });
+
+  // Fetch Anota AI orders for Receita Bruta breakdown (D+1)
+  const { data: anotaOrders = [] } = useQuery({
+    queryKey: ["anota-orders-receita", periodoInicio, periodoFim],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("anota_orders")
+        .select("id, total, check_status, pedido_em, imported_at")
+        .in("check_status", [1, 2, 3]) // em produção, pronto, finalizado
+        .gte("imported_at", periodoInicio)
+        .lte("imported_at", periodoFim)
+        .order("imported_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as { id: string; total: number; check_status: number; pedido_em: string | null; imported_at: string }[];
+    },
+    enabled: unlocked,
+  });
+
+  // Calculate iFood weekly accumulation (Wednesdays)
+  const getProximasQuartas = (inicio: string, fim: string): string[] => {
+    const quartas: string[] = [];
+    const start = new Date(inicio);
+    const end = new Date(fim);
+    const current = new Date(start);
+    // Find first Wednesday
+    while (current.getDay() !== 3) {
+      current.setDate(current.getDate() + 1);
+    }
+    while (current <= end) {
+      quartas.push(current.toISOString().split("T")[0]);
+      current.setDate(current.getDate() + 7);
+    }
+    return quartas;
+  };
+
+  const quartasFeiras = useMemo(() => getProximasQuartas(periodoInicio, periodoFim), [periodoInicio, periodoFim]);
+
   const saveEntry = useMutation({
     mutationFn: async (entry: Partial<DreEntry> & { id?: string }) => {
       const payload = {
@@ -302,6 +395,23 @@ function FinanceiroPage() {
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
       toast.success("Lançamento removido!");
       setToDelete(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const adiantarPagamentoMutate = useMutation({
+    mutationFn: async ({ collaboratorId, valor }: { collaboratorId: string; valor: number }) => {
+      const { error } = await supabase
+        .from("collaborators")
+        .update({ saldo_devedor: supabase.raw(`saldo_devedor + ${valor}`) })
+        .eq("id", collaboratorId);
+      if (error) throw error;
+      await logActivity("financeiro", "adiantou pagamento colaborador", collaboratorId, { valor });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["collaborators-salaries"] });
+      toast.success("Adiantamento registrado!");
+      setAdiantarPagamento({});
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -507,10 +617,11 @@ function FinanceiroPage() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4">
-        <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint="Vendas Anota AI finalizadas" />
+        <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint="Vendas Anota AI finalizadas" onClick={() => setShowReceitaDetail(true)} />
         <KpiCard label="Custo Direto (CMV)" value={fmtMoney(kpis.custoDireto)} icon={Package} tone="warning" hint="Insumos consumidos no período" />
         <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV" />
-        <KpiCard label="Folha (Estimada)" value={fmtMoney(kpis.despesasOp)} icon={Users} tone="info" hint="Baseado em colaboradores ativos" />
+        <KpiCard label="Folha dos colaboradores" value={fmtMoney(folhaTotal)} icon={Users} tone="info" hint="Salários dos colaboradores ativos" onClick={() => setShowFolhaDetail(true)} />
+        <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas · Média: ${fmtMoney(insumosAvgPrice)}`} onClick={() => setShowInsumosDetail(true)} />
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais" />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita" />
@@ -566,22 +677,24 @@ function FinanceiroPage() {
               description="Ajuste o período ou sincronize pedidos do Anota AI para gerar o DRE."
             />
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead className="w-48">Seção</TableHead>
-                    <TableHead className="w-48">Categoria</TableHead>
-                    <TableHead>Descrição</TableHead>
-                    <TableHead className="w-40 text-right">Valor</TableHead>
-                    <TableHead className="w-36 text-center">Fonte</TableHead>
-                    <TableHead className="w-24 text-right">Ações</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {renderDreSections(allDreRows, kpis)}
-                </TableBody>
-              </Table>
+            <div className="rounded-xl border border-border bg-card overflow-x-auto">
+              <div className="min-w-[900px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead className="w-56 min-w-56">Seção</TableHead>
+                      <TableHead className="w-56 min-w-56">Categoria</TableHead>
+                      <TableHead className="w-80 min-w-80">Descrição</TableHead>
+                      <TableHead className="w-48 min-w-48 text-right">Valor</TableHead>
+                      <TableHead className="w-40 min-w-40 text-center">Fonte</TableHead>
+                      <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {renderDreSections(allDreRows, kpis)}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           )}
         </TabsContent>
@@ -602,21 +715,22 @@ function FinanceiroPage() {
               action={<Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false } as DreEntry); setNewEntryOpen(true); }}><Plus className="mr-1.5 size-4" /> Criar primeiro lançamento</Button>}
             />
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead className="w-40">Tipo</TableHead>
-                    <TableHead className="w-40">Categoria</TableHead>
-                    <TableHead>Descrição</TableHead>
-                    <TableHead className="w-32 text-right">Valor</TableHead>
-                    <TableHead className="w-32">Competência</TableHead>
-                    <TableHead className="w-24 text-center">Recorrente</TableHead>
-                    <TableHead className="w-24 text-right">Ações</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {manualEntries.map((e) => (
+            <div className="rounded-xl border border-border bg-card overflow-x-auto">
+              <div className="min-w-[800px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead className="w-44 min-w-44">Tipo</TableHead>
+                      <TableHead className="w-48 min-w-48">Categoria</TableHead>
+                      <TableHead className="w-64 min-w-64">Descrição</TableHead>
+                      <TableHead className="w-40 min-w-40 text-right">Valor</TableHead>
+                      <TableHead className="w-36 min-w-36">Competência</TableHead>
+                      <TableHead className="w-28 min-w-28 text-center">Recorrente</TableHead>
+                      <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {manualEntries.map((e) => (
                     <TableRow key={e.id}>
                       <TableCell>
                         <Badge variant="outline" className="capitalize">{e.tipo.replace("_", " ")}</Badge>
@@ -634,6 +748,7 @@ function FinanceiroPage() {
                   ))}
                 </TableBody>
               </Table>
+              </div>
             </div>
           )}
         </TabsContent>
@@ -707,6 +822,188 @@ function FinanceiroPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Folha dos Colaboradores Detail Dialog */}
+      <Dialog open={showFolhaDetail} onOpenChange={setShowFolhaDetail}>
+        <DialogContent className="max-w-3xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Folha dos Colaboradores</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead>Colaborador</TableHead>
+                    <TableHead>Cargo</TableHead>
+                    <TableHead className="text-right">Salário</TableHead>
+                    <TableHead className="text-right">Saldo Devedor</TableHead>
+                    <TableHead className="text-right">Adiantar Pagamento</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {collaborators.map((c) => (
+                    <TableRow key={c.id}>
+                      <TableCell className="font-medium">{c.nome}</TableCell>
+                      <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
+                      <TableCell className="text-right tabular font-medium">{fmtMoney(c.salario)}</TableCell>
+                      <TableCell className="text-right tabular">{fmtMoney(c.saldo_devedor)}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center gap-2 justify-end">
+                          <Input
+                            type="number"
+                            step="0.01"
+                            placeholder="Valor"
+                            value={adiantarPagamento[c.id] || ""}
+                            onChange={(e) => setAdiantarPagamento(prev => ({ ...prev, [c.id]: Number(e.target.value) || 0 }))}
+                            className="w-32"
+                          />
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              const valor = adiantarPagamento[c.id];
+                              if (valor > 0) {
+                                adiantarPagamentoMutate.mutate({ collaboratorId: c.id, valor });
+                              }
+                            }}
+                            disabled={!adiantarPagamento[c.id] || adiantarPagamentoMutate.isPending}
+                          >
+                            {adiantarPagamentoMutate.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
+                            Confirmar
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="flex justify-between items-center text-sm">
+              <span>Total colaboradores: {collaborators.length}</span>
+              <span className="font-semibold">Total folha: {fmtMoney(folhaTotal)}</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowFolhaDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Despesas com Insumos Detail Dialog */}
+      <Dialog open={showInsumosDetail} onOpenChange={setShowInsumosDetail}>
+        <DialogContent className="max-w-3xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Despesas com Insumos (Ordens Recebidas)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead>Nº</TableHead>
+                    <TableHead>Insumo</TableHead>
+                    <TableHead className="text-right">Quantidade</TableHead>
+                    <TableHead className="text-right">Preço Unit.</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-right">Data</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {receivedPurchaseOrders.map((o) => (
+                    <TableRow key={o.id}>
+                      <TableCell>#{o.numero}</TableCell>
+                      <TableCell className="font-medium">{o.ingredients?.nome || "—"}</TableCell>
+                      <TableCell className="text-right">{fmtNum(o.quantidade_necessaria, 2)} {o.ingredients?.unidade || ""}</TableCell>
+                      <TableCell className="text-right tabular">{fmtMoney(o.preco_medio)}</TableCell>
+                      <TableCell className="text-right tabular font-medium">{fmtMoney(Number(o.preco_medio) * Number(o.quantidade_necessaria))}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">{fmtDate(o.created_at)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="grid grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg">
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Total de itens</p>
+                <p className="font-display text-xl font-semibold">{receivedPurchaseOrders.length}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Valor total</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(insumosTotal)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Preço médio</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(insumosAvgPrice)}</p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowInsumosDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Receita Bruta Breakdown Dialog */}
+      <Dialog open={showReceitaDetail} onOpenChange={setShowReceitaDetail}>
+        <DialogContent className="max-w-3xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Detalhamento da Receita Bruta</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h4 className="font-semibold flex items-center gap-2">
+                  <CreditCard className="size-4 text-success" /> Anota AI (D+1)
+                </h4>
+                <p className="mt-2 text-sm text-muted-foreground">Vendas finalizadas que caem no próximo dia útil</p>
+                <p className="mt-3 font-display text-2xl font-bold text-success">{fmtMoney(anotaD1)}</p>
+                <p className="mt-1 text-xs text-muted-foreground">Total Anota AI no período: {fmtMoney(anotaTotal)}</p>
+              </div>
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h4 className="font-semibold flex items-center gap-2">
+                  <ArrowDownRight className="size-4 text-warning" /> iFood (Quartas-feiras)
+                </h4>
+                <p className="mt-2 text-sm text-muted-foreground">Acumulado semanal recebido nas quartas-feiras</p>
+                <p className="mt-3 font-display text-2xl font-bold text-warning">{fmtMoney(ifoodFuture)}</p>
+                <p className="mt-1 text-xs text-muted-foreground">Quartas no período: {quartasFeiras.length}</p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4">
+              <h4 className="font-semibold flex items-center gap-2">
+                <ArrowUpRight className="size-4 text-info" /> Valores Futuros a Receber
+              </h4>
+              <div className="mt-3 grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-muted-foreground">Anota AI (D+1)</p>
+                  <p className="font-display text-xl font-bold text-success">{fmtMoney(anotaD1)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">iFood (próximas quartas)</p>
+                  <p className="font-display text-xl font-bold text-warning">{fmtMoney(ifoodFuture)}</p>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 border-t border-border flex justify-between">
+                <span className="font-medium">Total a receber</span>
+                <span className="font-display text-xl font-bold">{fmtMoney(anotaD1 + ifoodFuture)}</span>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-muted/50 p-4">
+              <h4 className="font-semibold mb-2">Próximas quartas-feiras no período</h4>
+              <div className="flex flex-wrap gap-2">
+                {quartasFeiras.map((q) => (
+                  <Badge key={q} variant="outline">{fmtDate(q)}</Badge>
+                ))}
+                {quartasFeiras.length === 0 && <span className="text-xs text-muted-foreground">Nenhuma quarta-feira no período selecionado</span>}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowReceitaDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
