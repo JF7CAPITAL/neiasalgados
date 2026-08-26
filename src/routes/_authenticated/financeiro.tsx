@@ -27,7 +27,6 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 
 export const Route = createFileRoute("/_authenticated/financeiro")({
@@ -93,6 +92,20 @@ function FinanceiroPage() {
   const [showInsumosDetail, setShowInsumosDetail] = useState(false);
   const [showReceitaDetail, setShowReceitaDetail] = useState(false);
   const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    "RECEITA BRUTA": true,
+    "CUSTO DIRETO (CMV)": true,
+    "LUCRO BRUTO": true,
+    "DESPESAS OPERACIONAIS": true,
+    "DESPESA ADMINISTRATIVA": true,
+    "DESPESA FINANCEIRA": true,
+    "OUTROS": true,
+    "RESULTADO LÍQUIDO": true,
+  });
+
+  const toggleSection = (key: string) => {
+    setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
+  };
 
   useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders"], ["finance-dre", "finance-access", "collaborators", "purchase-orders", "anota-orders"]);
 
@@ -1032,60 +1045,71 @@ function renderDreSections(rows: DreRow[], kpis: any) {
     { key: "RESULTADO LÍQUIDO", title: "RESULTADO LÍQUIDO", icon: TrendingDown, tone: "info" as const },
   ];
 
-  return sections.map((section) => {
+  return sections.flatMap((section) => {
     const sectionRows = rows.filter(r => r.secao === section.key);
     const total = sectionRows.reduce((s, r) => s + r.valor, 0);
     const isTotalRow = ["LUCRO BRUTO", "RESULTADO LÍQUIDO"].includes(section.key);
+    const isOpen = openSections[section.key] ?? true;
 
     if (sectionRows.length === 0 && !isTotalRow) return null;
 
-    return (
-      <Collapsible key={section.key} open={true}>
-        <CollapsibleTrigger className="bg-muted/30 hover:bg-muted/50" asChild>
-          <TableRow>
-            <TableCell className="font-semibold flex items-center gap-2">
-              <section.icon className={`size-4 ${section.tone === "success" ? "text-success" : section.tone === "warning" ? "text-warning" : section.tone === "danger" ? "text-destructive" : "text-info"}`} />
-              {section.title}
+    const rowsToRender: React.ReactNode[] = [
+      // Section header row (clickable to toggle)
+      <TableRow
+        key={`${section.key}-header`}
+        className="bg-muted/30 hover:bg-muted/50 cursor-pointer"
+        onClick={() => toggleSection(section.key)}
+      >
+        <TableCell className="font-semibold flex items-center gap-2">
+          <section.icon className={`size-4 ${section.tone === "success" ? "text-success" : section.tone === "warning" ? "text-warning" : section.tone === "danger" ? "text-destructive" : "text-info"}`} />
+          {section.title}
+        </TableCell>
+        <TableCell />
+        <TableCell />
+        <TableCell className="text-right font-display text-lg font-semibold tabular">{fmtMoney(total)}</TableCell>
+        <TableCell className="text-center text-xs text-muted-foreground">{sectionRows.filter(r => r.fonte === "auto").length} auto / {sectionRows.filter(r => r.fonte === "manual").length} manual</TableCell>
+        <TableCell className="text-right">
+          <ChevronDown className={`size-4 mx-auto text-muted-foreground transition-transform ${isOpen ? "rotate-180" : ""}`} />
+        </TableCell>
+      </TableRow>
+    ];
+
+    // Only render detail rows if section is open
+    if (isOpen) {
+      sectionRows.forEach((r, i) => {
+        rowsToRender.push(
+          <TableRow key={r.id ?? i} className={r.fonte === "manual" ? "bg-amber-50/30" : ""}>
+            <TableCell className="text-xs text-muted-foreground">{r.secao}</TableCell>
+            <TableCell className="font-medium">{r.categoria}</TableCell>
+            <TableCell className="text-muted-foreground text-sm">{r.descricao || "—"}</TableCell>
+            <TableCell className="text-right tabular font-medium">{fmtMoney(r.valor)}</TableCell>
+            <TableCell className="text-center">
+              <Badge variant={r.fonte === "auto" ? "default" : "outline"} className="text-xs">
+                {r.fonte === "auto" ? "Automático" : "Manual"}
+              </Badge>
             </TableCell>
-            <TableCell />
-            <TableCell />
-            <TableCell className="text-right font-display text-lg font-semibold tabular">{fmtMoney(total)}</TableCell>
-            <TableCell className="text-center text-xs text-muted-foreground">{sectionRows.filter(r => r.fonte === "auto").length} auto / {sectionRows.filter(r => r.fonte === "manual").length} manual</TableCell>
             <TableCell className="text-right">
-              <ChevronDown className="size-4 mx-auto text-muted-foreground" />
+              {r.editable && r.id && (
+                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); /* edit handled in lancamentos tab */ }}>
+                  <Pencil className="size-4" />
+                </Button>
+              )}
             </TableCell>
           </TableRow>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          {sectionRows.map((r, i) => (
-            <TableRow key={r.id ?? i} className={r.fonte === "manual" ? "bg-amber-50/30" : ""}>
-              <TableCell className="text-xs text-muted-foreground">{r.secao}</TableCell>
-              <TableCell className="font-medium">{r.categoria}</TableCell>
-              <TableCell className="text-muted-foreground text-sm">{r.descricao || "—"}</TableCell>
-              <TableCell className="text-right tabular font-medium">{fmtMoney(r.valor)}</TableCell>
-              <TableCell className="text-center">
-                <Badge variant={r.fonte === "auto" ? "default" : "outline"} className="text-xs">
-                  {r.fonte === "auto" ? "Automático" : "Manual"}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-right">
-                {r.editable && r.id && (
-                  <Button variant="ghost" size="icon" onClick={() => { /* edit handled in lancamentos tab */ }}>
-                    <Pencil className="size-4" />
-                  </Button>
-                )}
-              </TableCell>
-            </TableRow>
-          ))}
-          {isTotalRow && (
-            <TableRow className="bg-muted/50 font-bold">
-              <TableCell colSpan={3} className="text-right">Total {section.title}</TableCell>
-              <TableCell className="text-right font-display text-lg">{fmtMoney(total)}</TableCell>
-              <TableCell colSpan={2} />
-            </TableRow>
-          )}
-        </CollapsibleContent>
-      </Collapsible>
-    );
+        );
+      });
+
+      if (isTotalRow) {
+        rowsToRender.push(
+          <TableRow key={`${section.key}-total`} className="bg-muted/50 font-bold">
+            <TableCell colSpan={3} className="text-right">Total {section.title}</TableCell>
+            <TableCell className="text-right font-display text-lg">{fmtMoney(total)}</TableCell>
+            <TableCell colSpan={2} />
+          </TableRow>
+        );
+      }
+    }
+
+    return rowsToRender;
   });
 }
