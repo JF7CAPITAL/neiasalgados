@@ -678,15 +678,15 @@ function FinanceiroPage() {
             />
           ) : (
             <div className="rounded-xl border border-border bg-card overflow-x-auto">
-              <Table>
+              <Table className="w-full">
                 <TableHeader>
                   <TableRow className="bg-muted/50">
-                    <TableHead className="w-56 min-w-56">Seção</TableHead>
-                    <TableHead className="w-56 min-w-56">Categoria</TableHead>
-                    <TableHead className="w-80 min-w-80">Descrição</TableHead>
-                    <TableHead className="w-48 min-w-48 text-right">Valor</TableHead>
-                    <TableHead className="w-40 min-w-40 text-center">Fonte</TableHead>
-                    <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
+                    <TableHead className="min-w-[180px]">Seção</TableHead>
+                    <TableHead className="min-w-[200px]">Categoria</TableHead>
+                    <TableHead className="min-w-[300px]">Descrição</TableHead>
+                    <TableHead className="min-w-[160px] text-right">Valor</TableHead>
+                    <TableHead className="min-w-[140px] text-center">Fonte</TableHead>
+                    <TableHead className="min-w-[100px] text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1047,7 +1047,8 @@ function renderDreSections(rows: DreRow[], kpis: any) {
               <section.icon className={`size-4 ${section.tone === "success" ? "text-success" : section.tone === "warning" ? "text-warning" : section.tone === "danger" ? "text-destructive" : "text-info"}`} />
               {section.title}
             </TableCell>
-            <TableCell colSpan={2} />
+            <TableCell />
+            <TableCell />
             <TableCell className="text-right font-display text-lg font-semibold tabular">{fmtMoney(total)}</TableCell>
             <TableCell className="text-center text-xs text-muted-foreground">{sectionRows.filter(r => r.fonte === "auto").length} auto / {sectionRows.filter(r => r.fonte === "manual").length} manual</TableCell>
             <TableCell className="text-right">
