@@ -678,23 +678,21 @@ function FinanceiroPage() {
             />
           ) : (
             <div className="rounded-xl border border-border bg-card overflow-x-auto">
-              <div className="min-w-[900px]">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-muted/50">
-                      <TableHead className="w-56 min-w-56">Seção</TableHead>
-                      <TableHead className="w-56 min-w-56">Categoria</TableHead>
-                      <TableHead className="w-80 min-w-80">Descrição</TableHead>
-                      <TableHead className="w-48 min-w-48 text-right">Valor</TableHead>
-                      <TableHead className="w-40 min-w-40 text-center">Fonte</TableHead>
-                      <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {renderDreSections(allDreRows, kpis)}
-                  </TableBody>
-                </Table>
-              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="w-56 min-w-56">Seção</TableHead>
+                    <TableHead className="w-56 min-w-56">Categoria</TableHead>
+                    <TableHead className="w-80 min-w-80">Descrição</TableHead>
+                    <TableHead className="w-48 min-w-48 text-right">Valor</TableHead>
+                    <TableHead className="w-40 min-w-40 text-center">Fonte</TableHead>
+                    <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {renderDreSections(allDreRows, kpis)}
+                </TableBody>
+              </Table>
             </div>
           )}
         </TabsContent>
@@ -716,21 +714,20 @@ function FinanceiroPage() {
             />
           ) : (
             <div className="rounded-xl border border-border bg-card overflow-x-auto">
-              <div className="min-w-[800px]">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-muted/50">
-                      <TableHead className="w-44 min-w-44">Tipo</TableHead>
-                      <TableHead className="w-48 min-w-48">Categoria</TableHead>
-                      <TableHead className="w-64 min-w-64">Descrição</TableHead>
-                      <TableHead className="w-40 min-w-40 text-right">Valor</TableHead>
-                      <TableHead className="w-36 min-w-36">Competência</TableHead>
-                      <TableHead className="w-28 min-w-28 text-center">Recorrente</TableHead>
-                      <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {manualEntries.map((e) => (
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="w-44 min-w-44">Tipo</TableHead>
+                    <TableHead className="w-48 min-w-48">Categoria</TableHead>
+                    <TableHead className="w-64 min-w-64">Descrição</TableHead>
+                    <TableHead className="w-40 min-w-40 text-right">Valor</TableHead>
+                    <TableHead className="w-36 min-w-36">Competência</TableHead>
+                    <TableHead className="w-28 min-w-28 text-center">Recorrente</TableHead>
+                    <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {manualEntries.map((e) => (
                     <TableRow key={e.id}>
                       <TableCell>
                         <Badge variant="outline" className="capitalize">{e.tipo.replace("_", " ")}</Badge>
@@ -748,7 +745,6 @@ function FinanceiroPage() {
                   ))}
                 </TableBody>
               </Table>
-              </div>
             </div>
           )}
         </TabsContent>
