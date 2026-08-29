@@ -41,6 +41,9 @@ type DreEntry = {
   valor: number;
   competencia: string;
   recorrente: boolean;
+  recorrencia_tipo?: 'indefinida' | 'determinada' | null;
+  recorrencia_quantidade?: number | null;
+  recorrencia_grupo_id?: string | null;
   created_at: string;
   created_by: string | null;
   fonte: "auto" | "manual";
@@ -391,7 +394,7 @@ function FinanceiroPage() {
 
   const saveEntry = useMutation({
     mutationFn: async (entry: Partial<DreEntry> & { id?: string }) => {
-      const payload = {
+      const basePayload: any = {
         tipo: entry.tipo!,
         categoria: entry.categoria!,
         descricao: entry.descricao || null,
@@ -399,14 +402,74 @@ function FinanceiroPage() {
         competencia: entry.competencia || COMPETENCIA_DEFAULT,
         recorrente: entry.recorrente ?? false,
       };
+      // Tenta incluir novos campos se existirem na tabela (migration 20260831)
+      const recorrenciaTipo = (entry as any).recorrencia_tipo as 'indefinida' | 'determinada' | null | undefined;
+      const recorrenciaQtd = (entry as any).recorrencia_quantidade as number | null | undefined;
+      if (recorrenciaTipo) basePayload.recorrencia_tipo = recorrenciaTipo;
+      if (recorrenciaQtd) basePayload.recorrencia_quantidade = recorrenciaQtd;
+
+      const addMonths = (isoDate: string, months: number) => {
+        const d = new Date(isoDate);
+        // Garante dia 01 para competência mensal
+        d.setUTCDate(1);
+        d.setUTCMonth(d.getUTCMonth() + months);
+        return d.toISOString().split('T')[0];
+      };
+
       if (entry.id) {
-        const { error } = await supabase.from("finance_dre_entries").update(payload).eq("id", entry.id);
-        if (error) throw error;
+        // Edição: atualiza apenas o registro selecionado (não replica recorrência)
+        let payload: any = { ...basePayload };
+        // Se for recorrente determinada/indefinida, mantém grupo_id original se existir
+        if ((entry as any).recorrencia_grupo_id) payload.recorrencia_grupo_id = (entry as any).recorrencia_grupo_id;
+        let { error } = await supabase.from("finance_dre_entries").update(payload).eq("id", entry.id);
+        // Fallback se colunas novas ainda não existem (migration pendente)
+        if (error && /recorrencia/i.test(error.message)) {
+          const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...fallback } = payload;
+          const { error: err2 } = await supabase.from("finance_dre_entries").update(fallback).eq("id", entry.id);
+          if (err2) throw err2;
+        } else if (error) throw error;
         await logActivity("financeiro", "editou lançamento DRE", entry.id, { categoria: entry.categoria });
       } else {
-        const { data, error } = await supabase.from("finance_dre_entries").insert(payload).select("id").single();
-        if (error) throw error;
-        await logActivity("financeiro", "criou lançamento DRE", data.id, { categoria: entry.categoria });
+        const isRecorrente = !!entry.recorrente;
+        const tipo = recorrenciaTipo || (isRecorrente ? 'indefinida' : null);
+        let quantidade: number | null = null;
+        if (isRecorrente) {
+          if (tipo === 'determinada') quantidade = Math.max(2, Math.min(60, Number(recorrenciaQtd) || 3));
+          else if (tipo === 'indefinida') quantidade = 12; // gera 12 meses para indefinida
+        }
+
+        if (isRecorrente && quantidade && quantidade > 1) {
+          const grupoId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const rows: any[] = [];
+          for (let i = 0; i < quantidade; i++) {
+            rows.push({
+              ...basePayload,
+              competencia: addMonths(basePayload.competencia, i),
+              recorrencia_grupo_id: grupoId,
+              recorrencia_tipo: tipo,
+              recorrencia_quantidade: tipo === 'determinada' ? quantidade : null,
+            });
+          }
+          // Tenta inserir com novas colunas
+          let { error, data } = await supabase.from("finance_dre_entries").insert(rows).select("id");
+          if (error && /recorrencia/i.test(error.message)) {
+            // Fallback sem colunas novas
+            const fallbackRows = rows.map(({ recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...r }) => r);
+            const { error: err2, data: data2 } = await supabase.from("finance_dre_entries").insert(fallbackRows).select("id");
+            if (err2) throw err2;
+            data = data2;
+          } else if (error) throw error;
+          await logActivity("financeiro", "criou lançamentos DRE recorrentes", (data as any)?.[0]?.id ?? null, { categoria: entry.categoria, tipo, quantidade });
+        } else {
+          let { data, error } = await supabase.from("finance_dre_entries").insert(basePayload).select("id").single();
+          if (error && /recorrencia/i.test(error.message)) {
+            const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...fallback } = basePayload;
+            const { data: d2, error: err2 } = await supabase.from("finance_dre_entries").insert(fallback).select("id").single();
+            if (err2) throw err2;
+            data = d2;
+          } else if (error) throw error;
+          await logActivity("financeiro", "criou lançamento DRE", (data as any).id, { categoria: entry.categoria });
+        }
       }
     },
     onSuccess: () => {
@@ -840,7 +903,7 @@ if (!unlocked) return null;
         <TabsContent value="lancamentos" className="pt-4">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold">Lançamentos Manuais do Contador</h3>
-            <Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false } as DreEntry); setNewEntryOpen(true); }}>
+            <Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}>
               <Plus className="mr-1.5 size-4" /> Novo lançamento
             </Button>
           </div>
@@ -850,7 +913,7 @@ if (!unlocked) return null;
               icon={FileSpreadsheet}
               title="Nenhum lançamento manual"
               description="Adicione ajustes, provisões, impostos e outras despesas que não vêm do sistema."
-              action={<Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false } as DreEntry); setNewEntryOpen(true); }}><Plus className="mr-1.5 size-4" /> Criar primeiro lançamento</Button>}
+              action={<Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}><Plus className="mr-1.5 size-4" /> Criar primeiro lançamento</Button>}
             />
           ) : (
             <div className="rounded-xl border border-border bg-card overflow-x-auto">
@@ -862,12 +925,16 @@ if (!unlocked) return null;
                     <TableHead className="w-64 min-w-64">Descrição</TableHead>
                     <TableHead className="w-40 min-w-40 text-right">Valor</TableHead>
                     <TableHead className="w-36 min-w-36">Competência</TableHead>
-                    <TableHead className="w-28 min-w-28 text-center">Recorrente</TableHead>
+                    <TableHead className="w-40 min-w-40 text-center">Recorrente</TableHead>
                     <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {manualEntries.map((e) => (
+                  {manualEntries.map((e) => {
+                    const tipo = (e as any).recorrencia_tipo as string | null;
+                    const qtd = (e as any).recorrencia_quantidade as number | null;
+                    const label = !e.recorrente ? "Não" : tipo === 'determinada' && qtd ? `Determinada (${qtd}x)` : tipo === 'indefinida' ? 'Indefinida' : 'Sim';
+                    return (
                     <TableRow key={e.id}>
                       <TableCell>
                         <Badge variant="outline" className="capitalize">{e.tipo.replace("_", " ")}</Badge>
@@ -876,13 +943,18 @@ if (!unlocked) return null;
                       <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
                       <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
                       <TableCell className="text-muted-foreground">{fmtDate(e.competencia)}</TableCell>
-                      <TableCell className="text-center">{e.recorrente ? "Sim" : "Não"}</TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant={e.recorrente ? "secondary" : "outline"} className="text-xs">
+                          {label}
+                        </Badge>
+                      </TableCell>
                       <TableCell className="text-right">
                         <Button variant="ghost" size="icon" onClick={() => { setEditingEntry(e); setNewEntryOpen(true); }}><Pencil className="size-4" /></Button>
                         <Button variant="ghost" size="icon" onClick={() => setToDelete(e)}><Trash2 className="size-4 text-destructive" /></Button>
                       </TableCell>
                     </TableRow>
-                  ))}
+                  )
+                })}
                 </TableBody>
               </Table>
             </div>
@@ -897,7 +969,7 @@ if (!unlocked) return null;
             <DialogTitle>{editingEntry?.id ? "Editar lançamento" : "Novo lançamento manual"}</DialogTitle>
           </DialogHeader>
           {(editingEntry || newEntryOpen) && (
-            <form onSubmit={(e) => { e.preventDefault(); saveEntry.mutate(editingEntry ?? { tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false } as DreEntry); }} className="space-y-4">
+            <form onSubmit={(e) => { e.preventDefault(); saveEntry.mutate(editingEntry ?? { tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); }} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Tipo</Label>
@@ -921,17 +993,51 @@ if (!unlocked) return null;
                 <Label className="text-xs">Descrição</Label>
                 <Textarea value={editingEntry?.descricao || ""} onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), descricao: e.target.value })} placeholder="Detalhes do lançamento..." rows={2} />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Valor (R$)</Label>
-                  <Input type="number" step="0.01" value={editingEntry?.valor || 0} onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), valor: Number(e.target.value) })} />
-                </div>
-                <div className="space-y-1.5 flex items-end">
-                  <Label className="text-xs flex items-center gap-1.5">
-                    <input type="checkbox" checked={editingEntry?.recorrente || false} onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), recorrente: e.target.checked })} className="size-4 accent-primary" />
-                    Recorrente (repetir todo mês)
-                  </Label>
-                </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Valor (R$)</Label>
+                <Input type="number" step="0.01" value={editingEntry?.valor || 0} onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), valor: Number(e.target.value) })} />
+              </div>
+              <div className="space-y-3 rounded-lg border border-border p-3 bg-muted/30">
+                <Label className="text-xs font-medium">Recorrência</Label>
+                <Select
+                  value={editingEntry?.recorrente ? (editingEntry?.recorrencia_tipo || 'indefinida') : 'nao'}
+                  onValueChange={(v) => {
+                    if (v === 'nao') {
+                      setEditingEntry({ ...(editingEntry ?? {}), recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any);
+                    } else if (v === 'indefinida') {
+                      setEditingEntry({ ...(editingEntry ?? {}), recorrente: true, recorrencia_tipo: 'indefinida', recorrencia_quantidade: null } as any);
+                    } else {
+                      setEditingEntry({ ...(editingEntry ?? {}), recorrente: true, recorrencia_tipo: 'determinada', recorrencia_quantidade: (editingEntry as any)?.recorrencia_quantidade || 3 } as any);
+                    }
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="nao">Não recorrente (apenas este mês)</SelectItem>
+                    <SelectItem value="indefinida">Recorrência indefinida (repete todo mês)</SelectItem>
+                    <SelectItem value="determinada">Recorrência determinada (quantidade de meses)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {editingEntry?.recorrente && (editingEntry as any)?.recorrencia_tipo === 'determinada' && (
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs">Quantidade</Label>
+                    <Input
+                      type="number"
+                      min={2}
+                      max={60}
+                      value={(editingEntry as any)?.recorrencia_quantidade || 3}
+                      onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), recorrencia_quantidade: Math.max(2, Math.min(60, Number(e.target.value) || 2)) } as any)}
+                      className="w-24"
+                    />
+                    <span className="text-xs text-muted-foreground">meses (incluindo este)</span>
+                  </div>
+                )}
+                {editingEntry?.recorrente && (editingEntry as any)?.recorrencia_tipo === 'indefinida' && (
+                  <p className="text-xs text-muted-foreground">Serão criados lançamentos para os próximos 12 meses a partir da competência.</p>
+                )}
+                {editingEntry?.recorrente && (editingEntry as any)?.recorrencia_tipo === 'determinada' && (
+                  <p className="text-xs text-muted-foreground">Serão criados {(editingEntry as any)?.recorrencia_quantidade || 3} lançamentos mensais sequenciais.</p>
+                )}
               </div>
               <DialogFooter>
                 <Button variant="outline" type="button" onClick={() => { setNewEntryOpen(false); setEditingEntry(null); }}>Cancelar</Button>
