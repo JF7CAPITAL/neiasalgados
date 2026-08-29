@@ -303,14 +303,14 @@ function FinanceiroPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("purchase_orders")
-        .select("id, numero, ingredient_id, quantidade_necessaria, preco_medio, created_at, ingredients(nome, unidade)")
+        .select("id, numero, ingredient_id, quantidade_necessaria, preco_medio, created_at, ingredients(nome, unidade, preco_medio, preco_ultima_compra)")
         .eq("status", "concluida")
         .is("deleted_at", null)
         .gte("created_at", periodoInicio)
         .lte("created_at", periodoFim)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      return (data ?? []) as { id: string; numero: number; ingredient_id: string; quantidade_necessaria: number; preco_medio: number; created_at: string; ingredients: { nome: string; unidade: string } | null }[];
+      return (data ?? []) as { id: string; numero: number; ingredient_id: string; quantidade_necessaria: number; preco_medio: number; created_at: string; ingredients: { nome: string; unidade: string; preco_medio: number; preco_ultima_compra: number } | null }[];
     },
     enabled: unlocked,
   });
@@ -364,10 +364,18 @@ function FinanceiroPage() {
     return s + Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
   }, 0), [collaborators]);
   const folhaSaldoExibido = totalSaldoDevedor > 0 ? totalSaldoDevedor : totalSaldoDerivado;
-  const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) * Number(o.quantidade_necessaria) || 0), 0), [receivedPurchaseOrders]);
-  const insumosAvgPrice = useMemo(() => receivedPurchaseOrders.length > 0
-    ? receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) || 0), 0) / receivedPurchaseOrders.length
-    : 0, [receivedPurchaseOrders]);
+  const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o: any) => {
+    const precoUnit = Number(o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || Number(o.ingredients?.preco_medio) || 0;
+    return s + (precoUnit * (Number(o.quantidade_necessaria) || 0));
+  }, 0), [receivedPurchaseOrders]);
+  const insumosAvgPrice = useMemo(() => {
+    if (receivedPurchaseOrders.length === 0) return 0;
+    const sumUnit = receivedPurchaseOrders.reduce((s: number, o: any) => {
+      const precoUnit = Number(o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || 0;
+      return s + precoUnit;
+    }, 0);
+    return sumUnit / receivedPurchaseOrders.length;
+  }, [receivedPurchaseOrders]);
   const anotaTotal = useMemo(() => anotaOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
   const anotaD1 = useMemo(() => anotaOrders
     .filter(o => {
@@ -1038,9 +1046,10 @@ if (!unlocked) return null;
 
       {/* Despesas com Insumos Detail Dialog */}
       <Dialog open={showInsumosDetail} onOpenChange={setShowInsumosDetail}>
-        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+        <DialogContent className="max-w-5xl max-h-[85vh] flex flex-col overflow-hidden">
           <DialogHeader className="shrink-0">
             <DialogTitle>Despesas com Insumos (Ordens Recebidas)</DialogTitle>
+            <p className="text-sm text-muted-foreground">Preço unitário = última compra · Preço médio = média histórica do insumo · % variação vs médio</p>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
             <div className="overflow-x-auto rounded-xl border border-border">
@@ -1051,21 +1060,32 @@ if (!unlocked) return null;
                     <TableHead>Insumo</TableHead>
                     <TableHead className="text-right">Quantidade</TableHead>
                     <TableHead className="text-right">Preço Unit.</TableHead>
+                    <TableHead className="text-right">Preço Médio</TableHead>
+                    <TableHead className="text-right">% vs Médio</TableHead>
                     <TableHead className="text-right">Total</TableHead>
                     <TableHead className="text-right">Data</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {receivedPurchaseOrders.map((o) => (
+                  {receivedPurchaseOrders.map((o) => {
+                    const precoUnit = Number(o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || 0;
+                    const precoMedio = Number(o.ingredients?.preco_medio) || 0;
+                    const total = Number(o.quantidade_necessaria) * precoUnit;
+                    const pct = precoMedio > 0 ? ((precoUnit - precoMedio) / precoMedio) * 100 : 0;
+                    const pctFmt = precoMedio > 0 ? `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%` : "—";
+                    const pctTone = pct > 0.5 ? "text-destructive" : pct < -0.5 ? "text-success" : "text-muted-foreground";
+                    return (
                     <TableRow key={o.id}>
                       <TableCell>#{o.numero}</TableCell>
                       <TableCell className="font-medium">{o.ingredients?.nome || "—"}</TableCell>
                       <TableCell className="text-right">{fmtNum(o.quantidade_necessaria, 2)} {o.ingredients?.unidade || ""}</TableCell>
-                      <TableCell className="text-right tabular">{fmtMoney(o.preco_medio)}</TableCell>
-                      <TableCell className="text-right tabular font-medium">{fmtMoney(Number(o.preco_medio) * Number(o.quantidade_necessaria))}</TableCell>
+                      <TableCell className="text-right tabular">{precoUnit ? fmtMoney(precoUnit) : "—"}</TableCell>
+                      <TableCell className="text-right tabular text-muted-foreground">{precoMedio ? fmtMoney(precoMedio) : "—"}</TableCell>
+                      <TableCell className={`text-right tabular font-medium ${pctTone}`}>{pctFmt}</TableCell>
+                      <TableCell className="text-right tabular font-medium">{total ? fmtMoney(total) : "—"}</TableCell>
                       <TableCell className="text-right text-muted-foreground">{fmtDate(o.created_at)}</TableCell>
                     </TableRow>
-                  ))}
+                  )})}
                 </TableBody>
               </Table>
             </div>
