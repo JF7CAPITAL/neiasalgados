@@ -387,7 +387,15 @@ function extractItem(raw: unknown): ParsedItem[] {
   for (const key of CONTAINER_FIELDS) {
     const arr = it[key];
     if (Array.isArray(arr) && arr.length > 0) {
-      const parentNome = firstString(it, ["name", "nome", "description", "title"]);
+      const parentNome = firstString(it, [
+        "name",
+        "nome",
+        "description",
+        "title",
+        "product_name",
+        "item_name",
+        "label",
+      ]);
       const parentQtd = resolveQuantidade(
         firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]),
         parentNome,
@@ -443,7 +451,16 @@ function extractItem(raw: unknown): ParsedItem[] {
     }
   }
   // Item plano (sem filhos) — extrai diretamente
-  const clean = cleanItemName(firstString(it, ["name", "nome", "description", "title"]));
+  const nomePlano = firstString(it, [
+    "name",
+    "nome",
+    "description",
+    "title",
+    "product_name",
+    "item_name",
+    "label",
+  ]);
+  const clean = cleanItemName(nomePlano);
   const ref =
     firstString(it, [
       "external_id",
@@ -456,25 +473,35 @@ function extractItem(raw: unknown): ParsedItem[] {
       "_id",
     ]) ?? clean;
   if (!ref) return [];
-  const nome = firstString(it, ["name", "nome", "description", "title"]);
+  const nome = nomePlano;
   const quantidade = resolveQuantidade(
     firstNumber(it, ["amount", "quantity", "qtd", "qty", "quantidade", "count"]),
     nome,
   );
-  return [{ ref, nome, quantidade }];
+  // Combos como "Combo 3 De Mini Salgados Assados" vêm com subItems:[] vazio
+  // e precisam ser tratados como combo (permite configurar composição).
+  const isComboPlano = !!nome && /^combo\s/i.test(nome);
+  return [{ ref, nome, quantidade, isCombo: isComboPlano || undefined, comboRef: null }];
 }
 
 function extractItems(o: JsonRecord): ParsedItem[] {
   const out: ParsedItem[] = [];
   const seen = new Map<string, number>();
 
-  function accum(ref: string, nome: string | null, qtd: number): void {
-    const idx = seen.get(ref);
+  function accum(item: ParsedItem): void {
+    const idx = seen.get(item.ref);
     if (idx !== undefined) {
-      out[idx] = { ref, nome, quantidade: out[idx].quantidade + qtd };
+      const existing = out[idx];
+      out[idx] = {
+        ref: item.ref,
+        nome: item.nome ?? existing.nome,
+        quantidade: existing.quantidade + item.quantidade,
+        isCombo: existing.isCombo || item.isCombo,
+        comboRef: existing.comboRef ?? item.comboRef,
+      };
     } else {
-      seen.set(ref, out.length);
-      out.push({ ref, nome, quantidade: qtd });
+      seen.set(item.ref, out.length);
+      out.push({ ...item });
     }
   }
 
@@ -482,7 +509,7 @@ function extractItems(o: JsonRecord): ParsedItem[] {
     if (Array.isArray(value)) {
       for (const el of value) {
         const items = extractItem(el);
-        for (const item of items) accum(item.ref, item.nome, item.quantidade);
+        for (const item of items) accum(item);
         const obj = asRecord(el);
         if (obj) {
           const hasContainer = CONTAINER_FIELDS.some(
@@ -755,9 +782,12 @@ async function insertOrderItems(
   await supabase.from("anota_order_items").delete().eq("order_id", orderId);
   let todosMapeados = true;
   const rows = items.map((it) => {
+    // Fallback: nome começando com "combo" deve ser tratado como combo
+    // mesmo quando veio com subItems:[] vazio (ex: Combo 3 Assados ref 122)
+    const isCombo = !!it.isCombo || (!!it.nome && /^combo\s/i.test(it.nome));
     // Combos não são mapeados para um produto único: a baixa usa a composição.
-    const productId = it.isCombo ? null : mapByRef.has(it.ref) ? (mapByRef.get(it.ref) ?? null) : null;
-    if (!productId && !it.isCombo) todosMapeados = false;
+    const productId = isCombo ? null : mapByRef.has(it.ref) ? (mapByRef.get(it.ref) ?? null) : null;
+    if (!productId && !isCombo) todosMapeados = false;
     return {
       order_id: orderId,
       anota_item_ref: it.ref,
@@ -765,7 +795,7 @@ async function insertOrderItems(
       quantidade: it.quantidade,
       product_id: productId,
       mapeado: !!productId,
-      is_combo: !!it.isCombo,
+      is_combo: isCombo,
       combo_ref: it.comboRef ?? null,
     };
   });

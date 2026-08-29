@@ -210,11 +210,32 @@ function AnotaPage() {
   const { data: items = [] } = useQuery({
     queryKey: ["anota-items"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("anota_order_items")
-        .select("anota_item_ref, nome, product_id, mapeado, is_combo, combo_ref");
-      if (error) throw error;
-      return data;
+      // Supabase/PostgREST limita em 1000 linhas por requisição; pedido 5592
+      // (Combo 3 Assados ref 122) ficou fora do primeiro lote e sumiu do
+      // mapeamento. Paginação em loop garante que todos os 2830+ itens apareçam.
+      const step = 1000;
+      let from = 0;
+      const all: {
+        anota_item_ref: string | null;
+        nome: string | null;
+        product_id: string | null;
+        mapeado: boolean;
+        is_combo: boolean;
+        combo_ref: string | null;
+      }[] = [];
+      while (true) {
+        const { data, error } = await supabase
+          .from("anota_order_items")
+          .select("anota_item_ref, nome, product_id, mapeado, is_combo, combo_ref")
+          .order("created_at", { ascending: true })
+          .range(from, from + step - 1);
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        all.push(...(data as typeof all));
+        if (data.length < step) break;
+        from += step;
+      }
+      return all;
     },
   });
 
@@ -1082,6 +1103,9 @@ function AnotaPage() {
                               <Badge variant="outline" className="ml-2 text-warning">
                                 Pendente
                               </Badge>
+                            )}
+                            {d.ref !== d.nome && (
+                              <div className="text-xs text-muted-foreground">ref: {d.ref}</div>
                             )}
                           </td>
                           <td className="px-4 py-3 text-center text-muted-foreground">{d.count}</td>
