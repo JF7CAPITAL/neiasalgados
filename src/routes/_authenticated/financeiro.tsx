@@ -953,13 +953,13 @@ if (!unlocked) return null;
 
       {/* Folha dos Colaboradores Detail Dialog */}
       <Dialog open={showFolhaDetail} onOpenChange={setShowFolhaDetail}>
-        <DialogContent className="max-w-4xl max-h-[80vh]">
-          <DialogHeader>
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Folha dos Colaboradores</DialogTitle>
             <p className="text-sm text-muted-foreground">Saldo devedor = salário − pagamentos realizados. Se pagamento &lt; salário, o restante acumula para o próximo mês.</p>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="overflow-x-auto">
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            <div className="overflow-x-auto rounded-xl border border-border">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/50">
@@ -1030,7 +1030,7 @@ if (!unlocked) return null;
               </div>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowFolhaDetail(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
@@ -1038,12 +1038,12 @@ if (!unlocked) return null;
 
       {/* Despesas com Insumos Detail Dialog */}
       <Dialog open={showInsumosDetail} onOpenChange={setShowInsumosDetail}>
-        <DialogContent className="max-w-3xl max-h-[80vh]">
-          <DialogHeader>
+        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Despesas com Insumos (Ordens Recebidas)</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="overflow-x-auto">
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            <div className="overflow-x-auto rounded-xl border border-border">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/50">
@@ -1084,7 +1084,7 @@ if (!unlocked) return null;
               </div>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowInsumosDetail(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
