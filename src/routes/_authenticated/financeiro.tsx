@@ -35,7 +35,7 @@ export const Route = createFileRoute("/_authenticated/financeiro")({
 
 type DreEntry = {
   id: string;
-  tipo: "receita" | "custo_direto" | "despesa_operacional" | "despesa_administrativa" | "despesa_financeira" | "outros";
+  tipo: "receita" | "custo_direto" | "custo_variavel" | "despesa_operacional" | "despesa_administrativa" | "despesa_financeira" | "outros";
   categoria: string;
   descricao: string | null;
   valor: number;
@@ -62,6 +62,7 @@ type DreRow = {
 const DRE_TIPOS = [
   { value: "receita", label: "Receita" },
   { value: "custo_direto", label: "Custo Direto (CMV)" },
+  { value: "custo_variavel", label: "Custo Variável" },
   { value: "despesa_operacional", label: "Despesa Operacional" },
   { value: "despesa_administrativa", label: "Despesa Administrativa" },
   { value: "despesa_financeira", label: "Despesa Financeira" },
@@ -98,6 +99,7 @@ function FinanceiroPage() {
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     "RECEITA BRUTA": true,
     "CUSTO DIRETO (CMV)": true,
+    "CUSTO VARIAVEL": true,
     "LUCRO BRUTO": true,
     "DESPESAS OPERACIONAIS": true,
     "DESPESA ADMINISTRATIVA": true,
@@ -273,7 +275,8 @@ function FinanceiroPage() {
   const kpis = useMemo(() => {
     const receita = allDreRows.filter(r => r.secao === "RECEITA BRUTA").reduce((s, r) => s + r.valor, 0);
     const custoDireto = allDreRows.filter(r => r.secao === "CUSTO DIRETO (CMV)").reduce((s, r) => s + r.valor, 0);
-    const lucroBruto = receita - custoDireto;
+    const custoVariavel = allDreRows.filter(r => r.secao === "CUSTO VARIAVEL").reduce((s, r) => s + r.valor, 0);
+    const lucroBruto = receita - custoDireto - custoVariavel;
     const despesasOp = allDreRows.filter(r => r.secao === "DESPESAS OPERACIONAIS").reduce((s, r) => s + r.valor, 0);
     const outrasDespesas = allDreRows
       .filter(r => ["DESPESA ADMINISTRATIVA", "DESPESA FINANCEIRA", "OUTROS"].includes(r.secao))
@@ -281,7 +284,7 @@ function FinanceiroPage() {
     const resultado = lucroBruto - despesasOp - outrasDespesas;
     const margem = receita > 0 ? ((resultado / receita) * 100) : 0;
 
-    return { receita, custoDireto, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
+    return { receita, custoDireto, custoVariavel, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
   }, [allDreRows]);
 
   // Fetch collaborators with salaries for Folha dos Colaboradores
@@ -697,6 +700,7 @@ function FinanceiroPage() {
         const sections = [
           { key: 'RECEITA BRUTA', title: 'RECEITA BRUTA', icon: TrendingUp, tone: 'success' },
           { key: 'CUSTO DIRETO (CMV)', title: 'CUSTO DIRETO (CMV)', icon: Package, tone: 'warning' },
+          { key: 'CUSTO VARIAVEL', title: 'CUSTO VARIÁVEL', icon: TrendingDown, tone: 'warning' },
           { key: 'LUCRO BRUTO', title: 'LUCRO BRUTO', icon: PiggyBank, tone: 'info' },
           { key: 'DESPESAS OPERACIONAIS', title: 'DESPESAS OPERACIONAIS', icon: Users, tone: 'danger' },
           { key: 'DESPESA ADMINISTRATIVA', title: 'DESPESAS ADMINISTRATIVAS', icon: Calculator, tone: 'danger' },
