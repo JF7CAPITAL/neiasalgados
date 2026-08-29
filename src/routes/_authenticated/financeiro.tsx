@@ -351,7 +351,18 @@ function FinanceiroPage() {
   const quartasFeiras = useMemo(() => getProximasQuartas(periodoInicio, periodoFim), [periodoInicio, periodoFim]);
 
   // Computed values for KPIs (must come after queries that provide the data)
+  // Saldo devedor = salário - pagamentos realizados (acumula se pagamento < salário)
   const folhaTotal = useMemo(() => collaborators.reduce((s: number, c: any) => s + (Number(c.pagamento) || 0), 0), [collaborators]);
+  const totalPagamentos = folhaTotal;
+  const totalSalarios = useMemo(() => collaborators.reduce((s: number, c: any) => s + (Number(c.salario) || 0), 0), [collaborators]);
+  const totalSaldoDevedor = useMemo(() => collaborators.reduce((s: number, c: any) => s + (Number(c.saldo_devedor) || 0), 0), [collaborators]);
+  // Fallback derivado caso saldo_devedor ainda não esteja preenchido (salário - pagamento)
+  const totalSaldoDerivado = useMemo(() => collaborators.reduce((s: number, c: any) => {
+    const saldoStored = Number(c.saldo_devedor);
+    if (!isNaN(saldoStored) && saldoStored !== 0) return s + saldoStored;
+    return s + Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
+  }, 0), [collaborators]);
+  const folhaSaldoExibido = totalSaldoDevedor > 0 ? totalSaldoDevedor : totalSaldoDerivado;
   const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) * Number(o.quantidade_necessaria) || 0), 0), [receivedPurchaseOrders]);
   const insumosAvgPrice = useMemo(() => receivedPurchaseOrders.length > 0
     ? receivedPurchaseOrders.reduce((s, o) => s + (Number(o.preco_medio) || 0), 0) / receivedPurchaseOrders.length
@@ -414,16 +425,35 @@ function FinanceiroPage() {
 
   const adiantarPagamentoMutate = useMutation({
     mutationFn: async ({ collaboratorId, valor }: { collaboratorId: string; valor: number }) => {
+      const collab = collaborators.find((c: any) => c.id === collaboratorId);
+      if (!collab) throw new Error("Colaborador não encontrado");
+      const salario = Number(collab.salario) || 0;
+      const pagamentoAtual = Number(collab.pagamento) || 0;
+      const saldoAtual = Number(collab.saldo_devedor) || 0;
+      const novoPagamento = pagamentoAtual + valor;
+      // Recalcula saldo com lógica de acúmulo: base = saldoAtual - oldShortfall
+      const oldShortfall = Math.max(0, salario - pagamentoAtual);
+      const newShortfall = Math.max(0, salario - novoPagamento);
+      const baseAcumulada = Math.max(0, saldoAtual - oldShortfall);
+      let novoSaldo: number;
+      if (novoPagamento > salario) {
+        const excedente = novoPagamento - salario;
+        novoSaldo = Math.max(0, saldoAtual - excedente);
+      } else {
+        novoSaldo = baseAcumulada + newShortfall;
+      }
+      // Se pagamento cobre tudo e ainda há saldo, abate proporcionalmente
       const { error } = await supabase
         .from("collaborators")
-        .update({ saldo_devedor: supabase.raw(`saldo_devedor + ${valor}`) } as any)
+        .update({ pagamento: novoPagamento, saldo_devedor: novoSaldo } as any)
         .eq("id", collaboratorId);
       if (error) throw error;
-      await logActivity("financeiro", "adiantou pagamento colaborador", collaboratorId, { valor });
+      await logActivity("financeiro", "registrou pagamento colaborador", collaboratorId, { valor, novoPagamento, novoSaldo });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["collaborators-salaries"] });
-      toast.success("Adiantamento registrado!");
+      qc.invalidateQueries({ queryKey: ["collaborators"] });
+      toast.success("Pagamento registrado!");
       setAdiantarPagamento({});
     },
     onError: (e: Error) => toast.error(e.message),
@@ -591,7 +621,7 @@ function FinanceiroPage() {
 
   
       {/* renderDreSections function - must be inside component to access openSections/toggleSection/fmtMoney */}
-      const renderDreSections = (rows, kpis) => {
+      const renderDreSections = (rows: DreRow[], kpis: any) => {
         const sections = [
           { key: 'RECEITA BRUTA', title: 'RECEITA BRUTA', icon: TrendingUp, tone: 'success' },
           { key: 'CUSTO DIRETO (CMV)', title: 'CUSTO DIRETO (CMV)', icon: Package, tone: 'warning' },
@@ -604,14 +634,14 @@ function FinanceiroPage() {
         ];
 
         return sections.flatMap((section) => {
-          const sectionRows = rows.filter(r => r.secao === section.key);
-          const total = sectionRows.reduce((s, r) => s + r.valor, 0);
+          const sectionRows = rows.filter((r: DreRow) => r.secao === section.key);
+          const total = sectionRows.reduce((s: number, r: DreRow) => s + r.valor, 0);
           const isTotalRow = ['LUCRO BRUTO', 'RESULTADO LÍQUIDO'].includes(section.key);
           const isOpen = openSections[section.key] ?? true;
 
           if (sectionRows.length === 0 && !isTotalRow) return null;
 
-          const rowsToRender = [
+          const rowsToRender: React.ReactNode[] = [
             <TableRow
               key={section.key + '-header'}
               className='bg-muted/30 hover:bg-muted/50 cursor-pointer'
@@ -624,7 +654,7 @@ function FinanceiroPage() {
               <TableCell />
               <TableCell />
               <TableCell className='text-right font-display text-lg font-semibold tabular'>{fmtMoney(total)}</TableCell>
-              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter(r => r.fonte === 'auto').length} auto / {sectionRows.filter(r => r.fonte === 'manual').length} manual</TableCell>
+              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.fonte === 'auto').length} auto / {sectionRows.filter((r: DreRow) => r.fonte === 'manual').length} manual</TableCell>
               <TableCell className='text-right'>
                 <ChevronDown className={'size-4 mx-auto text-muted-foreground transition-transform ' + (isOpen ? 'rotate-180' : '')} />
               </TableCell>
@@ -632,7 +662,7 @@ function FinanceiroPage() {
           ];
 
           if (isOpen) {
-            sectionRows.forEach((r, i) => {
+            sectionRows.forEach((r: DreRow, i: number) => {
               rowsToRender.push(
                 <TableRow key={r.id ?? i} className={r.fonte === 'manual' ? 'bg-amber-50/30' : ''}>
                   <TableCell className='text-xs text-muted-foreground'>{r.secao}</TableCell>
@@ -714,7 +744,14 @@ if (!unlocked) return null;
         <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint="Vendas Anota AI finalizadas" onClick={() => setShowReceitaDetail(true)} />
         <KpiCard label="Custo Direto (CMV)" value={fmtMoney(kpis.custoDireto)} icon={Package} tone="warning" hint="Insumos consumidos no período" />
         <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV" />
-        <KpiCard label="Folha dos colaboradores" value={fmtMoney(folhaTotal)} icon={Users} tone="info" hint="Pagamento dos colaboradores ativos" onClick={() => setShowFolhaDetail(true)} />
+        <KpiCard
+          label="Folha dos colaboradores"
+          value={fmtMoney(folhaSaldoExibido)}
+          icon={Users}
+          tone={folhaSaldoExibido > 0 ? "warning" : "success"}
+          hint={`Saldo devedor · Pagamentos realizados: ${fmtMoney(totalPagamentos)} · Salários: ${fmtMoney(totalSalarios)}`}
+          onClick={() => setShowFolhaDetail(true)}
+        />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas · Média: ${fmtMoney(insumosAvgPrice)}`} onClick={() => setShowInsumosDetail(true)} />
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais" />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
@@ -915,9 +952,10 @@ if (!unlocked) return null;
 
       {/* Folha dos Colaboradores Detail Dialog */}
       <Dialog open={showFolhaDetail} onOpenChange={setShowFolhaDetail}>
-        <DialogContent className="max-w-3xl max-h-[80vh]">
+        <DialogContent className="max-w-4xl max-h-[80vh]">
           <DialogHeader>
             <DialogTitle>Folha dos Colaboradores</DialogTitle>
+            <p className="text-sm text-muted-foreground">Saldo devedor = salário − pagamentos realizados. Se pagamento &lt; salário, o restante acumula para o próximo mês.</p>
           </DialogHeader>
           <div className="space-y-4">
             <div className="overflow-x-auto">
@@ -926,18 +964,22 @@ if (!unlocked) return null;
                   <TableRow className="bg-muted/50">
                     <TableHead>Colaborador</TableHead>
                     <TableHead>Cargo</TableHead>
-                    <TableHead className="text-right">Pagamento</TableHead>
-                    <TableHead className="text-right">Saldo Devedor</TableHead>
-                    <TableHead className="text-right">Adiantar Pagamento</TableHead>
+                    <TableHead className="text-right">Salário</TableHead>
+                    <TableHead className="text-right">Pagamentos realizados</TableHead>
+                    <TableHead className="text-right">Saldo devedor</TableHead>
+                    <TableHead className="text-right">Registrar pagamento</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {collaborators.map((c: any) => (
+                  {collaborators.map((c: any) => {
+                    const saldo = Number(c.saldo_devedor) || Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
+                    return (
                     <TableRow key={c.id}>
                       <TableCell className="font-medium">{c.nome}</TableCell>
                       <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
+                      <TableCell className="text-right tabular">{fmtMoney(c.salario)}</TableCell>
                       <TableCell className="text-right tabular font-medium">{fmtMoney(c.pagamento)}</TableCell>
-                      <TableCell className="text-right tabular">{fmtMoney(c.saldo_devedor)}</TableCell>
+                      <TableCell className={`text-right tabular font-medium ${saldo > 0 ? "text-destructive" : "text-success"}`}>{fmtMoney(saldo)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center gap-2 justify-end">
                           <Input
@@ -964,13 +1006,27 @@ if (!unlocked) return null;
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                  )})}
                 </TableBody>
               </Table>
             </div>
-            <div className="flex justify-between items-center text-sm">
-              <span>Total colaboradores: {collaborators.length}</span>
-              <span className="font-semibold">Total folha (pagamento): {fmtMoney(folhaTotal)}</span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-muted/50 rounded-lg text-sm">
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Colaboradores</p>
+                <p className="font-display text-lg font-semibold">{collaborators.length}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Total salários</p>
+                <p className="font-display text-lg font-semibold">{fmtMoney(totalSalarios)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Pagamentos realizados</p>
+                <p className="font-display text-lg font-semibold text-success">{fmtMoney(totalPagamentos)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Saldo devedor</p>
+                <p className={`font-display text-lg font-semibold ${folhaSaldoExibido > 0 ? "text-destructive" : "text-success"}`}>{fmtMoney(folhaSaldoExibido)}</p>
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -1112,85 +1168,4 @@ function InsightCard({ title, value, description, tone }: { title: string; value
       <p className="mt-1 text-xs opacity-70">{description}</p>
     </div>
   );
-}
-
-function renderDreSections(rows: DreRow[], kpis: any) {
-  const sections = [
-    { key: "RECEITA BRUTA", title: "RECEITA BRUTA", icon: TrendingUp, tone: "success" as const },
-    { key: "CUSTO DIRETO (CMV)", title: "CUSTO DIRETO (CMV)", icon: Package, tone: "warning" as const },
-    { key: "LUCRO BRUTO", title: "LUCRO BRUTO", icon: PiggyBank, tone: "info" as const },
-    { key: "DESPESAS OPERACIONAIS", title: "DESPESAS OPERACIONAIS", icon: Users, tone: "danger" as const },
-    { key: "DESPESA ADMINISTRATIVA", title: "DESPESAS ADMINISTRATIVAS", icon: Calculator, tone: "danger" as const },
-    { key: "DESPESA FINANCEIRA", title: "DESPESAS FINANCEIRAS", icon: DollarSign, tone: "danger" as const },
-    { key: "OUTROS", title: "OUTRAS DESPESAS", icon: AlertTriangle, tone: "danger" as const },
-    { key: "RESULTADO LÍQUIDO", title: "RESULTADO LÍQUIDO", icon: TrendingDown, tone: "info" as const },
-  ];
-
-  return sections.flatMap((section) => {
-    const sectionRows = rows.filter(r => r.secao === section.key);
-    const total = sectionRows.reduce((s, r) => s + r.valor, 0);
-    const isTotalRow = ["LUCRO BRUTO", "RESULTADO LÍQUIDO"].includes(section.key);
-    const isOpen = openSections[section.key] ?? true;
-
-    if (sectionRows.length === 0 && !isTotalRow) return null;
-
-    const rowsToRender: React.ReactNode[] = [
-      // Section header row (clickable to toggle)
-      <TableRow
-        key={`${section.key}-header`}
-        className="bg-muted/30 hover:bg-muted/50 cursor-pointer"
-        onClick={() => toggleSection(section.key)}
-      >
-        <TableCell className="font-semibold flex items-center gap-2">
-          <section.icon className={`size-4 ${section.tone === "success" ? "text-success" : section.tone === "warning" ? "text-warning" : section.tone === "danger" ? "text-destructive" : "text-info"}`} />
-          {section.title}
-        </TableCell>
-        <TableCell />
-        <TableCell />
-        <TableCell className="text-right font-display text-lg font-semibold tabular">{fmtMoney(total)}</TableCell>
-        <TableCell className="text-center text-xs text-muted-foreground">{sectionRows.filter(r => r.fonte === "auto").length} auto / {sectionRows.filter(r => r.fonte === "manual").length} manual</TableCell>
-        <TableCell className="text-right">
-          <ChevronDown className={`size-4 mx-auto text-muted-foreground transition-transform ${isOpen ? "rotate-180" : ""}`} />
-        </TableCell>
-      </TableRow>
-    ];
-
-    // Only render detail rows if section is open
-    if (isOpen) {
-      sectionRows.forEach((r, i) => {
-        rowsToRender.push(
-          <TableRow key={r.id ?? i} className={r.fonte === "manual" ? "bg-amber-50/30" : ""}>
-            <TableCell className="text-xs text-muted-foreground">{r.secao}</TableCell>
-            <TableCell className="font-medium">{r.categoria}</TableCell>
-            <TableCell className="text-muted-foreground text-sm">{r.descricao || "—"}</TableCell>
-            <TableCell className="text-right tabular font-medium">{fmtMoney(r.valor)}</TableCell>
-            <TableCell className="text-center">
-              <Badge variant={r.fonte === "auto" ? "default" : "outline"} className="text-xs">
-                {r.fonte === "auto" ? "Automático" : "Manual"}
-              </Badge>
-            </TableCell>
-            <TableCell className="text-right">
-              {r.editable && r.id && (
-                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); /* edit handled in lancamentos tab */ }}>
-                  <Pencil className="size-4" />
-                </Button>
-              )}
-            </TableCell>
-          </TableRow>
-        );
-      });
-
-      if (isTotalRow) {
-        rowsToRender.push(
-          <TableRow key={`${section.key}-total`} className="bg-muted/50 font-bold">
-            <TableCell colSpan={3} className="text-right">Total {section.title}</TableCell>
-            <TableCell className="text-right font-display text-lg">{fmtMoney(total)}</TableCell>
-            <TableCell colSpan={2} />
-          </TableRow>
-        );
-      }
-    }
-
-    return rowsToRender;
-  });
 }

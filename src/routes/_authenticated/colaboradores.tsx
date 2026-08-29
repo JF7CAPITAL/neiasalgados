@@ -53,7 +53,7 @@ type CollabDoc = {
   created_at: string;
 };
 
-const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, saldo_devedor: 0, pagamento: 0 };
+const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, pagamento: 0, saldo_devedor: 0 };
 const docTypes = ["documento", "foto", "comprovante", "contrato", "outro"] as const;
 
 function ColaboradoresPage() {
@@ -95,13 +95,52 @@ function ColaboradoresPage() {
 
   const save = useMutation({
     mutationFn: async (c: Partial<Collab>) => {
+      const salario = Number(c.salario) || 0;
+      const pagamento = Number(c.pagamento) || 0;
+      // Saldo devedor = salário - pagamentos realizados (se pagamento < salário).
+      // Acumula: saldo anterior + shortfall do mês atual. Para manter simplicidade
+      // sem histórico mensal, o saldo exibido é o shortfall instantâneo; o
+      // acúmulo ocorre naturalmente pois o saldo persiste até que pagamento cubra o salário.
+      // Se já existe saldo acumulado, mantém a lógica de acúmulo incremental:
+      // novo_saldo = max(0, saldo_anterior + salario - pagamento) quando salário/pagamento mudam,
+      // senão mantém saldo anterior. Para edição simples, usa shortfall instantâneo.
+      let saldo_devedor = Math.max(0, salario - pagamento);
+      if (c.id) {
+        const existing = rows.find((r) => r.id === c.id);
+        if (existing) {
+          const oldSalario = Number(existing.salario) || 0;
+          const oldPagamento = Number(existing.pagamento) || 0;
+          const oldSaldo = Number(existing.saldo_devedor) || 0;
+          const salarioMudou = oldSalario !== salario;
+          const pagamentoMudou = oldPagamento !== pagamento;
+          if (salarioMudou || pagamentoMudou) {
+            // Se mudou salário ou pagamento, recalcula considerando acúmulo:
+            // saldo_anterior - oldShortfall + newShortfall preserva histórico sem dobrar.
+            const oldShortfall = Math.max(0, oldSalario - oldPagamento);
+            const newShortfall = Math.max(0, salario - pagamento);
+            // Se havia saldo acumulado maior que shortfall (acúmulo de meses anteriores),
+            // preserva o excedente: base = oldSaldo - oldShortfall (dívida antiga)
+            const baseAcumulada = Math.max(0, oldSaldo - oldShortfall);
+            saldo_devedor = baseAcumulada + newShortfall;
+            // Abate se pagamento > salário (excedente cobre dívida antiga)
+            if (pagamento > salario) {
+              const excedente = pagamento - salario;
+              saldo_devedor = Math.max(0, oldSaldo - excedente);
+              // Se salário também mudou, ajusta com novo shortfall (já 0)
+              if (newShortfall === 0) saldo_devedor = Math.max(0, oldSaldo - excedente);
+            }
+          } else {
+            saldo_devedor = oldSaldo;
+          }
+        }
+      }
       const payload = {
         nome: c.nome!, cpf: c.cpf || null, rg: c.rg || null, telefone: c.telefone || null,
         celular: c.celular || null, email: c.email || null, endereco: c.endereco || null,
         cargo: c.cargo || null, data_admissao: c.data_admissao || null, status: c.status || "ativo",
         em_turno: c.em_turno ?? false, turno: c.turno || null, horario: c.horario || null,
         escala: c.escala || null, observacoes: c.observacoes || null,
-        salario: c.salario ?? 0, saldo_devedor: c.saldo_devedor ?? 0, pagamento: c.pagamento ?? 0,
+        salario, pagamento, saldo_devedor,
       } as any;
       if (c.id) {
         const { error } = await supabase.from("collaborators").update(payload).eq("id", c.id);
@@ -286,8 +325,35 @@ function ColaboradoresPage() {
                     <F label="Escala"><Input value={editing.escala ?? ""} onChange={(e) => setEditing({ ...editing, escala: e.target.value })} /></F>
                     <F label="Status"><Input value={editing.status ?? "ativo"} onChange={(e) => setEditing({ ...editing, status: e.target.value })} /></F>
                     <F label="Salário (R$)"><Input type="number" step="0.01" value={editing.salario ?? 0} onChange={(e) => setEditing({ ...editing, salario: Number(e.target.value) })} /></F>
-                    <F label="Pagamento (R$)"><Input type="number" step="0.01" value={editing.pagamento ?? 0} onChange={(e) => setEditing({ ...editing, pagamento: Number(e.target.value) })} /></F>
-                    <F label="Saldo devedor (R$)"><Input type="number" step="0.01" value={editing.saldo_devedor ?? 0} onChange={(e) => setEditing({ ...editing, saldo_devedor: Number(e.target.value) })} /></F>
+                    <F label="Pagamentos realizados (R$)"><Input type="number" step="0.01" value={editing.pagamento ?? 0} onChange={(e) => setEditing({ ...editing, pagamento: Number(e.target.value) })} /></F>
+                    <F label="Saldo devedor (R$) - calculado">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={(() => {
+                          const salario = Number(editing.salario) || 0;
+                          const pagamento = Number(editing.pagamento) || 0;
+                          if (!editing.id) return Math.max(0, salario - pagamento).toFixed(2);
+                          const old = rows.find((r) => r.id === editing.id);
+                          if (!old) return Math.max(0, salario - pagamento).toFixed(2);
+                          const oldSaldo = Number(old.saldo_devedor) || 0;
+                          const oldSalario = Number(old.salario) || 0;
+                          const oldPagamento = Number(old.pagamento) || 0;
+                          const oldShortfall = Math.max(0, oldSalario - oldPagamento);
+                          const newShortfall = Math.max(0, salario - pagamento);
+                          const base = Math.max(0, oldSaldo - oldShortfall);
+                          let preview = base + newShortfall;
+                          if (pagamento > salario) {
+                            const excedente = pagamento - salario;
+                            preview = Math.max(0, oldSaldo - excedente);
+                          }
+                          return preview.toFixed(2);
+                        })()}
+                        disabled
+                        className="bg-muted"
+                      />
+                      <p className="text-[11px] text-muted-foreground">Saldo = salário − pagamentos realizados. Se pagamento &lt; salário, acumula para o próximo mês até ser quitado.</p>
+                    </F>
                     <F label="Observações" cn="col-span-2"><Textarea value={editing.observacoes ?? ""} onChange={(e) => setEditing({ ...editing, observacoes: e.target.value })} /></F>
                     <div className="col-span-2 flex items-center gap-2">
                       <Switch checked={editing.em_turno ?? false} onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })} />
