@@ -304,7 +304,8 @@ function FinanceiroPage() {
       const { data, error } = await supabase
         .from("purchase_orders")
         .select("id, numero, ingredient_id, quantidade_necessaria, preco_medio, created_at, ingredients(nome, unidade)")
-        .eq("status", "recebida")
+        .eq("status", "concluida")
+        .is("deleted_at", null)
         .gte("created_at", periodoInicio)
         .lte("created_at", periodoFim)
         .order("created_at", { ascending: false });
