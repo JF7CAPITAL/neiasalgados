@@ -1338,8 +1338,6 @@ if (!unlocked) return null;
                 </h4>
                 <p className="mt-2 text-sm text-muted-foreground">Vendas diretas Anota AI (sem iFood) que caem no próximo dia útil</p>
                 <p className="mt-3 font-display text-2xl font-bold text-success">{fmtMoney(anotaDirectTotal)}</p>
-                <p className="mt-1 text-xs text-muted-foreground">D+1 (≤ amanhã): {fmtMoney(anotaD1)} • Pedidos: {anotaDirectOrders.length} de {anotaOrders.length}</p>
-                <p className="mt-1 text-xs text-muted-foreground">Total período (todos): {fmtMoney(anotaTotal)} (Anota direto {fmtMoney(anotaDirectTotal)} + iFood {fmtMoney(ifoodTotal)})</p>
               </div>
               <div className="rounded-xl border border-border bg-card p-4">
                 <h4 className="font-semibold flex items-center gap-2">
