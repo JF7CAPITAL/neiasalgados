@@ -290,7 +290,7 @@ function FinanceiroPage() {
         .select("id, nome, cargo, salario, saldo_devedor, pagamento")
         .eq("status", "ativo")
         .is("deleted_at", null)
-        .lte("data_admissao", periodoFim);
+        .or(`data_admissao.is.null,data_admissao.lte.${periodoFim}`);
       if (error) throw error;
       return (data ?? []) as any;
     },
