@@ -367,11 +367,24 @@ function FinanceiroPage() {
 
   const quartasFeiras = useMemo(() => getProximasQuartas(periodoInicio, periodoFim), [periodoInicio, periodoFim]);
 
-  // Últimas 4 quartas-feiras do período (para exibir valores históricos)
+  // Últimas 4 quartas-feiras anteriores ao dia atual (janela móvel: a cada nova quarta, a mais antiga sai)
   const ultimasQuartas = useMemo(() => {
-    if (quartasFeiras.length === 0) return [];
-    return quartasFeiras.slice(-4);
-  }, [quartasFeiras]);
+    const today = new Date();
+    const base = new Date(today);
+    const day = base.getDay();
+    const diff = (day - 3 + 7) % 7;
+    base.setDate(base.getDate() - diff);
+    base.setHours(0, 1, 0, 0);
+    // Se hoje é quarta antes de 00:01, considera a quarta anterior
+    if (base > today) base.setDate(base.getDate() - 7);
+    const result: string[] = [];
+    for (let i = 3; i >= 0; i--) {
+      const d = new Date(base);
+      d.setDate(d.getDate() - i * 7);
+      result.push(d.toISOString().split('T')[0]);
+    }
+    return result;
+  }, []);
 
   // Helper: início da contagem da próxima quarta (última quarta 00:01 até agora)
   const getLastWednesdayStart = useCallback(() => {
@@ -453,10 +466,19 @@ function FinanceiroPage() {
   }, [quartasFeiras, ifoodOrders, periodoInicio]);
   const ultimasQuartasComValores = useMemo(() => {
     return ultimasQuartas.map(q => {
-      const found = ifoodQuartasValores.find(v => v.data === q);
-      return found || { data: q, valor: 0, inicio: q };
+      const quarta = new Date(q);
+      quarta.setHours(0, 1, 0, 0);
+      const prev = new Date(quarta);
+      prev.setDate(prev.getDate() - 7);
+      const start = prev;
+      const end = quarta;
+      const sum = ifoodOrders.filter(o => {
+        const d = new Date(o.imported_at);
+        return d >= start && d < end;
+      }).reduce((s, o) => s + (Number(o.total) || 0), 0);
+      return { data: q, valor: sum, inicio: start.toISOString().split('T')[0] };
     });
-  }, [ultimasQuartas, ifoodQuartasValores]);
+  }, [ultimasQuartas, ifoodOrders]);
   // Próxima quarta: from última quarta 00:01 até agora (atualiza conforme pedidos entram)
   const ifoodProximaQuarta = useMemo(() => {
     const lastStart = getLastWednesdayStart();
@@ -1351,24 +1373,11 @@ if (!unlocked) return null;
               </div>
             </div>
 
-            <div className="rounded-xl border border-border bg-muted/50 p-4">
-              <h4 className="font-semibold mb-2">Próximas quartas-feiras no período</h4>
-              <div className="flex flex-wrap gap-2">
-                {ifoodQuartasValores.map((q) => (
-                  <Badge key={q.data} variant="outline" className="flex flex-col items-center gap-1 px-3 py-2">
-                    <span className="text-xs">{fmtDate(q.data)}</span>
-                    <span className="font-bold text-sm">{fmtMoney(q.valor)}</span>
-                  </Badge>
-                ))}
-                {ifoodQuartasValores.length === 0 && <span className="text-xs text-muted-foreground">Nenhuma quarta-feira no período selecionado</span>}
-              </div>
-              <p className="mt-2 text-xs text-muted-foreground">Valor por quarta = iFood de {`{prev 00:01 → quarta 00:00}`}</p>
-            </div>
-
             <div className="rounded-xl border border-border bg-card p-4">
               <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <CalendarDays className="size-4 text-primary" /> Últimas quartas (4 últimas)
+                <CalendarDays className="size-4 text-primary" /> Últimas quartas
               </h4>
+              <p className="text-xs text-muted-foreground mb-3">4 últimas quartas-feiras anteriores a hoje • atualiza a cada quarta 00:01 (janela móvel)</p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {ultimasQuartasComValores.map((q) => (
                   <div key={q.data} className="rounded-lg border border-border p-3 text-center bg-muted/20">
