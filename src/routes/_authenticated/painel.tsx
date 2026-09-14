@@ -328,16 +328,18 @@ function DashboardPage() {
     </Table>
   );
 
-  // Reusable dialog for any report
-  const ReportDialog = ({ title, table, onPrint }: NonNullable<ReportDialog>) => (
-    <Dialog open={true} onOpenChange={(o) => !o && closeReport()}>
-      <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+  // Reusable dialog for any report — evita flicker open/close ao usar controlled open + renderização condicional
+  const ReportDialog = ({ open, title, table, onPrint, onClose }: { open: boolean; title?: string; table?: React.ReactNode; onPrint?: () => void; onClose: () => void }) => (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto" onOpenAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
-          <div className="flex items-center justify-between">
-            <DialogTitle>{title}</DialogTitle>
-            <Button variant="outline" size="sm" onClick={onPrint}>
-              <Printer className="mr-1.5 size-4" /> Imprimir / PDF
-            </Button>
+          <div className="flex items-center justify-between gap-4">
+            <DialogTitle>{title ?? ""}</DialogTitle>
+            {onPrint && (
+              <Button variant="outline" size="sm" onClick={onPrint}>
+                <Printer className="mr-1.5 size-4" /> Imprimir / PDF
+              </Button>
+            )}
           </div>
         </DialogHeader>
         <div className="overflow-x-auto">{table}</div>
@@ -386,7 +388,7 @@ function DashboardPage() {
                     </thead>
                     <tbody className="divide-y divide-border">
                       {rows.map((r) => (
-                        <tr key={r.id} className="hover:bg-muted/30 cursor-pointer" onClick={() => setForecastDrill({ nome: r.nome, productId: r.id })}>
+                        <tr key={r.id} className="hover:bg-muted/30 cursor-pointer" onClick={(e) => { e.stopPropagation(); setTimeout(() => setForecastDrill({ nome: r.nome, productId: r.id }), 0); }}>
                           <td className="px-3 py-2 font-medium underline-offset-2 hover:underline">{r.nome}</td>
                           <td className="px-3 py-2 text-right tabular">{fmtNum(r.atual)}</td>
                           <td className="px-3 py-2 text-right tabular text-info">{fmtNum(r.producao)}</td>
@@ -452,7 +454,7 @@ function DashboardPage() {
                       </thead>
                       <tbody className="divide-y divide-border">
                         {rows.map((r, i) => (
-                          <tr key={i} className="hover:bg-muted/30 cursor-pointer" onClick={() => setForecastDrill({ nome: r.produto, productId: r.id })}>
+                          <tr key={i} className="hover:bg-muted/30 cursor-pointer" onClick={(e) => { e.stopPropagation(); setTimeout(() => setForecastDrill({ nome: r.produto, productId: r.id }), 0); }}>
                             <td className="px-3 py-2 font-medium underline-offset-2 hover:underline">{r.produto}</td>
                             <td className="px-3 py-2 text-right tabular">{fmtNum(r.atual)}</td>
                             <td className="px-3 py-2 text-right tabular text-destructive">{fmtNum(r.impacto)}</td>
@@ -638,8 +640,8 @@ function DashboardPage() {
         )}
       </div>
 
-      {report && <ReportDialog {...report} />}
-      {agendamentoReport && <ReportDialog {...agendamentoReport} />}
+      <ReportDialog open={!!report} title={report?.title} table={report?.table} onPrint={report?.onPrint} onClose={closeReport} />
+      <ReportDialog open={!!agendamentoReport} title={agendamentoReport?.title} table={agendamentoReport?.table} onPrint={agendamentoReport?.onPrint} onClose={closeReport} />
 
       {/* Dialog OP Pendentes com toggle por ordem para PDF */}
       <Dialog open={opPendentesOpen} onOpenChange={setOpPendentesOpen}>

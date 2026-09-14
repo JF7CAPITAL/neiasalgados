@@ -62,7 +62,12 @@ export function KpiCard({
         "rounded-xl border border-border bg-card p-5 transition-colors min-w-0",
         onClick ? "cursor-pointer hover:border-primary/60 hover:shadow-sm" : "hover:border-primary/40",
       )}
-      onClick={onClick}
+      onClick={(e) => {
+        if (!onClick) return;
+        // Defer para próximo tick evita que o clique que abre o Dialog seja interpretado como clique fora (overlay) pelo Radix, causando flicker abre/fecha.
+        e.preventDefault();
+        setTimeout(() => onClick(), 0);
+      }}
     >
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
