@@ -102,7 +102,7 @@ function DashboardPage() {
         supabase.from("purchase_orders").select("id, numero, status, prioridade, quantidade_necessaria, preco_medio, ingredient_id, supplier_id, observacoes, created_at").is("deleted_at", null),
         supabase.from("product_movements").select("id, product_id, tipo, quantidade, destino, created_at, ref_order_id").order("created_at", { ascending: false }).limit(500),
         supabase.from("collaborators").select("id, nome, cargo, turno, em_turno").is("deleted_at", null),
-        supabase.from("anota_orders").select("id, created_at, check_status").eq("check_status", 3).gte("created_at", hoje),
+        supabase.from("anota_orders").select("id, imported_at, created_at, check_status").eq("check_status", 3).gte("imported_at", hoje),
       ]);
       const [pnames, inames, fnames, snames] = await Promise.all([
         supabase.from("products").select("id, nome"),
