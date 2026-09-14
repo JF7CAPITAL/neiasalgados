@@ -32,7 +32,7 @@ import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth, hasAccess } from "@/lib/auth";
-import { fmtNum, fmtDateTime } from "@/lib/format";
+import { fmtNum } from "@/lib/format";
 import { downloadCSV, downloadExcel, printProductionReport, type ReportSection } from "@/lib/export";
 import {
   getRetentionStatus,
@@ -225,17 +225,15 @@ function RelatorioProducaoPage() {
     const totalRecheio = fil.reduce((s, m) => s + Number(m.quantidade), 0);
 
     // Por produto: saído via anotaItems (finalizados), produzido via OPs concluídas
-    const byProduct = new Map<string, { saido: number; produzido: number; horarios: string[] }>();
+    const byProduct = new Map<string, { saido: number; produzido: number }>();
     const ensure = (id: string) => {
-      if (!byProduct.has(id)) byProduct.set(id, { saido: 0, produzido: 0, horarios: [] });
+      if (!byProduct.has(id)) byProduct.set(id, { saido: 0, produzido: 0 });
       return byProduct.get(id)!;
     };
     for (const it of anotaItems) {
       if (!it.product_id) continue;
       const e = ensure(it.product_id);
       e.saido += Number(it.quantidade);
-      const d = orderDateMap.get(it.order_id);
-      if (d) e.horarios.push(fmtDateTime(d));
     }
     for (const o of prodConcluidas) {
       if (!o.product_id) continue;
@@ -298,9 +296,9 @@ function RelatorioProducaoPage() {
   const buildSections = (): ReportSection[] => [
     {
       title: "Salgados que saíram",
-      headers: ["Produto", "Saído", "Produzido", "Horários das saídas"],
-      align: ["left", "right", "right", "left"],
-      rows: report.products.map((p) => [p.nome, fmtNum(p.saido), fmtNum(p.produzido), p.horarios.join("; ")]),
+      headers: ["Produto", "Saído", "Produzido"],
+      align: ["left", "right", "right"],
+      rows: report.products.map((p) => [p.nome, fmtNum(p.saido), fmtNum(p.produzido)]),
     },
     {
       title: "Variação diária das saídas",
@@ -345,13 +343,11 @@ function RelatorioProducaoPage() {
       produto: p.nome,
       saido: p.saido,
       produzido: p.produzido,
-      horarios: p.horarios.join("; "),
     }));
     const headers = [
       { key: "produto", label: "Produto" },
       { key: "saido", label: "Saído" },
       { key: "produzido", label: "Produzido" },
-      { key: "horarios", label: "Horários das saídas" },
     ];
     const fn = `relatorio-producao-${from}_${to}`;
     if (kind === "csv") downloadCSV(fn, rows, headers);
@@ -446,18 +442,16 @@ function RelatorioProducaoPage() {
                   <TableHead>Produto</TableHead>
                   <TableHead className="text-right">Saído</TableHead>
                   <TableHead className="text-right">Produzido</TableHead>
-                  <TableHead>Horários das saídas</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {report.products.length === 0 ? (
-                  <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">Sem saídas no período.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">Sem saídas no período.</TableCell></TableRow>
                 ) : report.products.map((p) => (
                   <TableRow key={p.nome}>
                     <TableCell className="font-medium">{p.nome}</TableCell>
                     <TableCell className="text-right tabular">{fmtNum(p.saido)}</TableCell>
                     <TableCell className="text-right tabular text-muted-foreground">{fmtNum(p.produzido)}</TableCell>
-                    <TableCell className="max-w-xs text-xs text-muted-foreground">{p.horarios.join("; ")}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
