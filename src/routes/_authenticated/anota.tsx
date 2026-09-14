@@ -778,8 +778,7 @@ function AnotaPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const hojeInicio = new Date();
-  hojeInicio.setHours(0, 0, 0, 0);
+  const hojeInicio = new Date(new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) + "T00:00:00-03:00");
   const hojeOrders = orders.filter((o) => new Date(o.imported_at) >= hojeInicio);
   const agendadosCount = scheduledWithPayload.length;
 
@@ -837,7 +836,7 @@ function AnotaPage() {
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <KpiCard label="Pedidos importados" value={orders.length} icon={ShoppingBag} />
+        <KpiCard label="Pedidos importados" value={hojeOrders.length} hint={`${hojeOrders.length} sincronizados hoje`} icon={ShoppingBag} />
         <KpiCard
           label="Itens sem mapeamento"
           value={pendentes}

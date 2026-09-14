@@ -102,7 +102,7 @@ function DashboardPage() {
         supabase.from("purchase_orders").select("id, numero, status, prioridade, quantidade_necessaria, preco_medio, ingredient_id, supplier_id, observacoes, created_at").is("deleted_at", null),
         supabase.from("product_movements").select("id, product_id, tipo, quantidade, destino, created_at, ref_order_id").order("created_at", { ascending: false }).limit(500),
         supabase.from("collaborators").select("id, nome, cargo, turno, em_turno").is("deleted_at", null),
-        supabase.from("anota_orders").select("id, created_at").gte("created_at", hoje),
+        supabase.from("anota_orders").select("id, created_at, check_status").eq("check_status", 3).gte("created_at", hoje),
       ]);
       const [pnames, inames, fnames, snames] = await Promise.all([
         supabase.from("products").select("id, nome"),
@@ -206,8 +206,11 @@ function DashboardPage() {
 
   const isConsumoAnota = (m: typeof movements[0], period: "hoje" | "semana" | "mes") => {
     if (m.tipo !== "saida" || m.destino !== "Anota AI") return false;
+    if (period === "hoje") {
+      // Novo requisito: apenas salgados de pedidos Anota com status finalizado (check_status=3) do dia atual
+      return !!m.ref_order_id && ordensHoje.has(m.ref_order_id);
+    }
     const from = startOf(period);
-    if (period === "hoje" && m.ref_order_id && ordensHoje.has(m.ref_order_id)) return true;
     return new Date(m.created_at) >= from;
   };
   const consumoDesde = (period: "hoje" | "semana" | "mes") => {
@@ -546,7 +549,7 @@ function DashboardPage() {
             })(),
             onPrint: () => pOP("Produzido na Semana", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("semana") && o.kind === "producao")),
           })} />
-        <KpiCard label="Consumo hoje" value={fmtNum(consumoDesde("hoje"))} hint="produção Anota AI" icon={TrendingDown} tone="danger"
+        <KpiCard label="Consumo hoje" value={fmtNum(consumoDesde("hoje"))} hint="finalizados Anota AI" icon={TrendingDown} tone="danger"
           onClick={() => setReport({
             title: "Consumo Hoje",
             table: (() => {
