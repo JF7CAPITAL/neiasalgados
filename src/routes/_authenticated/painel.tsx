@@ -17,6 +17,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   BarChart,
   Bar,
@@ -75,6 +76,10 @@ function DashboardPage() {
   const [verAgendados, setVerAgendados] = useState(false);
   const [agendamentoReport, setAgendamentoReport] = useState<ReportDialog>(null);
   const [forecastDrill, setForecastDrill] = useState<{ nome: string; productId: string } | null>(null);
+  const [opPendentesOpen, setOpPendentesOpen] = useState(false);
+  const [comprasPendentesOpen, setComprasPendentesOpen] = useState(false);
+  const [opExcludedIds, setOpExcludedIds] = useState<Set<string>>(new Set());
+  const [comprasExcludedIds, setComprasExcludedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const unsub = onSync((ts) => setLastSync(ts));
@@ -286,7 +291,8 @@ function DashboardPage() {
   };
 
   const pComprasPendentes = () => {
-    printPurchaseOrdersReport(comprasPendentes.map((o) => ({
+    const filtered = comprasPendentes.filter((o) => !comprasExcludedIds.has(o.id));
+    printPurchaseOrdersReport(filtered.map((o) => ({
       numero: o.numero, insumo: nm(o.ingredient_id), fornecedor: nm(o.supplier_id),
       quantidade: Number(o.quantidade_necessaria), valor: String(o.preco_medio * o.quantidade_necessaria),
       prioridade: o.prioridade, status: o.status,
@@ -490,13 +496,8 @@ function DashboardPage() {
           }}
         />
         <KpiCard label="OP pendentes" value={fmtNum(ordensPendentes.length)} icon={ClipboardList} tone="warning"
-          onClick={() => setReport({
-            title: "Ordens de Produção Pendentes",
-            table: ordensPendentes.length
-              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Necessário</TableHead><TableHead>Prioridade</TableHead></TableRow></TableHeader><TableBody>{ordensPendentes.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria)}</TableCell><TableCell>{o.prioridade}</TableCell></TableRow>))}</TableBody></Table>
-              : <p className="py-8 text-center text-muted-foreground">Nenhuma OP pendente.</p>,
-            onPrint: () => pOP("OP Pendentes", ordensPendentes),
-          })} />
+          hint={ordensPendentes.length ? `${fmtNum(ordensPendentes.filter((o) => !opExcludedIds.has(o.id)).length)} de ${fmtNum(ordensPendentes.length)} no PDF` : undefined}
+          onClick={() => setOpPendentesOpen(true)} />
         <KpiCard label="OP em andamento" value={fmtNum(emProducao)} icon={Factory} tone="info"
           onClick={() => setReport({
             title: "Ordens em Andamento",
@@ -514,13 +515,8 @@ function DashboardPage() {
             onPrint: () => pOP("OP Concluídas", ordensConcluidas),
           })} />
         <KpiCard label="Compras pendentes" value={fmtNum(comprasPendentes.length)} icon={ShoppingCart} tone="warning"
-          onClick={() => setReport({
-            title: "Compras Pendentes",
-            table: comprasPendentes.length
-              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Insumo</TableHead><TableHead className="text-right">Necessário</TableHead><TableHead>Prioridade</TableHead></TableRow></TableHeader><TableBody>{comprasPendentes.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.ingredient_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria, 2)}</TableCell><TableCell>{o.prioridade}</TableCell></TableRow>))}</TableBody></Table>
-              : <p className="py-8 text-center text-muted-foreground">Nenhuma compra pendente.</p>,
-            onPrint: pComprasPendentes,
-          })} />
+          hint={comprasPendentes.length ? `${fmtNum(comprasPendentes.filter((o) => !comprasExcludedIds.has(o.id)).length)} de ${fmtNum(comprasPendentes.length)} no PDF` : undefined}
+          onClick={() => setComprasPendentesOpen(true)} />
       </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -644,6 +640,209 @@ function DashboardPage() {
 
       {report && <ReportDialog {...report} />}
       {agendamentoReport && <ReportDialog {...agendamentoReport} />}
+
+      {/* Dialog OP Pendentes com toggle por ordem para PDF */}
+      <Dialog open={opPendentesOpen} onOpenChange={setOpPendentesOpen}>
+        <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-4">
+              <DialogTitle>Ordens de Produção Pendentes</DialogTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const filtered = ordensPendentes.filter((o) => !opExcludedIds.has(o.id));
+                  pOP("OP Pendentes", filtered);
+                }}
+                disabled={ordensPendentes.filter((o) => !opExcludedIds.has(o.id)).length === 0 && ordensPendentes.length > 0}
+              >
+                <Printer className="mr-1.5 size-4" /> Imprimir / PDF
+              </Button>
+            </div>
+            {ordensPendentes.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                <p className="text-xs text-muted-foreground">
+                  {ordensPendentes.filter((o) => !opExcludedIds.has(o.id)).length} de {ordensPendentes.length} selecionada(s) para o PDF — desmarcadas ficam visíveis apenas na lista.
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setOpExcludedIds(new Set())}>
+                    Selecionar todos
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setOpExcludedIds(new Set(ordensPendentes.map((o) => o.id)))}>
+                    Desmarcar todos
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogHeader>
+          {ordensPendentes.length ? (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-12 text-center">
+                      <Checkbox
+                        checked={ordensPendentes.length > 0 && ordensPendentes.every((o) => !opExcludedIds.has(o.id))}
+                        onCheckedChange={(checked) => {
+                          if (checked) setOpExcludedIds(new Set());
+                          else setOpExcludedIds(new Set(ordensPendentes.map((o) => o.id)));
+                        }}
+                        aria-label="Selecionar todos para PDF"
+                      />
+                    </TableHead>
+                    <TableHead>Nº</TableHead>
+                    <TableHead>Item</TableHead>
+                    <TableHead className="text-right">Necessário</TableHead>
+                    <TableHead>Prioridade</TableHead>
+                    <TableHead className="text-center w-20">PDF</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {ordensPendentes.map((o) => {
+                    const included = !opExcludedIds.has(o.id);
+                    return (
+                      <TableRow key={o.id} className={!included ? "opacity-60" : ""}>
+                        <TableCell className="text-center">
+                          <Checkbox
+                            checked={included}
+                            onCheckedChange={() => {
+                              setOpExcludedIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(o.id)) next.delete(o.id);
+                                else next.add(o.id);
+                                return next;
+                              });
+                            }}
+                            aria-label={`Incluir OP ${o.numero} no PDF`}
+                          />
+                        </TableCell>
+                        <TableCell className="tabular font-medium">#{o.numero}</TableCell>
+                        <TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell>
+                        <TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria)}</TableCell>
+                        <TableCell>{o.prioridade}</TableCell>
+                        <TableCell className="text-center">
+                          <Switch
+                            checked={included}
+                            onCheckedChange={() => {
+                              setOpExcludedIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(o.id)) next.delete(o.id);
+                                else next.add(o.id);
+                                return next;
+                              });
+                            }}
+                            aria-label={`Toggle PDF OP ${o.numero}`}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="py-8 text-center text-muted-foreground">Nenhuma OP pendente.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog Compras Pendentes com toggle por ordem para PDF */}
+      <Dialog open={comprasPendentesOpen} onOpenChange={setComprasPendentesOpen}>
+        <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-4">
+              <DialogTitle>Compras Pendentes</DialogTitle>
+              <Button variant="outline" size="sm" onClick={pComprasPendentes} disabled={comprasPendentes.filter((o) => !comprasExcludedIds.has(o.id)).length === 0 && comprasPendentes.length > 0}>
+                <Printer className="mr-1.5 size-4" /> Imprimir / PDF
+              </Button>
+            </div>
+            {comprasPendentes.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                <p className="text-xs text-muted-foreground">
+                  {comprasPendentes.filter((o) => !comprasExcludedIds.has(o.id)).length} de {comprasPendentes.length} selecionada(s) para o PDF — desmarcadas ficam visíveis apenas na lista.
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setComprasExcludedIds(new Set())}>
+                    Selecionar todos
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setComprasExcludedIds(new Set(comprasPendentes.map((o) => o.id)))}>
+                    Desmarcar todos
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogHeader>
+          {comprasPendentes.length ? (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-12 text-center">
+                      <Checkbox
+                        checked={comprasPendentes.length > 0 && comprasPendentes.every((o) => !comprasExcludedIds.has(o.id))}
+                        onCheckedChange={(checked) => {
+                          if (checked) setComprasExcludedIds(new Set());
+                          else setComprasExcludedIds(new Set(comprasPendentes.map((o) => o.id)));
+                        }}
+                        aria-label="Selecionar todos para PDF"
+                      />
+                    </TableHead>
+                    <TableHead>Nº</TableHead>
+                    <TableHead>Insumo</TableHead>
+                    <TableHead className="text-right">Necessário</TableHead>
+                    <TableHead>Prioridade</TableHead>
+                    <TableHead className="text-center w-20">PDF</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {comprasPendentes.map((o) => {
+                    const included = !comprasExcludedIds.has(o.id);
+                    return (
+                      <TableRow key={o.id} className={!included ? "opacity-60" : ""}>
+                        <TableCell className="text-center">
+                          <Checkbox
+                            checked={included}
+                            onCheckedChange={() => {
+                              setComprasExcludedIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(o.id)) next.delete(o.id);
+                                else next.add(o.id);
+                                return next;
+                              });
+                            }}
+                            aria-label={`Incluir compra ${o.numero} no PDF`}
+                          />
+                        </TableCell>
+                        <TableCell className="tabular font-medium">#{o.numero}</TableCell>
+                        <TableCell>{nm(o.ingredient_id)}</TableCell>
+                        <TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria, 2)}</TableCell>
+                        <TableCell>{o.prioridade}</TableCell>
+                        <TableCell className="text-center">
+                          <Switch
+                            checked={included}
+                            onCheckedChange={() => {
+                              setComprasExcludedIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(o.id)) next.delete(o.id);
+                                else next.add(o.id);
+                                return next;
+                              });
+                            }}
+                            aria-label={`Toggle PDF compra ${o.numero}`}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="py-8 text-center text-muted-foreground">Nenhuma compra pendente.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!forecastDrill} onOpenChange={(o) => !o && setForecastDrill(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
