@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ClipboardList, Loader2, Play, CheckCircle2, PackageCheck, Plus, FileText } from "lucide-react";
+import { ClipboardList, Loader2, Play, CheckCircle2, PackageCheck, Plus, FileText, Trash2, CalendarDays } from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -57,14 +57,23 @@ const emptyPO: NewPO = { ingredient_id: "", quantidade: 0, supplier_id: null, pr
 const emptyProdO: NewProdOrder = { product_id: "", quantidade: 0, massadas: 1, prioridade: "media", tipo_massa: "frito", observacoes: "" };
 const emptyFillingO: NewFillingOrder = { filling_id: "", quantidade: 0, prioridade: "media", observacoes: "" };
 
+function toBRTDateString(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+}
+function todayBRT(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+}
+
 function OrdensPage() {
   const qc = useQueryClient();
   const [tab, setTab] = useState("todas");
+  const [filtroData, setFiltroData] = useState<string>(() => todayBRT());
   const [complete, setComplete] = useState<{ order: ProdOrder; produzida: number; perdas: number; obs: string } | null>(null);
   const [receive, setReceive] = useState<{ order: PurchOrder; qtd: number; preco: number } | null>(null);
   const [newPO, setNewPO] = useState<NewPO | null>(null);
   const [newProdO, setNewProdO] = useState<NewProdOrder | null>(null);
   const [newFillingO, setNewFillingO] = useState<NewFillingOrder | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ type: "prod" | "purch"; id: string; numero: number } | null>(null);
   useRealtime(["production_orders", "purchase_orders"], ["orders"]);
 
   const { data, isLoading } = useQuery({
@@ -192,6 +201,37 @@ function OrdensPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const deleteProd = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("production_orders").update({ deleted_at: new Date().toISOString() } as any).eq("id", id);
+      if (error) throw error;
+      await logActivity("ordens", "excluiu ordem de produção", id);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["stock"] });
+      toast.success("Ordem de produção excluída.");
+      setDeleteTarget(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const deletePurch = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("purchase_orders").update({ deleted_at: new Date().toISOString() } as any).eq("id", id);
+      if (error) throw error;
+      await logActivity("ordens", "excluiu ordem de compra", id);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      toast.success("Ordem de compra excluída.");
+      setDeleteTarget(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   if (isLoading || !data) return <div className="h-64 animate-pulse rounded-xl border border-border bg-card" />;
 
   const nm = (id: string | null | undefined) => (id && data.names[id]) || "—";
@@ -234,8 +274,12 @@ function OrdensPage() {
     });
   }
 
-  const prodRows = data.prod.filter((o) => tab === "todas" || (tab === "producao" && o.kind === "producao") || (tab === "recheio" && o.kind === "recheio"));
   const showPurch = tab === "todas" || tab === "compra";
+  const prodFilteredByDate = data.prod.filter((o) => toBRTDateString(o.created_at) === filtroData);
+  const purchFilteredByDate = data.purch.filter((o) => toBRTDateString(o.created_at) === filtroData);
+
+  const prodRows = prodFilteredByDate.filter((o) => tab === "todas" || (tab === "producao" && o.kind === "producao") || (tab === "recheio" && o.kind === "recheio"));
+  const purchRows = purchFilteredByDate;
 
   return (
     <div className="space-y-6">
@@ -255,10 +299,23 @@ function OrdensPage() {
         </TabsList>
       </Tabs>
 
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="size-4 text-muted-foreground" />
+          <Label className="text-xs whitespace-nowrap">Filtrar por data</Label>
+          <Input type="date" value={filtroData} onChange={(e) => setFiltroData(e.target.value)} className="w-40" />
+          <Button variant="outline" size="sm" onClick={() => setFiltroData(todayBRT())}>Hoje</Button>
+        </div>
+        <span className="text-xs text-muted-foreground">
+          {prodFilteredByDate.length + purchFilteredByDate.length} ordem(ns) em {new Date(`${filtroData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}
+          {filtroData !== todayBRT() && " — filtrado"}
+        </span>
+      </div>
+
       {(tab !== "compra") && (
         <section className="space-y-2">
-          <h3 className="font-display text-sm font-semibold text-muted-foreground">Ordens de Produção</h3>
-          {prodRows.length === 0 ? <EmptyState icon={ClipboardList} title="Nenhuma ordem de produção" /> : (
+          <h3 className="font-display text-sm font-semibold text-muted-foreground">Ordens de Produção — {new Date(`${filtroData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}</h3>
+          {prodRows.length === 0 ? <EmptyState icon={ClipboardList} title="Nenhuma ordem de produção" description={`Nenhuma ordem em ${new Date(`${filtroData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}.`} /> : (
             <div className="overflow-x-auto rounded-xl border border-border bg-card">
               <Table>
                 <TableHeader><TableRow>
@@ -281,6 +338,7 @@ function OrdensPage() {
                           {o.status === "pendente" && <Button size="sm" variant="outline" onClick={() => start.mutate(o.id)}><Play className="mr-1.5 size-3.5" /> Iniciar</Button>}
                           {o.status === "em_andamento" && <Button size="sm" onClick={() => setComplete({ order: o, produzida: o.quantidade_necessaria, perdas: 0, obs: "" })}><CheckCircle2 className="mr-1.5 size-3.5" /> Concluir</Button>}
                           <Button size="sm" variant="ghost" onClick={() => printProd(o)} title="Visualizar / Imprimir / PDF"><FileText className="size-4" /></Button>
+                          <Button size="sm" variant="ghost" onClick={() => setDeleteTarget({ type: "prod", id: o.id, numero: o.numero })} title="Excluir ordem" className="text-destructive hover:text-destructive hover:bg-destructive/10"><Trash2 className="size-4" /></Button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -294,8 +352,8 @@ function OrdensPage() {
 
       {showPurch && (
         <section className="space-y-2">
-          <h3 className="font-display text-sm font-semibold text-muted-foreground">Ordens de Compra</h3>
-          {data.purch.length === 0 ? <EmptyState icon={PackageCheck} title="Nenhuma ordem de compra" /> : (
+          <h3 className="font-display text-sm font-semibold text-muted-foreground">Ordens de Compra — {new Date(`${filtroData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}</h3>
+          {purchRows.length === 0 ? <EmptyState icon={PackageCheck} title="Nenhuma ordem de compra" description={`Nenhuma ordem em ${new Date(`${filtroData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}.`} /> : (
             <div className="overflow-x-auto rounded-xl border border-border bg-card">
               <Table>
                 <TableHeader><TableRow>
@@ -304,7 +362,7 @@ function OrdensPage() {
                   <TableHead>Prioridade</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Ações</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
-                  {data.purch.map((o) => (
+                  {purchRows.map((o) => (
                     <TableRow key={o.id}>
                       <TableCell className="tabular font-medium">#{o.numero}</TableCell>
                       <TableCell>{nm(o.ingredient_id)}</TableCell>
@@ -317,6 +375,7 @@ function OrdensPage() {
                         <div className="flex items-center justify-end gap-1">
                           {(o.status === "pendente" || o.status === "em_andamento") && <Button size="sm" onClick={() => setReceive({ order: o, qtd: o.quantidade_necessaria, preco: o.preco_medio })}><PackageCheck className="mr-1.5 size-3.5" /> Receber</Button>}
                           <Button size="sm" variant="ghost" onClick={() => printPurch(o)} title="Visualizar / Imprimir / PDF"><FileText className="size-4" /></Button>
+                          <Button size="sm" variant="ghost" onClick={() => setDeleteTarget({ type: "purch", id: o.id, numero: o.numero })} title="Excluir ordem" className="text-destructive hover:text-destructive hover:bg-destructive/10"><Trash2 className="size-4" /></Button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -529,6 +588,29 @@ function OrdensPage() {
               </DialogFooter>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Excluir ordem #{deleteTarget?.numero}</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Tem certeza que deseja excluir a ordem <span className="font-medium text-foreground">#{deleteTarget?.numero}</span> ({deleteTarget?.type === "prod" ? "produção" : "compra"})? Essa ação não pode ser desfeita.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancelar</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!deleteTarget) return;
+                if (deleteTarget.type === "prod") deleteProd.mutate(deleteTarget.id);
+                else deletePurch.mutate(deleteTarget.id);
+              }}
+              disabled={deleteProd.isPending || deletePurch.isPending}
+            >
+              {(deleteProd.isPending || deletePurch.isPending) && <Loader2 className="mr-2 size-4 animate-spin" />} Excluir
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
