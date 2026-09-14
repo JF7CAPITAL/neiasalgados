@@ -87,8 +87,8 @@ function RelatorioProducaoPage() {
   const [from, setFrom] = useState(iso(monthAgo));
   const [to, setTo] = useState(iso(today));
 
-  const fromTs = `${from}T00:00:00.000Z`;
-  const toTs = `${to}T23:59:59.999Z`;
+  const fromTs = new Date(`${from}T00:00:00-03:00`).toISOString();
+  const toTs = new Date(`${to}T23:59:59.999-03:00`).toISOString();
 
   const setPreset = (days: number | "month") => {
     const end = new Date();
@@ -121,7 +121,7 @@ function RelatorioProducaoPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["report-data", from, to],
     queryFn: async () => {
-      const [pm, im, fm] = await Promise.all([
+      const [pm, im, fm, anotaOrdersRes, prodConcluidasRes] = await Promise.all([
         supabase
           .from("product_movements")
           .select("id, product_id, quantidade, created_at, tipo")
@@ -141,55 +141,125 @@ function RelatorioProducaoPage() {
           .gte("created_at", fromTs)
           .lte("created_at", toTs)
           .eq("tipo", "saida"),
+        supabase
+          .from("anota_orders")
+          .select("id, pedido_em, imported_at, created_at, check_status")
+          .eq("check_status", 3)
+          .gte("imported_at", fromTs)
+          .lte("imported_at", toTs),
+        supabase
+          .from("production_orders")
+          .select("id, product_id, quantidade_produzida, quantidade_necessaria, created_at, fim, status, kind")
+          .eq("status", "concluida")
+          .eq("kind", "producao")
+          .is("deleted_at", null)
+          .gte("fim", fromTs)
+          .lte("fim", toTs),
       ]);
+
+      // Inclui também concluídas sem fim preenchido (fallback por created_at)
+      let prodConcluidas = (prodConcluidasRes.data ?? []) as any[];
+      {
+        const extra = await supabase
+          .from("production_orders")
+          .select("id, product_id, quantidade_produzida, quantidade_necessaria, created_at, fim, status, kind")
+          .eq("status", "concluida")
+          .eq("kind", "producao")
+          .is("deleted_at", null)
+          .is("fim", null)
+          .gte("created_at", fromTs)
+          .lte("created_at", toTs);
+        if (extra.data?.length) prodConcluidas = [...prodConcluidas, ...((extra.data ?? []) as any[])];
+      }
+
+      let anotaItems: { product_id: string | null; quantidade: number; order_id: string }[] = [];
+      const anotaIds = (anotaOrdersRes.data ?? []).map((o: any) => o.id);
+      if (anotaIds.length > 0) {
+        // Supabase limita IN a muitos ids; paginação se necessário mas período curto raramente passa de 200
+        const chunkSize = 200;
+        const allItems: typeof anotaItems = [];
+        for (let i = 0; i < anotaIds.length; i += chunkSize) {
+          const chunk = anotaIds.slice(i, i + chunkSize);
+          const r = await supabase
+            .from("anota_order_items")
+            .select("product_id, quantidade, order_id")
+            .in("order_id", chunk)
+            .not("product_id", "is", null);
+          if (r.data) allItems.push(...(r.data as typeof anotaItems));
+        }
+        anotaItems = allItems;
+      }
+
       return {
         product: (pm.data ?? []) as ProdMovement[],
         ingredient: (im.data ?? []) as IngMovement[],
         filling: (fm.data ?? []) as FilMovement[],
+        anotaOrders: (anotaOrdersRes.data ?? []) as { id: string; pedido_em: string | null; imported_at: string; created_at: string; check_status: number }[],
+        anotaItems,
+        prodConcluidas: prodConcluidas as { id: string; product_id: string | null; quantidade_produzida: number | null; quantidade_necessaria: number; created_at: string; fim: string | null; status: string; kind: string }[],
       };
     },
   });
 
   const report = useMemo(() => {
-    const prod = data?.product ?? [];
     const ing = data?.ingredient ?? [];
     const fil = data?.filling ?? [];
     const pn = names?.products ?? {};
     const inm = names?.ingredients ?? {};
     const fln = names?.fillings ?? {};
+    const anotaOrders = data?.anotaOrders ?? [];
+    const anotaItems = data?.anotaItems ?? [];
+    const prodConcluidas = data?.prodConcluidas ?? [];
 
-    const saidas = prod.filter((m) => m.tipo === "saida");
-    const entradas = prod.filter((m) => m.tipo === "entrada");
+    // Mapa order_id -> data/hora para horarios e série diária de saídas (pedidos finalizados)
+    const orderDateMap = new Map<string, string>();
+    for (const o of anotaOrders) {
+      const d = (o as any).pedido_em || (o as any).imported_at || (o as any).created_at;
+      if (d) orderDateMap.set(o.id, d);
+    }
 
-    const totalSaido = saidas.reduce((s, m) => s + Number(m.quantidade), 0);
-    const totalProduzido = entradas.reduce((s, m) => s + Number(m.quantidade), 0);
+    // Cards principais: salgados que saíram = pedidos Anota finalizados (check_status=3); Produzido = OPs concluídas
+    const totalSaido = anotaItems.reduce((s, it) => s + Number(it.quantidade ?? 0), 0);
+    const totalProduzido = prodConcluidas.reduce((s, o) => s + Number((o.quantidade_produzida ?? o.quantidade_necessaria ?? 0) as number), 0);
     const totalInsumos = ing.reduce((s, m) => s + Number(m.quantidade), 0);
     const totalRecheio = fil.reduce((s, m) => s + Number(m.quantidade), 0);
 
-    // Por produto
+    // Por produto: saído via anotaItems (finalizados), produzido via OPs concluídas
     const byProduct = new Map<string, { saido: number; produzido: number; horarios: string[] }>();
     const ensure = (id: string) => {
       if (!byProduct.has(id)) byProduct.set(id, { saido: 0, produzido: 0, horarios: [] });
       return byProduct.get(id)!;
     };
-    for (const m of saidas) {
-      const e = ensure(m.product_id);
-      e.saido += Number(m.quantidade);
-      e.horarios.push(fmtDateTime(m.created_at));
+    for (const it of anotaItems) {
+      if (!it.product_id) continue;
+      const e = ensure(it.product_id);
+      e.saido += Number(it.quantidade);
+      const d = orderDateMap.get(it.order_id);
+      if (d) e.horarios.push(fmtDateTime(d));
     }
-    for (const m of entradas) ensure(m.product_id).produzido += Number(m.quantidade);
+    for (const o of prodConcluidas) {
+      if (!o.product_id) continue;
+      ensure(o.product_id).produzido += Number(o.quantidade_produzida ?? o.quantidade_necessaria ?? 0);
+    }
     const products = [...byProduct.entries()]
       .map(([id, v]) => ({ nome: pn[id] ?? "—", ...v }))
       .sort((a, b) => b.saido - a.saido);
 
-    // Série diária
+    // Série diária: saida = finalizados por dia (pedido_em/imported_at), producao = concluídas por dia (fim/created_at)
     const daily = new Map<string, { saida: number; producao: number }>();
     const ensD = (d: string) => {
       if (!daily.has(d)) daily.set(d, { saida: 0, producao: 0 });
       return daily.get(d)!;
     };
-    for (const m of saidas) ensD(dayStr(m.created_at)).saida += Number(m.quantidade);
-    for (const m of entradas) ensD(dayStr(m.created_at)).producao += Number(m.quantidade);
+    for (const it of anotaItems) {
+      const d = orderDateMap.get(it.order_id);
+      if (!d) continue;
+      ensD(dayStr(d)).saida += Number(it.quantidade);
+    }
+    for (const o of prodConcluidas) {
+      const d = (o.fim || o.created_at) as string;
+      if (d) ensD(dayStr(d)).producao += Number(o.quantidade_produzida ?? o.quantidade_necessaria ?? 0);
+    }
     const dailyRows = [...daily.entries()]
       .map(([dia, v]) => ({ dia, ...v }))
       .sort((a, b) => {
