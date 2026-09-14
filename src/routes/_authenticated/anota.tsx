@@ -158,7 +158,9 @@ function AnotaPage() {
   const qc = useQueryClient();
   const [syncEnabled, setSyncEnabledState] = useState(() => isSyncEnabled());
   const [filtro, setFiltro] = useState<Filtro>("todos");
-  const [buscaData, setBuscaData] = useState(new Date().toISOString().split("T")[0]);
+  const [buscaData, setBuscaData] = useState(
+    new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }),
+  );
   const [buscaStatus, setBuscaStatus] = useState<"todos" | "producao" | "finalizados">("todos");
   const [buscaTexto, setBuscaTexto] = useState("");
 
@@ -279,8 +281,7 @@ function AnotaPage() {
           `cliente.ilike.%${termo}%,numero.ilike.%${termo}%,external_order_id.ilike.%${termo}%`,
         );
       } else {
-        const from = new Date(buscaData);
-        from.setHours(0, 0, 0, 0);
+        const from = new Date(`${buscaData}T00:00:00-03:00`);
         const to = new Date(from);
         to.setDate(to.getDate() + 1);
         query = query
@@ -1014,7 +1015,7 @@ function AnotaPage() {
               description={
                 buscaTexto.trim()
                   ? `Nenhum pedido corresponde a "${buscaTexto}".`
-                  : `Nenhum pedido sincronizado em ${new Date(buscaData).toLocaleDateString("pt-BR")}.`
+                  : `Nenhum pedido sincronizado em ${new Date(`${buscaData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}.`
               }
               icon={Search}
             />
