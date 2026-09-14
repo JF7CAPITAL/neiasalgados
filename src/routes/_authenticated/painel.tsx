@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -80,6 +80,27 @@ function DashboardPage() {
   const [comprasPendentesOpen, setComprasPendentesOpen] = useState(false);
   const [opExcludedIds, setOpExcludedIds] = useState<Set<string>>(new Set());
   const [comprasExcludedIds, setComprasExcludedIds] = useState<Set<string>>(new Set());
+  const reportOpenedAt = useRef(0);
+  const agendamentoOpenedAt = useRef(0);
+  const opPendentesOpenedAt = useRef(0);
+  const comprasPendentesOpenedAt = useRef(0);
+  const forecastOpenedAt = useRef(0);
+
+  useEffect(() => {
+    if (report) reportOpenedAt.current = Date.now();
+  }, [report]);
+  useEffect(() => {
+    if (agendamentoReport) agendamentoOpenedAt.current = Date.now();
+  }, [agendamentoReport]);
+  useEffect(() => {
+    if (opPendentesOpen) opPendentesOpenedAt.current = Date.now();
+  }, [opPendentesOpen]);
+  useEffect(() => {
+    if (comprasPendentesOpen) comprasPendentesOpenedAt.current = Date.now();
+  }, [comprasPendentesOpen]);
+  useEffect(() => {
+    if (forecastDrill) forecastOpenedAt.current = Date.now();
+  }, [forecastDrill]);
 
   useEffect(() => {
     const unsub = onSync((ts) => setLastSync(ts));
@@ -332,23 +353,47 @@ function DashboardPage() {
   );
 
   // Reusable dialog for any report — evita flicker open/close ao usar controlled open + renderização condicional
-  const ReportDialog = ({ open, title, table, onPrint, onClose }: { open: boolean; title?: string; table?: React.ReactNode; onPrint?: () => void; onClose: () => void }) => (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto" onOpenAutoFocus={(e) => e.preventDefault()}>
-        <DialogHeader>
-          <div className="flex items-center justify-between gap-4">
-            <DialogTitle>{title ?? ""}</DialogTitle>
-            {onPrint && (
-              <Button variant="outline" size="sm" onClick={onPrint}>
-                <Printer className="mr-1.5 size-4" /> Imprimir / PDF
-              </Button>
-            )}
-          </div>
-        </DialogHeader>
-        <div className="overflow-x-auto">{table}</div>
-      </DialogContent>
-    </Dialog>
-  );
+  const ReportDialog = ({
+    open,
+    title,
+    table,
+    onPrint,
+    onClose,
+    openedAtRef,
+  }: {
+    open: boolean;
+    title?: string;
+    table?: React.ReactNode;
+    onPrint?: () => void;
+    onClose: () => void;
+    openedAtRef: React.MutableRefObject<number>;
+  }) => {
+    const handleInteractOutside = (e: any) => {
+      if (Date.now() - openedAtRef.current < 600) e.preventDefault();
+    };
+    return (
+      <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+        <DialogContent
+          className="max-h-[85vh] max-w-4xl overflow-y-auto"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          onInteractOutside={handleInteractOutside}
+          onPointerDownOutside={handleInteractOutside}
+        >
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-4">
+              <DialogTitle>{title ?? ""}</DialogTitle>
+              {onPrint && (
+                <Button variant="outline" size="sm" onClick={onPrint}>
+                  <Printer className="mr-1.5 size-4" /> Imprimir / PDF
+                </Button>
+              )}
+            </div>
+          </DialogHeader>
+          <div className="overflow-x-auto">{table}</div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -643,12 +688,17 @@ function DashboardPage() {
         )}
       </div>
 
-      <ReportDialog open={!!report} title={report?.title} table={report?.table} onPrint={report?.onPrint} onClose={closeReport} />
-      <ReportDialog open={!!agendamentoReport} title={agendamentoReport?.title} table={agendamentoReport?.table} onPrint={agendamentoReport?.onPrint} onClose={closeReport} />
+      <ReportDialog open={!!report} title={report?.title} table={report?.table} onPrint={report?.onPrint} onClose={closeReport} openedAtRef={reportOpenedAt} />
+      <ReportDialog open={!!agendamentoReport} title={agendamentoReport?.title} table={agendamentoReport?.table} onPrint={agendamentoReport?.onPrint} onClose={closeReport} openedAtRef={agendamentoOpenedAt} />
 
       {/* Dialog OP Pendentes com toggle por ordem para PDF */}
       <Dialog open={opPendentesOpen} onOpenChange={setOpPendentesOpen}>
-        <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+        <DialogContent
+          className="max-h-[85vh] max-w-4xl overflow-y-auto"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          onInteractOutside={(e) => { if (Date.now() - opPendentesOpenedAt.current < 600) e.preventDefault(); }}
+          onPointerDownOutside={(e) => { if (Date.now() - opPendentesOpenedAt.current < 600) e.preventDefault(); }}
+        >
           <DialogHeader>
             <div className="flex items-center justify-between gap-4">
               <DialogTitle>Ordens de Produção Pendentes</DialogTitle>
@@ -753,7 +803,12 @@ function DashboardPage() {
 
       {/* Dialog Compras Pendentes com toggle por ordem para PDF */}
       <Dialog open={comprasPendentesOpen} onOpenChange={setComprasPendentesOpen}>
-        <DialogContent className="max-h-[85vh] max-w-4xl overflow-y-auto">
+        <DialogContent
+          className="max-h-[85vh] max-w-4xl overflow-y-auto"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          onInteractOutside={(e) => { if (Date.now() - comprasPendentesOpenedAt.current < 600) e.preventDefault(); }}
+          onPointerDownOutside={(e) => { if (Date.now() - comprasPendentesOpenedAt.current < 600) e.preventDefault(); }}
+        >
           <DialogHeader>
             <div className="flex items-center justify-between gap-4">
               <DialogTitle>Compras Pendentes</DialogTitle>
@@ -849,7 +904,12 @@ function DashboardPage() {
       </Dialog>
 
       <Dialog open={!!forecastDrill} onOpenChange={(o) => !o && setForecastDrill(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent
+          className="max-w-lg"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          onInteractOutside={(e) => { if (Date.now() - forecastOpenedAt.current < 600) e.preventDefault(); }}
+          onPointerDownOutside={(e) => { if (Date.now() - forecastOpenedAt.current < 600) e.preventDefault(); }}
+        >
           <DialogHeader>
             <div className="flex items-center justify-between">
               <DialogTitle>Previsão 7 dias — {forecastDrill?.nome}</DialogTitle>
