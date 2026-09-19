@@ -100,9 +100,13 @@ function escHtml(v: unknown): string {
 function tableHtml(headers: string[], rows: (string | number)[][], align?: ("left" | "right")[]): string {
   const th = headers.map((h, i) => `<th style="text-align:${align?.[i] === "right" ? "right" : "left"}">${escHtml(h)}</th>`).join("");
   const body = rows.length
-    ? rows.map((row) =>
-        `<tr>${row.map((cell, i) => `<td style="text-align:${align?.[i] === "right" ? "right" : "left"}">${escHtml(cell)}</td>`).join("")}</tr>`
-      ).join("")
+    ? rows
+        .map((row, idx) => {
+          const isTotal = idx === rows.length - 1 && String(row[0]).trim().toLowerCase().startsWith("total");
+          const trStyle = isTotal ? `font-weight:700;background:#faf5ee;border-top:2px solid #b45309` : "";
+          return `<tr style="${trStyle}">${row.map((cell, i) => `<td style="text-align:${align?.[i] === "right" ? "right" : "left"}">${escHtml(cell)}</td>`).join("")}</tr>`;
+        })
+        .join("")
     : `<tr><td colspan="${headers.length}" style="text-align:center;color:#999;padding:14px">Sem dados.</td></tr>`;
   return `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px">
     <thead><tr>${th}</tr></thead>

@@ -188,6 +188,13 @@ function DashboardPage() {
   const productGroups: { id: string; nome: string; ordem: number }[] = (data as any).productGroups ?? [];
   const groupOrderMap = new Map<string, number>();
   productGroups.forEach((g) => groupOrderMap.set(g.id, g.ordem ?? 0));
+  const isBebidaGroup = (groupId: string | null | undefined) => {
+    if (!groupId) return false;
+    const g = productGroups.find((gr) => gr.id === groupId);
+    if (!g) return false;
+    const n = String(g.nome).trim().toLowerCase();
+    return n === "bebidas" || n === "bebida" || n === "refrigerante" || n.includes("bebida") || n.includes("refrigerante");
+  };
   // Ordenação padronizada: segue exatamente a organização da aba Produtos (grupo.ordem -> produto.ordem -> nome)
   const products = [...(productsRaw as any[])].sort((a: any, b: any) => {
     const ga = a.group_id ? (groupOrderMap.get(a.group_id) ?? 999) : 999;
@@ -312,12 +319,43 @@ function DashboardPage() {
         situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
       };
     });
-    printStockReport(rows);
+    const filteredForTotal = (products as any[]).filter((p) => !isBebidaGroup((p as any).group_id));
+    const totalAtual = filteredForTotal.reduce((s, p) => s + Number((p as any).quantidade_atual), 0);
+    const totalReservado = filteredForTotal.reduce((s, p) => s + (scheduledImpact.get((p as any).id) ?? 0), 0);
+    const totalDisp = totalAtual - totalReservado;
+    const totalMin = filteredForTotal.reduce((s, p) => s + Number((p as any).estoque_minimo), 0);
+    const totalIdeal = filteredForTotal.reduce((s, p) => s + Number((p as any).estoque_ideal), 0);
+    const rowsWithTotal: any = [
+      ...rows,
+      {
+        nome: `Total (${filteredForTotal.length} ${filteredForTotal.length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`,
+        atual: totalAtual,
+        reservado: totalReservado,
+        disponivel: totalDisp,
+        minimo: totalMin,
+        ideal: totalIdeal,
+        situacao: "",
+      },
+    ];
+    printStockReport(rowsWithTotal);
   };
 
-  const pBelowMin = () => printBelowMinimumReport(produtosAbaixo.map((p) => ({ nome: p.nome, atual: Number(p.quantidade_atual), minimo: Number(p.estoque_minimo) })));
+  const pBelowMin = () => {
+    const filtered = (produtosAbaixo as any[]).filter((p) => !isBebidaGroup(p.group_id));
+    const rows = produtosAbaixo.map((p) => ({ nome: p.nome, atual: Number(p.quantidade_atual), minimo: Number(p.estoque_minimo) }));
+    const totalAtual = filtered.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+    const totalMin = filtered.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+    const rowsWithTotal: any = [...rows, { nome: `Total (${filtered.length} ${filtered.length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`, atual: totalAtual, minimo: totalMin }];
+    printBelowMinimumReport(rowsWithTotal);
+  };
 
-  const pInsumosBelowMin = () => printBelowMinimumReport(insumosAbaixo.map((i) => ({ nome: i.nome, atual: Number(i.quantidade_atual), minimo: Number(i.estoque_minimo) })), "Insumos Abaixo do Mínimo");
+  const pInsumosBelowMin = () => {
+    const rows = insumosAbaixo.map((i) => ({ nome: i.nome, atual: Number(i.quantidade_atual), minimo: Number(i.estoque_minimo) }));
+    const totalAtual = insumosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+    const totalMin = insumosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+    const rowsWithTotal: any = [...rows, { nome: `Total (${insumosAbaixo.length} ${insumosAbaixo.length === 1 ? "insumo" : "insumos"})`, atual: totalAtual, minimo: totalMin }];
+    printBelowMinimumReport(rowsWithTotal, "Insumos Abaixo do Mínimo");
+  };
 
   const pConsumoHoje = () => {
     const rows = movements
@@ -347,13 +385,6 @@ function DashboardPage() {
 
   const pColabsTurno = () => printColabsTurnoReport(colabsTurno.map((c) => ({ nome: c.nome, cargo: c.cargo ?? "", turno: c.turno ?? "" })));
 
-  const isBebidaGroup = (groupId: string | null | undefined) => {
-    if (!groupId) return false;
-    const g = (productGroups as any[]).find((gr) => gr.id === groupId);
-    if (!g) return false;
-    const n = String(g.nome).trim().toLowerCase();
-    return n === "bebidas" || n === "bebida" || n === "refrigerante" || n.includes("bebida") || n.includes("refrigerante");
-  };
   const ProdTable = ({ list }: { list: typeof products }) => {
     const filteredForTotal = list.filter((p: any) => !isBebidaGroup(p.group_id));
     const totalAtual = filteredForTotal.reduce((s, p) => s + Number(p.quantidade_atual), 0);
@@ -503,13 +534,23 @@ function DashboardPage() {
                   </table>
                 </div>
               ),
-              onPrint: () => printReport("Estoque Projetado", rows.map((r) => ({ ...r, atual: String(r.atual), producao: String(r.producao), agendado: String(r.agendado), projetado: String(r.projetado) })), [
-                { key: "nome", label: "Produto" },
-                { key: "atual", label: "Atual" },
-                { key: "producao", label: "Produção" },
-                { key: "agendado", label: "Agendado" },
-                { key: "projetado", label: "Projetado" },
-              ]),
+              onPrint: () => {
+                const totalAtual = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.atual), 0);
+                const totalProd = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.producao), 0);
+                const totalAg = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.agendado), 0);
+                const totalProj = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.projetado), 0);
+                const rowsForPrint = [
+                  ...rows.map((r) => ({ ...r, atual: String(r.atual), producao: String(r.producao), agendado: String(r.agendado), projetado: String(r.projetado) })),
+                  { nome: `Total (${(rowsForTotal as any[]).length} ${(rowsForTotal as any[]).length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`, atual: String(totalAtual), producao: String(totalProd), agendado: String(totalAg), projetado: String(totalProj) },
+                ];
+                return printReport("Estoque Projetado", rowsForPrint, [
+                  { key: "nome", label: "Produto" },
+                  { key: "atual", label: "Atual" },
+                  { key: "producao", label: "Produção" },
+                  { key: "agendado", label: "Agendado" },
+                  { key: "projetado", label: "Projetado" },
+                ]);
+              },
             });
           }} />
         <KpiCard label="Produtos abaixo do mín." value={fmtNum(produtosAbaixo.length)} hint="requer produção" icon={AlertTriangle} tone={produtosAbaixo.length ? "danger" : "success"}
@@ -624,12 +665,21 @@ function DashboardPage() {
                   </div>
                 </div>
               ),
-              onPrint: () => printReport("Pedidos Agendados — Impacto no Estoque", rows.map((r) => ({ ...r, atual: String(r.atual), impacto: String(r.impacto), saldo: String(r.saldo) })), [
-                { key: "produto", label: "Produto" },
-                { key: "atual", label: "Estoque atual" },
-                { key: "impacto", label: "Agendado" },
-                { key: "saldo", label: "Saldo final" },
-              ]),
+              onPrint: () => {
+                const totalAtual = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.atual), 0);
+                const totalImp = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.impacto), 0);
+                const totalSaldo = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.saldo), 0);
+                const rowsForPrint = [
+                  ...rows.map((r) => ({ ...r, atual: String(r.atual), impacto: String(r.impacto), saldo: String(r.saldo) })),
+                  { produto: `Total (${(rowsForTotal as any[]).length} ${(rowsForTotal as any[]).length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`, atual: String(totalAtual), impacto: String(totalImp), saldo: String(totalSaldo) },
+                ];
+                return printReport("Pedidos Agendados — Impacto no Estoque", rowsForPrint, [
+                  { key: "produto", label: "Produto" },
+                  { key: "atual", label: "Estoque atual" },
+                  { key: "impacto", label: "Agendado" },
+                  { key: "saldo", label: "Saldo final" },
+                ]);
+              },
             });
           }}
         />
