@@ -142,6 +142,8 @@ async function logWebhookEvent(
 }
 
 export const Route = createFileRoute("/api/whatsapp-webhook")({
+  ssr: false,
+  component: () => null,
   server: {
     handlers: {
       POST: async ({ request }) => {

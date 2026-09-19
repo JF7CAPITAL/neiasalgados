@@ -17,6 +17,8 @@ import { processAnotaWebhookOrder } from "@/lib/anota.functions";
 // ---------------------------------------------------------------------------
 
 export const Route = createFileRoute("/api/anota-webhook")({
+  ssr: false,
+  component: () => null,
   server: {
     handlers: {
       POST: async ({ request }) => {
