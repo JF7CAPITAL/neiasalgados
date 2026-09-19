@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -56,11 +56,39 @@ export const Route = createFileRoute("/_authenticated/painel")({
   component: DashboardPage,
 });
 
-type ReportDialog = {
+type ReportDialogState = {
   title: string;
   table: React.ReactNode;
   onPrint: () => void;
 } | null;
+
+function ReportDialog({ open, title, table, onPrint, onClose, openedAtRef }: { open: boolean; title?: string; table?: React.ReactNode; onPrint?: () => void; onClose: () => void; openedAtRef: React.MutableRefObject<number>; }) {
+  const handleInteractOutside = (e: any) => {
+    if (Date.now() - openedAtRef.current < 600) e.preventDefault();
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        className="max-h-[85vh] max-w-4xl overflow-y-auto"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        onInteractOutside={handleInteractOutside}
+        onPointerDownOutside={handleInteractOutside}
+      >
+        <DialogHeader>
+          <div className="flex items-center justify-between gap-4">
+            <DialogTitle>{title ?? ""}</DialogTitle>
+            {onPrint && (
+              <Button variant="outline" size="sm" onClick={onPrint}>
+                <Printer className="mr-1.5 size-4" /> Imprimir / PDF
+              </Button>
+            )}
+          </div>
+        </DialogHeader>
+        <div className="overflow-x-auto">{table}</div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 function startOf(period: "hoje" | "semana" | "mes"): Date {
   const d = new Date();
@@ -72,10 +100,13 @@ function startOf(period: "hoje" | "semana" | "mes"): Date {
 
 function DashboardPage() {
   const [lastSync, setLastSync] = useState(getLastSync());
-  const [report, setReport] = useState<ReportDialog>(null);
+  const [report, setReport] = useState<ReportDialogState>(null);
   const [verAgendados, setVerAgendados] = useState(false);
-  const [agendamentoReport, setAgendamentoReport] = useState<ReportDialog>(null);
+  const [agendamentoReport, setAgendamentoReport] = useState<ReportDialogState>(null);
   const [forecastDrill, setForecastDrill] = useState<{ nome: string; productId: string } | null>(null);
+
+  // Evita flicker: ReportDialog é agora estável (definido fora do componente) e o conteúdo é derivado do estado atual,
+  // não de JSX capturado no momento do clique. Assim, realtime updates não causam remount do Dialog.
   const [opPendentesOpen, setOpPendentesOpen] = useState(false);
   const [comprasPendentesOpen, setComprasPendentesOpen] = useState(false);
   const [opExcludedIds, setOpExcludedIds] = useState<Set<string>>(new Set());
@@ -306,6 +337,144 @@ function DashboardPage() {
 
   const closeReport = () => { setReport(null); setAgendamentoReport(null); setForecastDrill(null); };
 
+  const reportContent = useMemo(() => {
+    if (!report) return null;
+    switch (report.title) {
+      case "Estoque de Salgados":
+        return { table: <div className="space-y-4"><p className="text-sm text-muted-foreground">A coluna "Reservado" mostra a quantidade agendada em pedidos futuros (agendados).</p><ProdTable list={products} /></div>, onPrint: pStock };
+      case "Estoque Projetado": {
+        const rows = products
+          .map((p) => ({
+            id: p.id,
+            nome: p.nome,
+            group_id: (p as any).group_id,
+            atual: Number(p.quantidade_atual),
+            producao: prodOrders
+              .filter((o) => (o.product_id === p.id || o.filling_id === p.id) && (o.status === "pendente" || o.status === "em_andamento"))
+              .reduce((s, o) => s + Number(o.quantidade_necessaria ?? 0), 0),
+            agendado: scheduledImpact.get(p.id) ?? 0,
+          }))
+          .map((r) => ({ ...r, projetado: r.atual + r.producao - r.agendado }));
+        const rowsForTotal = rows.filter((r: any) => !isBebidaGroup(r.group_id));
+        return {
+          table: (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">Clique em um produto para ver a previsão de saída dos próximos 7 dias.</p>
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2">Produto</th>
+                    <th className="px-3 py-2 text-right">Atual</th>
+                    <th className="px-3 py-2 text-right">Produção</th>
+                    <th className="px-3 py-2 text-right">Agendado</th>
+                    <th className="px-3 py-2 text-right">Projetado</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {rows.map((r) => (
+                    <tr key={r.id} className="hover:bg-muted/30 cursor-pointer" onClick={(e) => { e.stopPropagation(); setTimeout(() => setForecastDrill({ nome: r.nome, productId: r.id }), 0); }}>
+                      <td className="px-3 py-2 font-medium underline-offset-2 hover:underline">{r.nome}</td>
+                      <td className="px-3 py-2 text-right tabular">{fmtNum(r.atual)}</td>
+                      <td className="px-3 py-2 text-right tabular text-info">{fmtNum(r.producao)}</td>
+                      <td className="px-3 py-2 text-right tabular text-destructive">{fmtNum(r.agendado)}</td>
+                      <td className="px-3 py-2 text-right tabular font-semibold">{fmtNum(r.projetado)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-muted/50 font-semibold border-t-2">
+                    <td className="px-3 py-2 font-bold">Total ({rowsForTotal.length} {rowsForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></td>
+                    <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.atual, 0))}</td>
+                    <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.producao, 0))}</td>
+                    <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.agendado, 0))}</td>
+                    <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.projetado, 0))}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ),
+          onPrint: () => {
+            const totalAtual = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.atual), 0);
+            const totalProd = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.producao), 0);
+            const totalAg = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.agendado), 0);
+            const totalProj = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.projetado), 0);
+            const rowsForPrint = [
+              ...rows.map((r) => ({ ...r, atual: String(r.atual), producao: String(r.producao), agendado: String(r.agendado), projetado: String(r.projetado) })),
+              { nome: `Total (${(rowsForTotal as any[]).length} ${(rowsForTotal as any[]).length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`, atual: String(totalAtual), producao: String(totalProd), agendado: String(totalAg), projetado: String(totalProj) },
+            ];
+            return printReport("Estoque Projetado", rowsForPrint, [
+              { key: "nome", label: "Produto" },
+              { key: "atual", label: "Atual" },
+              { key: "producao", label: "Produção" },
+              { key: "agendado", label: "Agendado" },
+              { key: "projetado", label: "Projetado" },
+            ]);
+          },
+        };
+      }
+      case "Produtos Abaixo do Mínimo": {
+        const filteredForTotal = (produtosAbaixo as any[]).filter((p) => !isBebidaGroup((p as any).group_id));
+        return {
+          table: produtosAbaixo.length ? (
+            <Table>
+              <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader>
+              <TableBody>
+                {produtosAbaixo.map((p) => (<TableRow key={p.id}><TableCell className="font-medium">{p.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(p.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(p.estoque_minimo)}</TableCell></TableRow>))}
+                <TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({filteredForTotal.length} {filteredForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></TableCell><TableCell className="text-right tabular font-bold">{fmtNum(filteredForTotal.reduce((s, p) => s + Number((p as any).quantidade_atual), 0))}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(filteredForTotal.reduce((s, p) => s + Number((p as any).estoque_minimo), 0))}</TableCell></TableRow>
+              </TableBody>
+            </Table>
+          ) : <p className="py-8 text-center text-muted-foreground">Nenhum produto abaixo do mínimo.</p>,
+          onPrint: pBelowMin,
+        };
+      }
+      case "Insumos Abaixo do Mínimo":
+        return {
+          table: insumosAbaixo.length ? (
+            <Table><TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader><TableBody>{insumosAbaixo.map((i) => (<TableRow key={i.id}><TableCell className="font-medium">{i.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(i.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(i.estoque_minimo)}</TableCell></TableRow>))}<TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({insumosAbaixo.length} {insumosAbaixo.length === 1 ? "insumo" : "insumos"})</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(insumosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0))}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(insumosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0))}</TableCell></TableRow></TableBody></Table>
+          ) : <p className="py-8 text-center text-muted-foreground">Nenhum insumo abaixo do mínimo.</p>,
+          onPrint: pInsumosBelowMin,
+        };
+      case "Ordens em Andamento":
+        return {
+          table: ordensAndamento.length ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Necessário</TableHead><TableHead>Prioridade</TableHead></TableRow></TableHeader><TableBody>{ordensAndamento.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria)}</TableCell><TableCell>{o.prioridade}</TableCell></TableRow>))}</TableBody></Table> : <p className="py-8 text-center text-muted-foreground">Nenhuma OP em andamento.</p>,
+          onPrint: () => pOP("OP em Andamento", ordensAndamento),
+        };
+      case "Ordens Concluídas":
+        return {
+          table: ordensConcluidas.length ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{ordensConcluidas.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table> : <p className="py-8 text-center text-muted-foreground">Nenhuma OP concluída.</p>,
+          onPrint: () => pOP("OP Concluídas", ordensConcluidas),
+        };
+      case "Produzido Hoje": {
+        const from = startOf("hoje");
+        const hoje = prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= from && o.kind === "producao");
+        return {
+          table: hoje.length ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{hoje.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table> : <p className="py-8 text-center text-muted-foreground">Nada produzido hoje.</p>,
+          onPrint: () => pOP("Produzido Hoje", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("hoje") && o.kind === "producao")),
+        };
+      }
+      case "Produzido Semana": {
+        const from = startOf("semana");
+        const week = prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= from && o.kind === "producao");
+        return {
+          table: week.length ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{week.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table> : <p className="py-8 text-center text-muted-foreground">Nada produzido na semana.</p>,
+          onPrint: () => pOP("Produzido na Semana", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("semana") && o.kind === "producao")),
+        };
+      }
+      case "Consumo Hoje": {
+        const hoje = movements.filter((m) => isConsumoAnota(m, "hoje"));
+        return {
+          table: hoje.length ? <Table><TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Quantidade</TableHead><TableHead>Horário</TableHead></TableRow></TableHeader><TableBody>{hoje.map((m, i) => (<TableRow key={m.id || i}><TableCell className="font-medium">{nm(m.product_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(m.quantidade)}</TableCell><TableCell className="text-xs text-muted-foreground">{fmtDateTime(m.created_at)}</TableCell></TableRow>))}</TableBody></Table> : <p className="py-8 text-center text-muted-foreground">Nenhum consumo hoje.</p>,
+          onPrint: pConsumoHoje,
+        };
+      }
+      case "Colaboradores em Turno":
+        return {
+          table: colabsTurno.length ? <Table><TableHeader><TableRow><TableHead>Nome</TableHead><TableHead>Cargo</TableHead><TableHead>Turno</TableHead></TableRow></TableHeader><TableBody>{colabsTurno.map((c) => (<TableRow key={c.id}><TableCell className="font-medium">{c.nome}</TableCell><TableCell>{c.cargo || "—"}</TableCell><TableCell>{c.turno || "—"}</TableCell></TableRow>))}</TableBody></Table> : <p className="py-8 text-center text-muted-foreground">Nenhum colaborador em turno.</p>,
+          onPrint: pColabsTurno,
+        };
+      default:
+        return null;
+    }
+  }, [report, products, prodOrders, scheduledImpact, produtosAbaixo, insumosAbaixo, ordensAndamento, ordensConcluidas, colabsTurno, movements, isBebidaGroup, pStock, pBelowMin, pInsumosBelowMin, pConsumoHoje, pOP, pColabsTurno]);
+
   const pStock = () => {
     const rows = products.map((p) => {
       const reservado = scheduledImpact.get(p.id) ?? 0;
@@ -429,49 +598,6 @@ function DashboardPage() {
     );
   };
 
-  // Reusable dialog for any report — evita flicker open/close ao usar controlled open + renderização condicional
-  const ReportDialog = ({
-    open,
-    title,
-    table,
-    onPrint,
-    onClose,
-    openedAtRef,
-  }: {
-    open: boolean;
-    title?: string;
-    table?: React.ReactNode;
-    onPrint?: () => void;
-    onClose: () => void;
-    openedAtRef: React.MutableRefObject<number>;
-  }) => {
-    const handleInteractOutside = (e: any) => {
-      if (Date.now() - openedAtRef.current < 600) e.preventDefault();
-    };
-    return (
-      <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-        <DialogContent
-          className="max-h-[85vh] max-w-4xl overflow-y-auto"
-          onOpenAutoFocus={(e) => e.preventDefault()}
-          onInteractOutside={handleInteractOutside}
-          onPointerDownOutside={handleInteractOutside}
-        >
-          <DialogHeader>
-            <div className="flex items-center justify-between gap-4">
-              <DialogTitle>{title ?? ""}</DialogTitle>
-              {onPrint && (
-                <Button variant="outline" size="sm" onClick={onPrint}>
-                  <Printer className="mr-1.5 size-4" /> Imprimir / PDF
-                </Button>
-              )}
-            </div>
-          </DialogHeader>
-          <div className="overflow-x-auto">{table}</div>
-        </DialogContent>
-      </Dialog>
-    );
-  };
-
   return (
     <div className="space-y-6">
       <PageHeader
@@ -482,118 +608,13 @@ function DashboardPage() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Estoque de salgados" value={fmtNum(verAgendados ? estoqueTotal - totalScheduledImpact : estoqueTotal)} hint={verAgendados ? `${fmtNum(totalScheduledImpact)} unidades em agendamentos` : "unidades em estoque"} icon={Boxes} tone={verAgendados ? "warning" : "default"}
-          onClick={() => setReport({ title: "Estoque de Salgados", table: <div className="space-y-4"><p className="text-sm text-muted-foreground">A coluna "Reservado" mostra a quantidade agendada em pedidos futuros (agendados).</p><ProdTable list={products} /></div>, onPrint: pStock })} />
+          onClick={() => setReport({ title: "Estoque de Salgados" } as any)} />
         <KpiCard label="Estoque projetado" value={fmtNum(projetado)} hint={`+${fmtNum(producaoAberta)} produção -${fmtNum(totalScheduledImpact)} agendados`} icon={PackageCheck} tone="info"
-          onClick={() => {
-            const rows = products
-              .map((p) => ({
-                id: p.id,
-                nome: p.nome,
-                group_id: (p as any).group_id,
-                atual: Number(p.quantidade_atual),
-                producao: prodOrders
-                  .filter((o) => (o.product_id === p.id || o.filling_id === p.id) && (o.status === "pendente" || o.status === "em_andamento"))
-                  .reduce((s, o) => s + Number(o.quantidade_necessaria ?? 0), 0),
-                agendado: scheduledImpact.get(p.id) ?? 0,
-              }))
-              .map((r) => ({ ...r, projetado: r.atual + r.producao - r.agendado }));
-            const rowsForTotal = rows.filter((r: any) => !isBebidaGroup(r.group_id));
-            setReport({
-              title: "Estoque Projetado",
-              table: (
-                <div className="space-y-4">
-                  <p className="text-sm text-muted-foreground">Clique em um produto para ver a previsão de saída dos próximos 7 dias.</p>
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                      <tr>
-                        <th className="px-3 py-2">Produto</th>
-                        <th className="px-3 py-2 text-right">Atual</th>
-                        <th className="px-3 py-2 text-right">Produção</th>
-                        <th className="px-3 py-2 text-right">Agendado</th>
-                        <th className="px-3 py-2 text-right">Projetado</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {rows.map((r) => (
-                        <tr key={r.id} className="hover:bg-muted/30 cursor-pointer" onClick={(e) => { e.stopPropagation(); setTimeout(() => setForecastDrill({ nome: r.nome, productId: r.id }), 0); }}>
-                          <td className="px-3 py-2 font-medium underline-offset-2 hover:underline">{r.nome}</td>
-                          <td className="px-3 py-2 text-right tabular">{fmtNum(r.atual)}</td>
-                          <td className="px-3 py-2 text-right tabular text-info">{fmtNum(r.producao)}</td>
-                          <td className="px-3 py-2 text-right tabular text-destructive">{fmtNum(r.agendado)}</td>
-                          <td className="px-3 py-2 text-right tabular font-semibold">{fmtNum(r.projetado)}</td>
-                        </tr>
-                      ))}
-                      <tr className="bg-muted/50 font-semibold border-t-2">
-                        <td className="px-3 py-2 font-bold">Total ({rowsForTotal.length} {rowsForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.atual, 0))}</td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.producao, 0))}</td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.agendado, 0))}</td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.projetado, 0))}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              ),
-              onPrint: () => {
-                const totalAtual = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.atual), 0);
-                const totalProd = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.producao), 0);
-                const totalAg = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.agendado), 0);
-                const totalProj = (rowsForTotal as any[]).reduce((s, r) => s + Number(r.projetado), 0);
-                const rowsForPrint = [
-                  ...rows.map((r) => ({ ...r, atual: String(r.atual), producao: String(r.producao), agendado: String(r.agendado), projetado: String(r.projetado) })),
-                  { nome: `Total (${(rowsForTotal as any[]).length} ${(rowsForTotal as any[]).length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`, atual: String(totalAtual), producao: String(totalProd), agendado: String(totalAg), projetado: String(totalProj) },
-                ];
-                return printReport("Estoque Projetado", rowsForPrint, [
-                  { key: "nome", label: "Produto" },
-                  { key: "atual", label: "Atual" },
-                  { key: "producao", label: "Produção" },
-                  { key: "agendado", label: "Agendado" },
-                  { key: "projetado", label: "Projetado" },
-                ]);
-              },
-            });
-          }} />
+          onClick={() => setReport({ title: "Estoque Projetado" } as any)} />
         <KpiCard label="Produtos abaixo do mín." value={fmtNum(produtosAbaixo.length)} hint="requer produção" icon={AlertTriangle} tone={produtosAbaixo.length ? "danger" : "success"}
-          onClick={() => setReport({
-            title: "Produtos Abaixo do Mínimo",
-            table: produtosAbaixo.length
-              ? (() => {
-                  const filteredForTotal = (produtosAbaixo as any[]).filter((p: any) => !isBebidaGroup(p.group_id));
-                  const totalAtual = filteredForTotal.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-                  const totalMin = filteredForTotal.reduce((s, p) => s + Number(p.estoque_minimo), 0);
-                  return (
-                    <Table>
-                      <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader>
-                      <TableBody>
-                        {produtosAbaixo.map((p) => (<TableRow key={p.id}><TableCell className="font-medium">{p.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(p.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(p.estoque_minimo)}</TableCell></TableRow>))}
-                        <TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({filteredForTotal.length} {filteredForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalMin)}</TableCell></TableRow>
-                      </TableBody>
-                    </Table>
-                  );
-                })()
-              : <p className="py-8 text-center text-muted-foreground">Nenhum produto abaixo do mínimo.</p>,
-            onPrint: pBelowMin,
-          })} />
+          onClick={() => setReport({ title: "Produtos Abaixo do Mínimo" } as any)} />
         <KpiCard label="Insumos abaixo do mín." value={fmtNum(insumosAbaixo.length)} hint="requer compra" icon={Warehouse} tone={insumosAbaixo.length ? "danger" : "success"}
-          onClick={() => setReport({
-            title: "Insumos Abaixo do Mínimo",
-            table: insumosAbaixo.length
-              ? (() => {
-                  const totalAtual = insumosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-                  const totalMin = insumosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0);
-                  return (
-                    <Table>
-                      <TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader>
-                      <TableBody>
-                        {insumosAbaixo.map((i) => (<TableRow key={i.id}><TableCell className="font-medium">{i.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(i.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(i.estoque_minimo)}</TableCell></TableRow>))}
-                        <TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({insumosAbaixo.length} {insumosAbaixo.length === 1 ? "insumo" : "insumos"})</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalMin)}</TableCell></TableRow>
-                      </TableBody>
-                    </Table>
-                  );
-                })()
-              : <p className="py-8 text-center text-muted-foreground">Nenhum insumo abaixo do mínimo.</p>,
-            onPrint: pInsumosBelowMin,
-          })} />
+          onClick={() => setReport({ title: "Insumos Abaixo do Mínimo" } as any)} />
       </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -687,21 +708,9 @@ function DashboardPage() {
           hint={ordensPendentes.length ? `${fmtNum(ordensPendentes.filter((o) => !opExcludedIds.has(o.id)).length)} de ${fmtNum(ordensPendentes.length)} no PDF` : undefined}
           onClick={() => setOpPendentesOpen(true)} />
         <KpiCard label="OP em andamento" value={fmtNum(emProducao)} icon={Factory} tone="info"
-          onClick={() => setReport({
-            title: "Ordens em Andamento",
-            table: ordensAndamento.length
-              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Necessário</TableHead><TableHead>Prioridade</TableHead></TableRow></TableHeader><TableBody>{ordensAndamento.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_necessaria)}</TableCell><TableCell>{o.prioridade}</TableCell></TableRow>))}</TableBody></Table>
-              : <p className="py-8 text-center text-muted-foreground">Nenhuma OP em andamento.</p>,
-            onPrint: () => pOP("OP em Andamento", ordensAndamento),
-          })} />
+          onClick={() => setReport({ title: "Ordens em Andamento" } as any)} />
         <KpiCard label="OP concluídas" value={fmtNum(ordensConcluidas.length)} icon={PackageCheck} tone="success"
-          onClick={() => setReport({
-            title: "Ordens Concluídas",
-            table: ordensConcluidas.length
-              ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{ordensConcluidas.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table>
-              : <p className="py-8 text-center text-muted-foreground">Nenhuma OP concluída.</p>,
-            onPrint: () => pOP("OP Concluídas", ordensConcluidas),
-          })} />
+          onClick={() => setReport({ title: "Ordens Concluídas" } as any)} />
         <KpiCard label="Compras pendentes" value={fmtNum(comprasPendentes.length)} icon={ShoppingCart} tone="warning"
           hint={comprasPendentes.length ? `${fmtNum(comprasPendentes.filter((o) => !comprasExcludedIds.has(o.id)).length)} de ${fmtNum(comprasPendentes.length)} no PDF` : undefined}
           onClick={() => setComprasPendentesOpen(true)} />
@@ -709,48 +718,13 @@ function DashboardPage() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Produzido hoje" value={fmtNum(producaoDesde("hoje"))} hint="unidades" icon={Factory} tone="success"
-          onClick={() => setReport({
-            title: "Produção de Hoje",
-            table: (() => {
-              const from = startOf("hoje");
-              const hoje = prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= from && o.kind === "producao");
-              return hoje.length
-                ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{hoje.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table>
-                : <p className="py-8 text-center text-muted-foreground">Nada produzido hoje.</p>;
-            })(),
-            onPrint: () => pOP("Produzido Hoje", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("hoje") && o.kind === "producao")),
-          })} />
+          onClick={() => setReport({ title: "Produção de Hoje" } as any)} />
         <KpiCard label="Produzido na semana" value={fmtNum(producaoDesde("semana"))} icon={Factory} tone="success"
-          onClick={() => setReport({
-            title: "Produção da Semana",
-            table: (() => {
-              const from = startOf("semana");
-              const week = prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= from && o.kind === "producao");
-              return week.length
-                ? <Table><TableHeader><TableRow><TableHead>Nº</TableHead><TableHead>Item</TableHead><TableHead className="text-right">Produzido</TableHead></TableRow></TableHeader><TableBody>{week.map((o) => (<TableRow key={o.id}><TableCell className="tabular font-medium">#{o.numero}</TableCell><TableCell>{nm(o.product_id ?? o.filling_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(o.quantidade_produzida ?? 0)}</TableCell></TableRow>))}</TableBody></Table>
-                : <p className="py-8 text-center text-muted-foreground">Nada produzido na semana.</p>;
-            })(),
-            onPrint: () => pOP("Produzido na Semana", prodOrders.filter((o) => o.status === "concluida" && o.fim && new Date(o.fim) >= startOf("semana") && o.kind === "producao")),
-          })} />
+          onClick={() => setReport({ title: "Produção da Semana" } as any)} />
         <KpiCard label="Consumo hoje" value={fmtNum(consumoDesde("hoje"))} hint="finalizados Anota AI" icon={TrendingDown} tone="danger"
-          onClick={() => setReport({
-            title: "Consumo Hoje",
-            table: (() => {
-              const hoje = movements.filter((m) => isConsumoAnota(m, "hoje"));
-              return hoje.length
-                ? <Table><TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Quantidade</TableHead><TableHead>Horário</TableHead></TableRow></TableHeader><TableBody>{hoje.map((m, i) => (<TableRow key={m.id || i}><TableCell className="font-medium">{nm(m.product_id)}</TableCell><TableCell className="text-right tabular">{fmtNum(m.quantidade)}</TableCell><TableCell className="text-xs text-muted-foreground">{fmtDateTime(m.created_at)}</TableCell></TableRow>))}</TableBody></Table>
-                : <p className="py-8 text-center text-muted-foreground">Nenhum consumo hoje.</p>;
-            })(),
-            onPrint: pConsumoHoje,
-          })} />
+          onClick={() => setReport({ title: "Consumo Hoje" } as any)} />
         <KpiCard label="Colaboradores em turno" value={fmtNum(colabsTurno.length)} icon={Users} tone="info"
-          onClick={() => setReport({
-            title: "Colaboradores em Turno",
-            table: colabsTurno.length
-              ? <Table><TableHeader><TableRow><TableHead>Nome</TableHead><TableHead>Cargo</TableHead><TableHead>Turno</TableHead></TableRow></TableHeader><TableBody>{colabsTurno.map((c) => (<TableRow key={c.id}><TableCell className="font-medium">{c.nome}</TableCell><TableCell>{c.cargo || "—"}</TableCell><TableCell>{c.turno || "—"}</TableCell></TableRow>))}</TableBody></Table>
-              : <p className="py-8 text-center text-muted-foreground">Nenhum colaborador em turno.</p>,
-            onPrint: pColabsTurno,
-          })} />
+          onClick={() => setReport({ title: "Colaboradores em Turno" } as any)} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -826,7 +800,7 @@ function DashboardPage() {
         )}
       </div>
 
-      <ReportDialog open={!!report} title={report?.title} table={report?.table} onPrint={report?.onPrint} onClose={closeReport} openedAtRef={reportOpenedAt} />
+      <ReportDialog open={!!report} title={report?.title} table={reportContent?.table} onPrint={reportContent?.onPrint} onClose={closeReport} openedAtRef={reportOpenedAt} />
       <ReportDialog open={!!agendamentoReport} title={agendamentoReport?.title} table={agendamentoReport?.table} onPrint={agendamentoReport?.onPrint} onClose={closeReport} openedAtRef={agendamentoOpenedAt} />
 
       {/* Dialog OP Pendentes com toggle por ordem para PDF */}

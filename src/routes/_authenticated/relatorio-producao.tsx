@@ -75,14 +75,14 @@ type IngMovement = Movement & { ingredient_id: string };
 type FilMovement = Movement & { filling_id: string };
 
 function dayStr(d: string) {
-  return new Date(d).toLocaleDateString("pt-BR");
+  return new Date(d).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
 }
 
 function RelatorioProducaoPage() {
   const today = new Date();
   const monthAgo = new Date();
   monthAgo.setDate(today.getDate() - 29);
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const iso = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 
   const [from, setFrom] = useState(iso(monthAgo));
   const [to, setTo] = useState(iso(today));
