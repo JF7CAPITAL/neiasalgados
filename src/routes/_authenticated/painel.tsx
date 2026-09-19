@@ -347,32 +347,48 @@ function DashboardPage() {
 
   const pColabsTurno = () => printColabsTurnoReport(colabsTurno.map((c) => ({ nome: c.nome, cargo: c.cargo ?? "", turno: c.turno ?? "" })));
 
-  const ProdTable = ({ list }: { list: typeof products }) => (
-    <Table>
-      <TableHeader><TableRow>
-        <TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead>
-        <TableHead className="text-right">Reservado</TableHead><TableHead className="text-right">Disponível</TableHead>
-        <TableHead>Mínimo</TableHead><TableHead>Ideal</TableHead><TableHead>Situação</TableHead>
-      </TableRow></TableHeader>
-      <TableBody>
-        {list.map((p) => {
-          const reservado = scheduledImpact.get(p.id) ?? 0;
-          const disp = Number(p.quantidade_atual) - reservado;
-          return (
-            <TableRow key={p.id}>
-              <TableCell className="font-medium">{p.nome}</TableCell>
-              <TableCell className="text-right tabular">{fmtNum(p.quantidade_atual)}</TableCell>
-              <TableCell className="text-right tabular text-muted-foreground">{fmtNum(reservado)}</TableCell>
-              <TableCell className="text-right tabular font-medium">{fmtNum(disp)}</TableCell>
-              <TableCell>{fmtNum(p.estoque_minimo)}</TableCell>
-              <TableCell>{fmtNum(p.estoque_ideal)}</TableCell>
-              <TableCell><StockBadge level={stockLevel(Number(p.quantidade_atual), Number(p.estoque_minimo), Number(p.estoque_ideal))} /></TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
-  );
+  const ProdTable = ({ list }: { list: typeof products }) => {
+    const totalAtual = list.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+    const totalReservado = list.reduce((s, p) => s + (scheduledImpact.get(p.id) ?? 0), 0);
+    const totalDisp = totalAtual - totalReservado;
+    const totalMin = list.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+    const totalIdeal = list.reduce((s, p) => s + Number(p.estoque_ideal), 0);
+    return (
+      <Table>
+        <TableHeader><TableRow>
+          <TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead>
+          <TableHead className="text-right">Reservado</TableHead><TableHead className="text-right">Disponível</TableHead>
+          <TableHead>Mínimo</TableHead><TableHead>Ideal</TableHead><TableHead>Situação</TableHead>
+        </TableRow></TableHeader>
+        <TableBody>
+          {list.map((p) => {
+            const reservado = scheduledImpact.get(p.id) ?? 0;
+            const disp = Number(p.quantidade_atual) - reservado;
+            return (
+              <TableRow key={p.id}>
+                <TableCell className="font-medium">{p.nome}</TableCell>
+                <TableCell className="text-right tabular">{fmtNum(p.quantidade_atual)}</TableCell>
+                <TableCell className="text-right tabular text-muted-foreground">{fmtNum(reservado)}</TableCell>
+                <TableCell className="text-right tabular font-medium">{fmtNum(disp)}</TableCell>
+                <TableCell>{fmtNum(p.estoque_minimo)}</TableCell>
+                <TableCell>{fmtNum(p.estoque_ideal)}</TableCell>
+                <TableCell><StockBadge level={stockLevel(Number(p.quantidade_atual), Number(p.estoque_minimo), Number(p.estoque_ideal))} /></TableCell>
+              </TableRow>
+            );
+          })}
+          <TableRow className="bg-muted/50 font-semibold border-t-2">
+            <TableCell className="font-bold">Total ({list.length} {list.length === 1 ? "produto" : "produtos"})</TableCell>
+            <TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell>
+            <TableCell className="text-right tabular font-bold">{fmtNum(totalReservado)}</TableCell>
+            <TableCell className="text-right tabular font-bold">{fmtNum(totalDisp)}</TableCell>
+            <TableCell className="font-bold">{fmtNum(totalMin)}</TableCell>
+            <TableCell className="font-bold">{fmtNum(totalIdeal)}</TableCell>
+            <TableCell />
+          </TableRow>
+        </TableBody>
+      </Table>
+    );
+  };
 
   // Reusable dialog for any report — evita flicker open/close ao usar controlled open + renderização condicional
   const ReportDialog = ({
@@ -466,6 +482,13 @@ function DashboardPage() {
                           <td className="px-3 py-2 text-right tabular font-semibold">{fmtNum(r.projetado)}</td>
                         </tr>
                       ))}
+                      <tr className="bg-muted/50 font-semibold border-t-2">
+                        <td className="px-3 py-2 font-bold">Total ({rows.length} {rows.length === 1 ? "produto" : "produtos"})</td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.atual, 0))}</td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.producao, 0))}</td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.agendado, 0))}</td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.projetado, 0))}</td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -483,7 +506,19 @@ function DashboardPage() {
           onClick={() => setReport({
             title: "Produtos Abaixo do Mínimo",
             table: produtosAbaixo.length
-              ? <Table><TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader><TableBody>{produtosAbaixo.map((p) => (<TableRow key={p.id}><TableCell className="font-medium">{p.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(p.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(p.estoque_minimo)}</TableCell></TableRow>))}</TableBody></Table>
+              ? (() => {
+                  const totalAtual = produtosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+                  const totalMin = produtosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+                  return (
+                    <Table>
+                      <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader>
+                      <TableBody>
+                        {produtosAbaixo.map((p) => (<TableRow key={p.id}><TableCell className="font-medium">{p.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(p.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(p.estoque_minimo)}</TableCell></TableRow>))}
+                        <TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({produtosAbaixo.length} {produtosAbaixo.length === 1 ? "produto" : "produtos"})</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalMin)}</TableCell></TableRow>
+                      </TableBody>
+                    </Table>
+                  );
+                })()
               : <p className="py-8 text-center text-muted-foreground">Nenhum produto abaixo do mínimo.</p>,
             onPrint: pBelowMin,
           })} />
@@ -491,7 +526,19 @@ function DashboardPage() {
           onClick={() => setReport({
             title: "Insumos Abaixo do Mínimo",
             table: insumosAbaixo.length
-              ? <Table><TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader><TableBody>{insumosAbaixo.map((i) => (<TableRow key={i.id}><TableCell className="font-medium">{i.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(i.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(i.estoque_minimo)}</TableCell></TableRow>))}</TableBody></Table>
+              ? (() => {
+                  const totalAtual = insumosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+                  const totalMin = insumosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+                  return (
+                    <Table>
+                      <TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader>
+                      <TableBody>
+                        {insumosAbaixo.map((i) => (<TableRow key={i.id}><TableCell className="font-medium">{i.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(i.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(i.estoque_minimo)}</TableCell></TableRow>))}
+                        <TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({insumosAbaixo.length} {insumosAbaixo.length === 1 ? "insumo" : "insumos"})</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalMin)}</TableCell></TableRow>
+                      </TableBody>
+                    </Table>
+                  );
+                })()
               : <p className="py-8 text-center text-muted-foreground">Nenhum insumo abaixo do mínimo.</p>,
             onPrint: pInsumosBelowMin,
           })} />
@@ -531,6 +578,12 @@ function DashboardPage() {
                             <td className="px-3 py-2 text-right tabular font-semibold">{fmtNum(r.saldo)}</td>
                           </tr>
                         ))}
+                        <tr className="bg-muted/50 font-semibold border-t-2">
+                          <td className="px-3 py-2 font-bold">Total ({rows.length} {rows.length === 1 ? "produto" : "produtos"})</td>
+                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.atual, 0))}</td>
+                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.impacto, 0))}</td>
+                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.saldo, 0))}</td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
