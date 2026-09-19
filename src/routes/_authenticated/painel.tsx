@@ -108,22 +108,23 @@ function DashboardPage() {
   }, []);
 
   useRealtime(
-    ["products", "ingredients", "production_orders", "purchase_orders", "product_movements"],
-    ["dashboard"],
+    ["products", "ingredients", "production_orders", "purchase_orders", "product_movements", "product_groups"],
+    ["dashboard", "product-groups"],
   );
 
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard"],
     queryFn: async () => {
       const hoje = startOf("hoje").toISOString();
-      const [products, ingredients, prodOrders, purchOrders, movements, collabs, anotaOrders] = await Promise.all([
-        supabase.from("products").select("id, nome, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal").is("deleted_at", null),
+      const [products, ingredients, prodOrders, purchOrders, movements, collabs, anotaOrders, productGroups] = await Promise.all([
+        supabase.from("products").select("id, nome, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal, group_id, ordem").is("deleted_at", null).order("ordem").order("nome"),
         supabase.from("ingredients").select("id, nome, quantidade_atual, estoque_minimo, unidade").is("deleted_at", null),
         supabase.from("production_orders").select("id, numero, kind, status, quantidade_necessaria, quantidade_produzida, quantidade_ideal, massadas, tipo_massa, prioridade, product_id, filling_id, fim, created_at").is("deleted_at", null),
         supabase.from("purchase_orders").select("id, numero, status, prioridade, quantidade_necessaria, preco_medio, ingredient_id, supplier_id, observacoes, created_at").is("deleted_at", null),
         supabase.from("product_movements").select("id, product_id, tipo, quantidade, destino, created_at, ref_order_id").order("created_at", { ascending: false }).limit(500),
         supabase.from("collaborators").select("id, nome, cargo, turno, em_turno").is("deleted_at", null),
         supabase.from("anota_orders").select("id, imported_at, created_at, check_status").eq("check_status", 3).gte("imported_at", hoje),
+        supabase.from("product_groups").select("id, nome, ordem").order("ordem").order("nome"),
       ]);
       const [pnames, inames, fnames, snames] = await Promise.all([
         supabase.from("products").select("id, nome"),
@@ -155,6 +156,7 @@ function DashboardPage() {
         movements: movements.data ?? [],
         collabs: collabs.data ?? [],
         ordensHoje,
+        productGroups: productGroups.data ?? [],
         names: {
           ...Object.fromEntries((pnames.data ?? []).map((p: { id: string; nome: string }) => [p.id, p.nome])),
           ...Object.fromEntries((inames.data ?? []).map((i: { id: string; nome: string }) => [i.id, i.nome])),
@@ -180,9 +182,29 @@ function DashboardPage() {
     );
   }
 
-  const { products, ingredients, prodOrders, purchOrders, movements, collabs, names, ordensHoje } = data;
+  const { products: productsRaw, ingredients, prodOrders: prodOrdersRaw, purchOrders, movements, collabs, names, ordensHoje } = data as any;
   const scheduledOrders: any[] = (data as any).scheduledOrders ?? [];
   const scheduledItems: any[] = (data as any).scheduledItems ?? [];
+  const productGroups: { id: string; nome: string; ordem: number }[] = (data as any).productGroups ?? [];
+  const groupOrderMap = new Map<string, number>();
+  productGroups.forEach((g) => groupOrderMap.set(g.id, g.ordem ?? 0));
+  // Ordenação padronizada: segue exatamente a organização da aba Produtos (grupo.ordem -> produto.ordem -> nome)
+  const products = [...(productsRaw as any[])].sort((a: any, b: any) => {
+    const ga = a.group_id ? (groupOrderMap.get(a.group_id) ?? 999) : 999;
+    const gb = b.group_id ? (groupOrderMap.get(b.group_id) ?? 999) : 999;
+    if (ga !== gb) return ga - gb;
+    if ((a.ordem ?? 0) !== (b.ordem ?? 0)) return (a.ordem ?? 0) - (b.ordem ?? 0);
+    return (a.nome ?? "").localeCompare(b.nome ?? "");
+  }) as typeof productsRaw;
+  const productOrderIndex = new Map<string, number>();
+  (products as any[]).forEach((p: any, idx: number) => productOrderIndex.set(p.id, idx));
+  // Ordens também seguem a ordem do produto para listas do painel
+  const prodOrders = [...(prodOrdersRaw as any[])].sort((a: any, b: any) => {
+    const ia = productOrderIndex.get(a.product_id ?? a.filling_id ?? "") ?? 9999;
+    const ib = productOrderIndex.get(b.product_id ?? b.filling_id ?? "") ?? 9999;
+    if (ia !== ib) return ia - ib;
+    return (a.numero ?? 0) - (b.numero ?? 0);
+  }) as typeof prodOrdersRaw;
 
   const scheduledImpact = new Map<string, number>();
   for (const item of scheduledItems) {

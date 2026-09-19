@@ -32,6 +32,7 @@ type Product = {
   quantidade_atual: number; quantidade_reservada: number;
   estoque_minimo: number; estoque_ideal: number;
   group_id: string | null;
+  ordem: number;
 };
 
 type ProductGroup = {
@@ -56,8 +57,8 @@ function EstoquePage() {
       const [prodR, scheduledR] = await Promise.all([
         supabase
           .from("products")
-          .select("id, nome, unidade, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal, group_id")
-          .is("deleted_at", null).order("nome"),
+          .select("id, nome, unidade, quantidade_atual, quantidade_reservada, estoque_minimo, estoque_ideal, group_id, ordem")
+          .is("deleted_at", null).order("ordem").order("nome"),
         supabase
           .from("anota_orders")
           .select("id")
@@ -154,6 +155,10 @@ function EstoquePage() {
       const key = p.group_id ?? "";
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(p);
+    }
+    for (const [k, arr] of map) {
+      arr.sort((a, b) => (a.ordem ?? 0) - (b.ordem ?? 0) || a.nome.localeCompare(b.nome));
+      map.set(k, arr);
     }
     return map;
   }, [filtered]);

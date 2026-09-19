@@ -811,6 +811,7 @@ export type Database = {
           group_id: string | null
           id: string
           nome: string
+          ordem: number
           peso: number
           peso_massa: number
           peso_recheio: number
@@ -833,6 +834,7 @@ export type Database = {
           group_id?: string | null
           id?: string
           nome: string
+          ordem?: number
           peso?: number
           peso_massa?: number
           peso_recheio?: number
@@ -855,6 +857,7 @@ export type Database = {
           group_id?: string | null
           id?: string
           nome?: string
+          ordem?: number
           peso?: number
           peso_massa?: number
           peso_recheio?: number
