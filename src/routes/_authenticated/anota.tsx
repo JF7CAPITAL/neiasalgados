@@ -274,23 +274,45 @@ function AnotaPage() {
       let query = supabase
         .from("anota_orders")
         .select(
-          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, sem_resposta_em",
+          "id, external_order_id, numero, check_status, total, cliente, pedido_em, estoque_aplicado, imported_at, sem_resposta_em, updated_at",
         );
       if (termo) {
         query = query.or(
           `cliente.ilike.%${termo}%,numero.ilike.%${termo}%,external_order_id.ilike.%${termo}%`,
         );
+        // Busca por texto deve respeitar filtro de status mas não filtra agendamentos isoladamente
+        if (buscaStatus === "producao") query = query.eq("check_status", 1);
+        else if (buscaStatus === "finalizados") query = query.eq("check_status", 3);
+        else query = query.neq("check_status", -2);
       } else {
         const from = new Date(`${buscaData}T00:00:00-03:00`);
         const to = new Date(from);
         to.setDate(to.getDate() + 1);
-        query = query
-          .gte("imported_at", from.toISOString())
-          .lt("imported_at", to.toISOString());
+        if (buscaStatus === "finalizados") {
+          // Agendamentos que viraram finalizados devem aparecer na data em que entraram com status 3 (updated_at), não na data do agendamento (imported_at)
+          query = query
+            .eq("check_status", 3)
+            .gte("updated_at", from.toISOString())
+            .lt("updated_at", to.toISOString());
+        } else if (buscaStatus === "producao") {
+          // Mesmo para produção: agendamentos promovidos aparecem na data que viraram produção
+          query = query
+            .eq("check_status", 1)
+            .gte("updated_at", from.toISOString())
+            .lt("updated_at", to.toISOString());
+        } else {
+          // Todos: exclui agendamentos (-2) e filtra pela data de importação
+          query = query
+            .neq("check_status", -2)
+            .gte("imported_at", from.toISOString())
+            .lt("imported_at", to.toISOString());
+        }
       }
-      query = query.order("imported_at", { ascending: false });
-      if (buscaStatus === "producao") query = query.eq("check_status", 1);
-      else if (buscaStatus === "finalizados") query = query.eq("check_status", 3);
+      // Ordenação pela data relevante (updated_at para finalizados/producao, imported_at para todos)
+      const orderCol = buscaStatus === "todos" && !termo ? "imported_at" : buscaStatus === "finalizados" || buscaStatus === "producao" ? "updated_at" : "imported_at";
+      // Para busca por texto, mantém imported_at para compatibilidade, exceto quando status filtra por updated_at a ordenação segue updated_at
+      const finalOrderCol = termo ? (buscaStatus === "finalizados" || buscaStatus === "producao" ? "updated_at" : "imported_at") : orderCol;
+      query = query.order(finalOrderCol as any, { ascending: false });
       const { data, error } = await query;
       if (error) throw error;
       return data;
@@ -779,7 +801,7 @@ function AnotaPage() {
   });
 
   const hojeInicio = new Date(new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) + "T00:00:00-03:00");
-  const hojeOrders = orders.filter((o) => new Date(o.imported_at) >= hojeInicio);
+  const hojeOrders = orders.filter((o) => new Date(o.imported_at) >= hojeInicio && o.check_status !== -2);
   const agendadosCount = scheduledWithPayload.length;
 
   return (
