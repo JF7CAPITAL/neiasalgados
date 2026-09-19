@@ -347,12 +347,20 @@ function DashboardPage() {
 
   const pColabsTurno = () => printColabsTurnoReport(colabsTurno.map((c) => ({ nome: c.nome, cargo: c.cargo ?? "", turno: c.turno ?? "" })));
 
+  const isBebidaGroup = (groupId: string | null | undefined) => {
+    if (!groupId) return false;
+    const g = (productGroups as any[]).find((gr) => gr.id === groupId);
+    if (!g) return false;
+    const n = String(g.nome).trim().toLowerCase();
+    return n === "bebidas" || n === "bebida" || n === "refrigerante" || n.includes("bebida") || n.includes("refrigerante");
+  };
   const ProdTable = ({ list }: { list: typeof products }) => {
-    const totalAtual = list.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-    const totalReservado = list.reduce((s, p) => s + (scheduledImpact.get(p.id) ?? 0), 0);
+    const filteredForTotal = list.filter((p: any) => !isBebidaGroup(p.group_id));
+    const totalAtual = filteredForTotal.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+    const totalReservado = filteredForTotal.reduce((s, p) => s + (scheduledImpact.get(p.id) ?? 0), 0);
     const totalDisp = totalAtual - totalReservado;
-    const totalMin = list.reduce((s, p) => s + Number(p.estoque_minimo), 0);
-    const totalIdeal = list.reduce((s, p) => s + Number(p.estoque_ideal), 0);
+    const totalMin = filteredForTotal.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+    const totalIdeal = filteredForTotal.reduce((s, p) => s + Number(p.estoque_ideal), 0);
     return (
       <Table>
         <TableHeader><TableRow>
@@ -377,7 +385,7 @@ function DashboardPage() {
             );
           })}
           <TableRow className="bg-muted/50 font-semibold border-t-2">
-            <TableCell className="font-bold">Total ({list.length} {list.length === 1 ? "produto" : "produtos"})</TableCell>
+            <TableCell className="font-bold">Total ({filteredForTotal.length} {filteredForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></TableCell>
             <TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell>
             <TableCell className="text-right tabular font-bold">{fmtNum(totalReservado)}</TableCell>
             <TableCell className="text-right tabular font-bold">{fmtNum(totalDisp)}</TableCell>
@@ -450,6 +458,7 @@ function DashboardPage() {
               .map((p) => ({
                 id: p.id,
                 nome: p.nome,
+                group_id: (p as any).group_id,
                 atual: Number(p.quantidade_atual),
                 producao: prodOrders
                   .filter((o) => (o.product_id === p.id || o.filling_id === p.id) && (o.status === "pendente" || o.status === "em_andamento"))
@@ -457,6 +466,7 @@ function DashboardPage() {
                 agendado: scheduledImpact.get(p.id) ?? 0,
               }))
               .map((r) => ({ ...r, projetado: r.atual + r.producao - r.agendado }));
+            const rowsForTotal = rows.filter((r: any) => !isBebidaGroup(r.group_id));
             setReport({
               title: "Estoque Projetado",
               table: (
@@ -483,11 +493,11 @@ function DashboardPage() {
                         </tr>
                       ))}
                       <tr className="bg-muted/50 font-semibold border-t-2">
-                        <td className="px-3 py-2 font-bold">Total ({rows.length} {rows.length === 1 ? "produto" : "produtos"})</td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.atual, 0))}</td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.producao, 0))}</td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.agendado, 0))}</td>
-                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.projetado, 0))}</td>
+                        <td className="px-3 py-2 font-bold">Total ({rowsForTotal.length} {rowsForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.atual, 0))}</td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.producao, 0))}</td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.agendado, 0))}</td>
+                        <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.projetado, 0))}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -507,14 +517,15 @@ function DashboardPage() {
             title: "Produtos Abaixo do Mínimo",
             table: produtosAbaixo.length
               ? (() => {
-                  const totalAtual = produtosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-                  const totalMin = produtosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+                  const filteredForTotal = (produtosAbaixo as any[]).filter((p: any) => !isBebidaGroup(p.group_id));
+                  const totalAtual = filteredForTotal.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+                  const totalMin = filteredForTotal.reduce((s, p) => s + Number(p.estoque_minimo), 0);
                   return (
                     <Table>
                       <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead><TableHead className="text-right">Mínimo</TableHead></TableRow></TableHeader>
                       <TableBody>
                         {produtosAbaixo.map((p) => (<TableRow key={p.id}><TableCell className="font-medium">{p.nome}</TableCell><TableCell className="text-right tabular text-destructive">{fmtNum(p.quantidade_atual)}</TableCell><TableCell className="text-right tabular">{fmtNum(p.estoque_minimo)}</TableCell></TableRow>))}
-                        <TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({produtosAbaixo.length} {produtosAbaixo.length === 1 ? "produto" : "produtos"})</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalMin)}</TableCell></TableRow>
+                        <TableRow className="bg-muted/50 font-semibold border-t-2"><TableCell className="font-bold">Total ({filteredForTotal.length} {filteredForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell><TableCell className="text-right tabular font-bold">{fmtNum(totalMin)}</TableCell></TableRow>
                       </TableBody>
                     </Table>
                   );
@@ -553,11 +564,13 @@ function DashboardPage() {
               .map((p) => ({
                 id: p.id,
                 produto: p.nome,
+                group_id: (p as any).group_id,
                 atual: Number(p.quantidade_atual),
                 impacto: scheduledImpact.get(p.id) ?? 0,
                 saldo: Number(p.quantidade_atual) - (scheduledImpact.get(p.id) ?? 0),
               }))
               .filter((r) => r.impacto > 0);
+            const rowsForTotal = rows.filter((r: any) => !isBebidaGroup(r.group_id));
             setAgendamentoReport({
               title: "Pedidos Agendados — Impacto no Estoque",
               table: (
@@ -579,10 +592,10 @@ function DashboardPage() {
                           </tr>
                         ))}
                         <tr className="bg-muted/50 font-semibold border-t-2">
-                          <td className="px-3 py-2 font-bold">Total ({rows.length} {rows.length === 1 ? "produto" : "produtos"})</td>
-                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.atual, 0))}</td>
-                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.impacto, 0))}</td>
-                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rows.reduce((s, r) => s + r.saldo, 0))}</td>
+                          <td className="px-3 py-2 font-bold">Total ({rowsForTotal.length} {rowsForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></td>
+                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.atual, 0))}</td>
+                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.impacto, 0))}</td>
+                          <td className="px-3 py-2 text-right tabular font-bold">{fmtNum(rowsForTotal.reduce((s, r) => s + r.saldo, 0))}</td>
                         </tr>
                       </tbody>
                     </table>
