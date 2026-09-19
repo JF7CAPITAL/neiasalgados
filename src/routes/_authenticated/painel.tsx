@@ -337,6 +337,129 @@ function DashboardPage() {
 
   const closeReport = () => { setReport(null); setAgendamentoReport(null); setForecastDrill(null); };
 
+  const pStock = () => {
+    const rows = products.map((p) => {
+      const reservado = scheduledImpact.get(p.id) ?? 0;
+      return {
+        nome: p.nome,
+        atual: Number(p.quantidade_atual),
+        reservado,
+        disponivel: Number(p.quantidade_atual) - reservado,
+        minimo: Number(p.estoque_minimo),
+        ideal: Number(p.estoque_ideal),
+        situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
+      };
+    });
+    const filteredForTotal = (products as any[]).filter((p) => !isBebidaGroup((p as any).group_id));
+    const totalAtual = filteredForTotal.reduce((s, p) => s + Number((p as any).quantidade_atual), 0);
+    const totalReservado = filteredForTotal.reduce((s, p) => s + (scheduledImpact.get((p as any).id) ?? 0), 0);
+    const totalDisp = totalAtual - totalReservado;
+    const totalMin = filteredForTotal.reduce((s, p) => s + Number((p as any).estoque_minimo), 0);
+    const totalIdeal = filteredForTotal.reduce((s, p) => s + Number((p as any).estoque_ideal), 0);
+    const rowsWithTotal: any = [
+      ...rows,
+      {
+        nome: `Total (${filteredForTotal.length} ${filteredForTotal.length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`,
+        atual: totalAtual,
+        reservado: totalReservado,
+        disponivel: totalDisp,
+        minimo: totalMin,
+        ideal: totalIdeal,
+        situacao: "",
+      },
+    ];
+    printStockReport(rowsWithTotal);
+  };
+
+  const pBelowMin = () => {
+    const filtered = (produtosAbaixo as any[]).filter((p) => !isBebidaGroup(p.group_id));
+    const rows = produtosAbaixo.map((p) => ({ nome: p.nome, atual: Number(p.quantidade_atual), minimo: Number(p.estoque_minimo) }));
+    const totalAtual = filtered.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+    const totalMin = filtered.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+    const rowsWithTotal: any = [...rows, { nome: `Total (${filtered.length} ${filtered.length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`, atual: totalAtual, minimo: totalMin }];
+    printBelowMinimumReport(rowsWithTotal);
+  };
+
+  const pInsumosBelowMin = () => {
+    const rows = insumosAbaixo.map((i) => ({ nome: i.nome, atual: Number(i.quantidade_atual), minimo: Number(i.estoque_minimo) }));
+    const totalAtual = insumosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+    const totalMin = insumosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+    const rowsWithTotal: any = [...rows, { nome: `Total (${insumosAbaixo.length} ${insumosAbaixo.length === 1 ? "insumo" : "insumos"})`, atual: totalAtual, minimo: totalMin }];
+    printBelowMinimumReport(rowsWithTotal, "Insumos Abaixo do Mínimo");
+  };
+
+  const pConsumoHoje = () => {
+    const rows = movements
+      .filter((m) => isConsumoAnota(m, "hoje"))
+      .map((m) => ({ produto: nm(m.product_id), quantidade: Number(m.quantidade), horario: fmtDateTime(m.created_at) }));
+    printConsumptionReport("Consumo Hoje", rows);
+  };
+
+  const pOP = (title: string, list: typeof prodOrders) => {
+    printProdOrdersReport(list.map((o) => ({
+      numero: o.numero, item: nm(o.product_id ?? o.filling_id),
+      tipo: o.kind + (o.tipo_massa ? ` · ${o.tipo_massa}` : ""),
+      necessaria: Number(o.quantidade_necessaria),
+      produzida: o.quantidade_produzida != null ? fmtNum(o.quantidade_produzida) : "—",
+      prioridade: o.prioridade, status: o.status,
+    })));
+  };
+
+  const pComprasPendentes = () => {
+    const filtered = comprasPendentes.filter((o) => !comprasExcludedIds.has(o.id));
+    printPurchaseOrdersReport(filtered.map((o) => ({
+      numero: o.numero, insumo: nm(o.ingredient_id), fornecedor: nm(o.supplier_id),
+      quantidade: Number(o.quantidade_necessaria), valor: String(o.preco_medio * o.quantidade_necessaria),
+      prioridade: o.prioridade, status: o.status,
+    })));
+  };
+
+  const pColabsTurno = () => printColabsTurnoReport(colabsTurno.map((c) => ({ nome: c.nome, cargo: c.cargo ?? "", turno: c.turno ?? "" })));
+
+  const ProdTable = ({ list }: { list: typeof products }) => {
+    const filteredForTotal = list.filter((p: any) => !isBebidaGroup(p.group_id));
+    const totalAtual = filteredForTotal.reduce((s, p) => s + Number(p.quantidade_atual), 0);
+    const totalReservado = filteredForTotal.reduce((s, p) => s + (scheduledImpact.get(p.id) ?? 0), 0);
+    const totalDisp = totalAtual - totalReservado;
+    const totalMin = filteredForTotal.reduce((s, p) => s + Number(p.estoque_minimo), 0);
+    const totalIdeal = filteredForTotal.reduce((s, p) => s + Number(p.estoque_ideal), 0);
+    return (
+      <Table>
+        <TableHeader><TableRow>
+          <TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead>
+          <TableHead className="text-right">Reservado</TableHead><TableHead className="text-right">Disponível</TableHead>
+          <TableHead>Mínimo</TableHead><TableHead>Ideal</TableHead><TableHead>Situação</TableHead>
+        </TableRow></TableHeader>
+        <TableBody>
+          {list.map((p) => {
+            const reservado = scheduledImpact.get(p.id) ?? 0;
+            const disp = Number(p.quantidade_atual) - reservado;
+            return (
+              <TableRow key={p.id}>
+                <TableCell className="font-medium">{p.nome}</TableCell>
+                <TableCell className="text-right tabular">{fmtNum(p.quantidade_atual)}</TableCell>
+                <TableCell className="text-right tabular text-muted-foreground">{fmtNum(reservado)}</TableCell>
+                <TableCell className="text-right tabular font-medium">{fmtNum(disp)}</TableCell>
+                <TableCell>{fmtNum(p.estoque_minimo)}</TableCell>
+                <TableCell>{fmtNum(p.estoque_ideal)}</TableCell>
+                <TableCell><StockBadge level={stockLevel(Number(p.quantidade_atual), Number(p.estoque_minimo), Number(p.estoque_ideal))} /></TableCell>
+              </TableRow>
+            );
+          })}
+          <TableRow className="bg-muted/50 font-semibold border-t-2">
+            <TableCell className="font-bold">Total ({filteredForTotal.length} {filteredForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></TableCell>
+            <TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell>
+            <TableCell className="text-right tabular font-bold">{fmtNum(totalReservado)}</TableCell>
+            <TableCell className="text-right tabular font-bold">{fmtNum(totalDisp)}</TableCell>
+            <TableCell className="font-bold">{fmtNum(totalMin)}</TableCell>
+            <TableCell className="font-bold">{fmtNum(totalIdeal)}</TableCell>
+            <TableCell />
+          </TableRow>
+        </TableBody>
+      </Table>
+    );
+  };
+
   const reportContent = useMemo(() => {
     if (!report) return null;
     switch (report.title) {
@@ -474,129 +597,6 @@ function DashboardPage() {
         return null;
     }
   }, [report, products, prodOrders, scheduledImpact, produtosAbaixo, insumosAbaixo, ordensAndamento, ordensConcluidas, colabsTurno, movements, isBebidaGroup, pStock, pBelowMin, pInsumosBelowMin, pConsumoHoje, pOP, pColabsTurno]);
-
-  const pStock = () => {
-    const rows = products.map((p) => {
-      const reservado = scheduledImpact.get(p.id) ?? 0;
-      return {
-        nome: p.nome,
-        atual: Number(p.quantidade_atual),
-        reservado,
-        disponivel: Number(p.quantidade_atual) - reservado,
-        minimo: Number(p.estoque_minimo),
-        ideal: Number(p.estoque_ideal),
-        situacao: Number(p.quantidade_atual) <= Number(p.estoque_minimo) ? "Abaixo do mín." : "OK",
-      };
-    });
-    const filteredForTotal = (products as any[]).filter((p) => !isBebidaGroup((p as any).group_id));
-    const totalAtual = filteredForTotal.reduce((s, p) => s + Number((p as any).quantidade_atual), 0);
-    const totalReservado = filteredForTotal.reduce((s, p) => s + (scheduledImpact.get((p as any).id) ?? 0), 0);
-    const totalDisp = totalAtual - totalReservado;
-    const totalMin = filteredForTotal.reduce((s, p) => s + Number((p as any).estoque_minimo), 0);
-    const totalIdeal = filteredForTotal.reduce((s, p) => s + Number((p as any).estoque_ideal), 0);
-    const rowsWithTotal: any = [
-      ...rows,
-      {
-        nome: `Total (${filteredForTotal.length} ${filteredForTotal.length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`,
-        atual: totalAtual,
-        reservado: totalReservado,
-        disponivel: totalDisp,
-        minimo: totalMin,
-        ideal: totalIdeal,
-        situacao: "",
-      },
-    ];
-    printStockReport(rowsWithTotal);
-  };
-
-  const pBelowMin = () => {
-    const filtered = (produtosAbaixo as any[]).filter((p) => !isBebidaGroup(p.group_id));
-    const rows = produtosAbaixo.map((p) => ({ nome: p.nome, atual: Number(p.quantidade_atual), minimo: Number(p.estoque_minimo) }));
-    const totalAtual = filtered.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-    const totalMin = filtered.reduce((s, p) => s + Number(p.estoque_minimo), 0);
-    const rowsWithTotal: any = [...rows, { nome: `Total (${filtered.length} ${filtered.length === 1 ? "produto" : "produtos"}) · bebidas desconsideradas`, atual: totalAtual, minimo: totalMin }];
-    printBelowMinimumReport(rowsWithTotal);
-  };
-
-  const pInsumosBelowMin = () => {
-    const rows = insumosAbaixo.map((i) => ({ nome: i.nome, atual: Number(i.quantidade_atual), minimo: Number(i.estoque_minimo) }));
-    const totalAtual = insumosAbaixo.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-    const totalMin = insumosAbaixo.reduce((s, p) => s + Number(p.estoque_minimo), 0);
-    const rowsWithTotal: any = [...rows, { nome: `Total (${insumosAbaixo.length} ${insumosAbaixo.length === 1 ? "insumo" : "insumos"})`, atual: totalAtual, minimo: totalMin }];
-    printBelowMinimumReport(rowsWithTotal, "Insumos Abaixo do Mínimo");
-  };
-
-  const pConsumoHoje = () => {
-    const rows = movements
-      .filter((m) => isConsumoAnota(m, "hoje"))
-      .map((m) => ({ produto: nm(m.product_id), quantidade: Number(m.quantidade), horario: fmtDateTime(m.created_at) }));
-    printConsumptionReport("Consumo Hoje", rows);
-  };
-
-  const pOP = (title: string, list: typeof prodOrders) => {
-    printProdOrdersReport(list.map((o) => ({
-      numero: o.numero, item: nm(o.product_id ?? o.filling_id),
-      tipo: o.kind + (o.tipo_massa ? ` · ${o.tipo_massa}` : ""),
-      necessaria: Number(o.quantidade_necessaria),
-      produzida: o.quantidade_produzida != null ? fmtNum(o.quantidade_produzida) : "—",
-      prioridade: o.prioridade, status: o.status,
-    })));
-  };
-
-  const pComprasPendentes = () => {
-    const filtered = comprasPendentes.filter((o) => !comprasExcludedIds.has(o.id));
-    printPurchaseOrdersReport(filtered.map((o) => ({
-      numero: o.numero, insumo: nm(o.ingredient_id), fornecedor: nm(o.supplier_id),
-      quantidade: Number(o.quantidade_necessaria), valor: String(o.preco_medio * o.quantidade_necessaria),
-      prioridade: o.prioridade, status: o.status,
-    })));
-  };
-
-  const pColabsTurno = () => printColabsTurnoReport(colabsTurno.map((c) => ({ nome: c.nome, cargo: c.cargo ?? "", turno: c.turno ?? "" })));
-
-  const ProdTable = ({ list }: { list: typeof products }) => {
-    const filteredForTotal = list.filter((p: any) => !isBebidaGroup(p.group_id));
-    const totalAtual = filteredForTotal.reduce((s, p) => s + Number(p.quantidade_atual), 0);
-    const totalReservado = filteredForTotal.reduce((s, p) => s + (scheduledImpact.get(p.id) ?? 0), 0);
-    const totalDisp = totalAtual - totalReservado;
-    const totalMin = filteredForTotal.reduce((s, p) => s + Number(p.estoque_minimo), 0);
-    const totalIdeal = filteredForTotal.reduce((s, p) => s + Number(p.estoque_ideal), 0);
-    return (
-      <Table>
-        <TableHeader><TableRow>
-          <TableHead>Produto</TableHead><TableHead className="text-right">Atual</TableHead>
-          <TableHead className="text-right">Reservado</TableHead><TableHead className="text-right">Disponível</TableHead>
-          <TableHead>Mínimo</TableHead><TableHead>Ideal</TableHead><TableHead>Situação</TableHead>
-        </TableRow></TableHeader>
-        <TableBody>
-          {list.map((p) => {
-            const reservado = scheduledImpact.get(p.id) ?? 0;
-            const disp = Number(p.quantidade_atual) - reservado;
-            return (
-              <TableRow key={p.id}>
-                <TableCell className="font-medium">{p.nome}</TableCell>
-                <TableCell className="text-right tabular">{fmtNum(p.quantidade_atual)}</TableCell>
-                <TableCell className="text-right tabular text-muted-foreground">{fmtNum(reservado)}</TableCell>
-                <TableCell className="text-right tabular font-medium">{fmtNum(disp)}</TableCell>
-                <TableCell>{fmtNum(p.estoque_minimo)}</TableCell>
-                <TableCell>{fmtNum(p.estoque_ideal)}</TableCell>
-                <TableCell><StockBadge level={stockLevel(Number(p.quantidade_atual), Number(p.estoque_minimo), Number(p.estoque_ideal))} /></TableCell>
-              </TableRow>
-            );
-          })}
-          <TableRow className="bg-muted/50 font-semibold border-t-2">
-            <TableCell className="font-bold">Total ({filteredForTotal.length} {filteredForTotal.length === 1 ? "produto" : "produtos"}) <span className="font-normal text-xs text-muted-foreground">· bebidas desconsideradas</span></TableCell>
-            <TableCell className="text-right tabular font-bold">{fmtNum(totalAtual)}</TableCell>
-            <TableCell className="text-right tabular font-bold">{fmtNum(totalReservado)}</TableCell>
-            <TableCell className="text-right tabular font-bold">{fmtNum(totalDisp)}</TableCell>
-            <TableCell className="font-bold">{fmtNum(totalMin)}</TableCell>
-            <TableCell className="font-bold">{fmtNum(totalIdeal)}</TableCell>
-            <TableCell />
-          </TableRow>
-        </TableBody>
-      </Table>
-    );
-  };
 
   return (
     <div className="space-y-6">
