@@ -909,50 +909,68 @@ export type Database = {
         Row: {
           auto_gerada: boolean
           created_at: string
+          data_pagamento: string | null
+          data_vencimento: string | null
           deleted_at: string | null
           id: string
           ingredient_id: string
           numero: number
           observacoes: string | null
+          pago: boolean
           preco_medio: number
+          preco_recebido: number | null
           prioridade: Database["public"]["Enums"]["order_priority"]
           quantidade_necessaria: number
+          quantidade_recebida: number | null
           responsavel: string | null
           status: Database["public"]["Enums"]["order_status"]
           supplier_id: string | null
           updated_at: string
+          valor_total: number | null
         }
         Insert: {
           auto_gerada?: boolean
           created_at?: string
+          data_pagamento?: string | null
+          data_vencimento?: string | null
           deleted_at?: string | null
           id?: string
           ingredient_id: string
           numero?: never
           observacoes?: string | null
+          pago?: boolean
           preco_medio?: number
+          preco_recebido?: number | null
           prioridade?: Database["public"]["Enums"]["order_priority"]
           quantidade_necessaria?: number
+          quantidade_recebida?: number | null
           responsavel?: string | null
           status?: Database["public"]["Enums"]["order_status"]
           supplier_id?: string | null
           updated_at?: string
+          valor_total?: number | null
         }
         Update: {
           auto_gerada?: boolean
           created_at?: string
+          data_pagamento?: string | null
+          data_vencimento?: string | null
           deleted_at?: string | null
           id?: string
           ingredient_id?: string
           numero?: never
           observacoes?: string | null
+          pago?: boolean
           preco_medio?: number
+          preco_recebido?: number | null
           prioridade?: Database["public"]["Enums"]["order_priority"]
           quantidade_necessaria?: number
+          quantidade_recebida?: number | null
           responsavel?: string | null
           status?: Database["public"]["Enums"]["order_status"]
           supplier_id?: string | null
           updated_at?: string
+          valor_total?: number | null
         }
         Relationships: [
           {

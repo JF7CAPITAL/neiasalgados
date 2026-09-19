@@ -321,6 +321,79 @@ function FinanceiroPage() {
     enabled: unlocked,
   });
 
+  // Fetch vencimentos pendentes (compras a prazo não pagas) - integra com ordens de compra
+  const { data: vencimentosPendentes = [], refetch: refetchVencimentos } = useQuery({
+    queryKey: ["finance-vencimentos"],
+    queryFn: async () => {
+      const { data, error } = await (supabase as any)
+        .from("purchase_orders")
+        .select("id, numero, ingredient_id, supplier_id, quantidade_necessaria, quantidade_recebida, preco_medio, preco_recebido, valor_total, data_vencimento, data_pagamento, pago, created_at, updated_at")
+        .eq("status", "concluida")
+        .eq("pago", false)
+        .not("data_vencimento", "is", null)
+        .is("deleted_at", null)
+        .order("data_vencimento", { ascending: true });
+      if (error) {
+        // Se migration ainda não foi aplicada, retorna vazio em vez de quebrar a página
+        if (error.message?.includes("pago") || error.message?.includes("data_vencimento") || error.code === "42703") {
+          console.warn("[finance-vencimentos] colunas ainda não existem, migration pendente:", error.message);
+          return [];
+        }
+        throw error;
+      }
+      // Busca nomes de insumos e fornecedores separadamente para evitar join complexo
+      const ingIds = [...new Set((data ?? []).map((r: any) => r.ingredient_id).filter(Boolean))];
+      const supIds = [...new Set((data ?? []).map((r: any) => r.supplier_id).filter(Boolean))];
+      let ingMap: Record<string, string> = {};
+      let supMap: Record<string, string> = {};
+      if (ingIds.length) {
+        const { data: ings } = await supabase.from("ingredients").select("id, nome").in("id", ingIds);
+        ingMap = Object.fromEntries((ings ?? []).map((i: any) => [i.id, i.nome]));
+      }
+      if (supIds.length) {
+        const { data: sups } = await supabase.from("suppliers").select("id, nome").in("id", supIds);
+        supMap = Object.fromEntries((sups ?? []).map((s: any) => [s.id, s.nome]));
+      }
+      return (data ?? []).map((r: any) => ({
+        ...r,
+        ingrediente_nome: ingMap[r.ingredient_id] || "—",
+        fornecedor_nome: supMap[r.supplier_id] || "—",
+      }));
+    },
+    enabled: unlocked,
+  });
+
+  const vencimentosTotal = useMemo(() => vencimentosPendentes.reduce((s: number, r: any) => s + (Number(r.valor_total) || Number(r.quantidade_recebida || r.quantidade_necessaria) * Number(r.preco_recebido || r.preco_medio) || 0), 0), [vencimentosPendentes]);
+  const vencimentosVencidos = useMemo(() => {
+    const hoje = new Date().toISOString().split("T")[0];
+    return vencimentosPendentes.filter((r: any) => r.data_vencimento && r.data_vencimento < hoje);
+  }, [vencimentosPendentes]);
+
+  const payVencimentoFinanceiro = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await (supabase as any).rpc("pay_purchase_order", { p_order: id });
+      if (error) {
+        const msg = (error as any)?.message || "";
+        const isMissing = msg.includes("does not exist") || msg.includes("42883") || msg.includes("pay_purchase_order");
+        if (isMissing) {
+          console.warn("[payVencimentoFinanceiro] fallback para update direto:", msg);
+          const { error: err2 } = await (supabase as any).from("purchase_orders").update({ pago: true, data_pagamento: new Date().toISOString(), data_vencimento: null } as any).eq("id", id);
+          if (err2) throw err2;
+          return;
+        }
+      }
+      if (error) throw error;
+      await logActivity("financeiro", "quitou vencimento", id);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["purchase-orders-received"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      toast.success("Vencimento quitado!");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   // Fetch Anota AI orders for Receita Bruta breakdown (D+1) - inclui payload para diferenciar iFood vs Anota direto
   const { data: anotaOrders = [] } = useQuery({
     queryKey: ["anota-orders-receita", periodoInicio, periodoFim],
@@ -935,6 +1008,7 @@ if (!unlocked) return null;
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais" />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita" />
+        <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentes.length > 0 ? "warning" : "success"} hint={`${vencimentosPendentes.length} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}`} />
       </div>
 
       {/* Insights */}
@@ -975,6 +1049,7 @@ if (!unlocked) return null;
         <TabsList>
           <TabsTrigger value="dre">DRE Completo</TabsTrigger>
           <TabsTrigger value="lancamentos">Lançamentos Manuais</TabsTrigger>
+          <TabsTrigger value="vencimentos">Vencimentos {vencimentosPendentes.length ? `(${vencimentosPendentes.length})` : ""}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="dre" className="pt-4">
@@ -1062,6 +1137,59 @@ if (!unlocked) return null;
                     </TableRow>
                   )
                 })}
+                </TableBody>
+                </Table>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="vencimentos" className="pt-4">
+          <div className="flex justify-between items-center mb-4">
+            <div>
+              <h3 className="font-semibold flex items-center gap-2"><CalendarDays className="size-4" /> Vencimentos — Compras a prazo</h3>
+              <p className="text-xs text-muted-foreground">{vencimentosPendentes.length} pendente(s) • Total {fmtMoney(vencimentosTotal)}{vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => refetchVencimentos()}><RefreshCw className="mr-1.5 size-4" /> Atualizar</Button>
+          </div>
+          {vencimentosPendentes.length === 0 ? (
+            <EmptyState icon={CalendarDays} title="Nenhum vencimento pendente" description="Compras lançadas a prazo aparecerão aqui até serem quitadas." />
+          ) : (
+            <div className="rounded-xl border border-border bg-card overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead>Nº</TableHead>
+                    <TableHead>Insumo</TableHead>
+                    <TableHead>Fornecedor</TableHead>
+                    <TableHead className="text-right">Valor</TableHead>
+                    <TableHead>Vencimento</TableHead>
+                    <TableHead className="text-center">Status</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {vencimentosPendentes.map((o: any) => {
+                    const venc = o.data_vencimento;
+                    const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                    const valor = Number(o.valor_total) || Number(o.quantidade_recebida || o.quantidade_necessaria) * Number(o.preco_recebido || o.preco_medio) || 0;
+                    return (
+                      <TableRow key={o.id} className={isVencido ? "bg-destructive/5" : ""}>
+                        <TableCell className="tabular font-medium">#{o.numero}</TableCell>
+                        <TableCell>{o.ingrediente_nome}</TableCell>
+                        <TableCell className="text-muted-foreground">{o.fornecedor_nome}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
+                        <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                        <TableCell className="text-center">
+                          {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
+                            {payVencimentoFinanceiro.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

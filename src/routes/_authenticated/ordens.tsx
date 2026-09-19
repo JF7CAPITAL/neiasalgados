@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { logActivity } from "@/lib/db";
 import { useRealtime } from "@/hooks/useRealtime";
-import { fmtNum, fmtMoney, fmtDateTime, STATUS_LABELS, PRIORITY_LABELS } from "@/lib/format";
+import { fmtNum, fmtMoney, fmtDateTime, fmtDate, STATUS_LABELS, PRIORITY_LABELS } from "@/lib/format";
 import { printOrderDoc } from "@/lib/export";
 import { PageHeader, EmptyState } from "@/components/erp/PageHeader";
 import { StatusBadge, PriorityBadge } from "@/components/erp/StatusBadge";
@@ -34,6 +34,8 @@ type PurchOrder = {
   id: string; numero: number; status: string; prioridade: string;
   quantidade_necessaria: number; preco_medio: number; created_at: string;
   ingredient_id: string; supplier_id: string | null; observacoes: string | null; auto_gerada: boolean;
+  pago?: boolean | null; data_vencimento?: string | null; data_pagamento?: string | null;
+  quantidade_recebida?: number | null; preco_recebido?: number | null; valor_total?: number | null;
 };
 type NewPO = { ingredient_id: string; quantidade: number; supplier_id: string | null; preco: number; prioridade: string; obs: string };
 
@@ -69,7 +71,7 @@ function OrdensPage() {
   const [tab, setTab] = useState("todas");
   const [filtroData, setFiltroData] = useState<string>(() => todayBRT());
   const [complete, setComplete] = useState<{ order: ProdOrder; produzida: number; perdas: number; obs: string } | null>(null);
-  const [receive, setReceive] = useState<{ order: PurchOrder; qtd: number; preco: number } | null>(null);
+  const [receive, setReceive] = useState<{ order: PurchOrder; qtd: number; preco: number; pago: boolean; vencimento: string } | null>(null);
   const [newPO, setNewPO] = useState<NewPO | null>(null);
   const [newProdO, setNewProdO] = useState<NewProdOrder | null>(null);
   const [newFillingO, setNewFillingO] = useState<NewFillingOrder | null>(null);
@@ -157,13 +159,75 @@ function OrdensPage() {
 
   const doReceive = useMutation({
     mutationFn: async (r: NonNullable<typeof receive>) => {
-      const { error } = await supabase.rpc("receive_purchase_order", {
-        p_order: r.order.id, p_quantidade: r.qtd, p_preco: r.preco || undefined,
+      if (!r.pago && !r.vencimento) throw new Error("Informe a data de vencimento para compras a prazo");
+      // Tenta nova RPC com controle de pagamento; se migration ainda não aplicada, faz fallback para RPC antiga
+      const { error } = await (supabase as any).rpc("receive_purchase_order", {
+        p_order: r.order.id,
+        p_quantidade: r.qtd,
+        p_preco: r.preco || undefined,
+        p_pago: r.pago,
+        p_vencimento: r.pago ? null : r.vencimento,
       });
-      if (error) throw error;
-      await logActivity("ordens", "recebeu compra", r.order.id, { qtd: r.qtd });
+      if (error) {
+        // Fallback para instalações sem migration: usa RPC antiga e depois atualiza vencimento manualmente se possível
+        const msg = (error as any)?.message || "";
+        const isMissing = msg.includes("p_pago") || msg.includes("p_vencimento") || msg.includes("does not exist") || msg.includes("42703") || msg.includes("42883");
+        if (isMissing) {
+          console.warn("[doReceive] fallback para RPC antiga, migration pendente:", msg);
+          const { error: err2 } = await supabase.rpc("receive_purchase_order", {
+            p_order: r.order.id,
+            p_quantidade: r.qtd,
+            p_preco: r.preco || undefined,
+          } as any);
+          if (err2) throw err2;
+          // Tenta atualizar vencimento manualmente se a prazo (se colunas já existirem)
+          if (!r.pago && r.vencimento) {
+            const { error: updErr } = await (supabase as any).from("purchase_orders").update({ pago: false, data_vencimento: r.vencimento, quantidade_recebida: r.qtd, preco_recebido: r.preco } as any).eq("id", r.order.id);
+            if (updErr && !updErr.message?.includes("pago") && !updErr.message?.includes("data_vencimento") && updErr.code !== "42703") throw updErr;
+            if (updErr) console.warn("[doReceive] vencimento update falhou, migration pendente:", updErr.message);
+          }
+        } else {
+          throw error;
+        }
+      }
+      await logActivity("ordens", r.pago ? "recebeu compra (pago)" : "recebeu compra (vencimento)", r.order.id, { qtd: r.qtd, pago: r.pago, vencimento: r.vencimento });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["orders"] }); qc.invalidateQueries({ queryKey: ["ingredients"] }); qc.invalidateQueries({ queryKey: ["products"] }); qc.invalidateQueries({ queryKey: ["stock"] }); qc.invalidateQueries({ queryKey: ["dashboard"] }); toast.success("Compra recebida — insumo atualizado!"); setReceive(null); },
+    onSuccess: (_, r) => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["ingredients"] });
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["stock"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["finance-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      toast.success(r.pago ? "Compra recebida — insumo atualizado!" : `Compra recebida — vencimento em ${new Date(r.vencimento + "T12:00:00").toLocaleDateString("pt-BR")} lançado!`);
+      setReceive(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const payVencimento = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await (supabase as any).rpc("pay_purchase_order", { p_order: id });
+      if (error) {
+        const msg = (error as any)?.message || "";
+        const isMissing = msg.includes("does not exist") || msg.includes("42883") || msg.includes("pay_purchase_order");
+        if (isMissing) {
+          console.warn("[payVencimento] fallback para update direto, migration pendente:", msg);
+          const { error: err2 } = await (supabase as any).from("purchase_orders").update({ pago: true, data_pagamento: new Date().toISOString(), data_vencimento: null } as any).eq("id", id);
+          if (err2) throw err2;
+        } else {
+          throw error;
+        }
+      }
+      await logActivity("ordens", "quitou vencimento", id);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["finance-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      toast.success("Vencimento quitado!");
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -388,10 +452,12 @@ function OrdensPage() {
                 <TableHeader><TableRow>
                   <TableHead>Nº</TableHead><TableHead>Insumo</TableHead><TableHead>Fornecedor</TableHead>
                   <TableHead className="text-right">Necessário</TableHead><TableHead className="text-right">Preço médio</TableHead>
-                  <TableHead>Prioridade</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Ações</TableHead>
+                  <TableHead>Prioridade</TableHead><TableHead>Status</TableHead><TableHead>Pagamento</TableHead><TableHead className="text-right">Ações</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
-                  {purchRows.map((o) => (
+                  {purchRows.map((o) => {
+                    const isVencido = (o as any).data_vencimento && new Date((o as any).data_vencimento + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                    return (
                     <TableRow key={o.id}>
                       <TableCell className="tabular font-medium">#{o.numero}</TableCell>
                       <TableCell>{nm(o.ingredient_id)}</TableCell>
@@ -400,15 +466,32 @@ function OrdensPage() {
                       <TableCell className="text-right tabular">{fmtMoney(o.preco_medio)}</TableCell>
                       <TableCell><PriorityBadge priority={o.prioridade} /></TableCell>
                       <TableCell><StatusBadge status={o.status} /></TableCell>
+                      <TableCell>
+                        {o.status !== "concluida" ? <span className="text-xs text-muted-foreground">—</span> :
+                          (o as any).pago ? <span className="inline-flex items-center gap-1 text-xs font-medium text-success"><CheckCircle2 className="size-3" /> Pago { (o as any).data_pagamento ? fmtDate((o as any).data_pagamento) : ""}</span> :
+                          (o as any).data_vencimento ? <span className={`inline-flex items-center gap-1 text-xs font-medium ${(o as any).data_vencimento && new Date((o as any).data_vencimento + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00") ? "text-destructive" : "text-warning"}`}>Venc. {fmtDate((o as any).data_vencimento)} {(o as any).data_vencimento && new Date((o as any).data_vencimento + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00") ? "• Vencido" : ""}</span> :
+                          <span className="text-xs text-muted-foreground">Pendente</span>
+                        }
+                      </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          {(o.status === "pendente" || o.status === "em_andamento") && <Button size="sm" onClick={() => setReceive({ order: o, qtd: o.quantidade_necessaria, preco: o.preco_medio })}><PackageCheck className="mr-1.5 size-3.5" /> Receber</Button>}
+                          {(o.status === "pendente" || o.status === "em_andamento") && <Button size="sm" onClick={() => {
+                            const venc = new Date(); venc.setDate(venc.getDate() + 30);
+                            setReceive({ order: o, qtd: o.quantidade_necessaria, preco: o.preco_medio, pago: true, vencimento: venc.toISOString().split("T")[0] });
+                          }}><PackageCheck className="mr-1.5 size-3.5" /> Receber</Button>}
+                          {o.status === "concluida" && (o as any).pago === false && (o as any).data_vencimento && (
+                            <Button size="sm" variant="outline" className="text-success border-success/30" onClick={() => payVencimento.mutate(o.id)} disabled={payVencimento.isPending}>
+                              {payVencimento.isPending ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <CheckCircle2 className="mr-1.5 size-3.5" />} Quitar
+                            </Button>
+                          )}
                           <Button size="sm" variant="ghost" onClick={() => printPurch(o)} title="Visualizar / Imprimir / PDF"><FileText className="size-4" /></Button>
                           <Button size="sm" variant="ghost" onClick={() => setDeleteTarget({ type: "purch", id: o.id, numero: o.numero })} title="Excluir ordem" className="text-destructive hover:text-destructive hover:bg-destructive/10"><Trash2 className="size-4" /></Button>
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                  )
+                  }
+                )}
                 </TableBody>
               </Table>
             </div>
@@ -439,13 +522,52 @@ function OrdensPage() {
         <DialogContent>
           <DialogHeader><DialogTitle>Receber compra #{receive?.order.numero}</DialogTitle></DialogHeader>
           {receive && (
-            <div className="space-y-3">
-              <div className="space-y-1.5"><Label className="text-xs">Quantidade recebida</Label><Input type="number" step="any" value={receive.qtd} onChange={(e) => setReceive({ ...receive, qtd: Number(e.target.value) })} /></div>
-              <div className="space-y-1.5"><Label className="text-xs">Preço unitário</Label><Input type="number" step="any" value={receive.preco} onChange={(e) => setReceive({ ...receive, preco: Number(e.target.value) })} /></div>
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs">
+                <div className="flex justify-between"><span className="text-muted-foreground">Insumo:</span> <span className="font-medium">{nm(receive.order.ingredient_id)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Fornecedor:</span> <span className="font-medium">{nm(receive.order.supplier_id) || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Solicitado:</span> <span className="font-medium">{fmtNum(receive.order.quantidade_necessaria, 2)} × {fmtMoney(receive.order.preco_medio)}</span></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><Label className="text-xs">Quantidade recebida</Label><Input type="number" step="any" value={receive.qtd} onChange={(e) => setReceive({ ...receive, qtd: Number(e.target.value) })} /></div>
+                <div className="space-y-1.5"><Label className="text-xs">Preço unitário (R$)</Label><Input type="number" step="any" value={receive.preco} onChange={(e) => setReceive({ ...receive, preco: Number(e.target.value) })} /></div>
+              </div>
+              {receive.qtd > 0 && receive.preco > 0 && (
+                <div className="rounded-lg bg-primary/10 px-3 py-2 text-sm flex justify-between items-center">
+                  <span className="text-muted-foreground">Valor total:</span>
+                  <span className="font-semibold text-primary">{fmtMoney(receive.qtd * receive.preco)}</span>
+                </div>
+              )}
+              <div className="rounded-xl border border-border p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="text-sm font-medium">Compra já paga?</Label>
+                    <p className="text-xs text-muted-foreground">{receive.pago ? "Baixa como pago à vista" : "Lançar como vencimento a prazo"}</p>
+                  </div>
+                  <Switch
+                    checked={receive.pago}
+                    onCheckedChange={(v) => {
+                      if (!v && !receive.vencimento) {
+                        const d = new Date(); d.setDate(d.getDate() + 30);
+                        setReceive({ ...receive, pago: v, vencimento: d.toISOString().split("T")[0] });
+                      } else {
+                        setReceive({ ...receive, pago: v });
+                      }
+                    }}
+                  />
+                </div>
+                {!receive.pago && (
+                  <div className="space-y-1.5 animate-in fade-in">
+                    <Label className="text-xs">Data de vencimento *</Label>
+                    <Input type="date" value={receive.vencimento} onChange={(e) => setReceive({ ...receive, vencimento: e.target.value })} />
+                    <p className="text-xs text-muted-foreground">O título aparecerá em <span className="font-medium">Financeiro → Vencimentos</span> até ser quitado.</p>
+                  </div>
+                )}
+              </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setReceive(null)}>Cancelar</Button>
-                <Button onClick={() => doReceive.mutate(receive)} disabled={doReceive.isPending}>
-                  {doReceive.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Receber
+                <Button onClick={() => doReceive.mutate(receive)} disabled={doReceive.isPending || !receive.qtd || receive.qtd <= 0 || (!receive.pago && !receive.vencimento)}>
+                  {doReceive.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} {receive.pago ? "Receber e pagar" : "Receber e lançar vencimento"}
                 </Button>
               </DialogFooter>
             </div>
