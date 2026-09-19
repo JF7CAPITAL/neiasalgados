@@ -200,23 +200,18 @@ function DashboardPage() {
     },
   });
 
-  if (isLoading || !data) {
-    return (
-      <div className="space-y-6">
-        <PageHeader title="Painel" subtitle="Carregando indicadores..." icon={LayoutDashboard} />
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="h-28 animate-pulse rounded-xl border border-border bg-card" />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  const { products: productsRaw, ingredients, prodOrders: prodOrdersRaw, purchOrders, movements, collabs, names, ordensHoje } = data as any;
-  const scheduledOrders: any[] = (data as any).scheduledOrders ?? [];
-  const scheduledItems: any[] = (data as any).scheduledItems ?? [];
-  const productGroups: { id: string; nome: string; ordem: number }[] = (data as any).productGroups ?? [];
+  // Derived data with safe fallbacks for hook-order consistency (reportContent is a hook and must execute on every render)
+  const productsRaw: any[] = (data as any)?.products ?? [];
+  const ingredients: any[] = (data as any)?.ingredients ?? [];
+  const prodOrdersRaw: any[] = (data as any)?.prodOrders ?? [];
+  const purchOrders: any[] = (data as any)?.purchOrders ?? [];
+  const movements: any[] = (data as any)?.movements ?? [];
+  const collabs: any[] = (data as any)?.collabs ?? [];
+  const names: Record<string, string> = (data as any)?.names ?? {};
+  const ordensHoje: Set<string> = (data as any)?.ordensHoje ?? new Set<string>();
+  const scheduledOrders: any[] = (data as any)?.scheduledOrders ?? [];
+  const scheduledItems: any[] = (data as any)?.scheduledItems ?? [];
+  const productGroups: { id: string; nome: string; ordem: number }[] = (data as any)?.productGroups ?? [];
   const groupOrderMap = new Map<string, number>();
   productGroups.forEach((g) => groupOrderMap.set(g.id, g.ordem ?? 0));
   const isBebidaGroup = (groupId: string | null | undefined) => {
@@ -597,6 +592,19 @@ function DashboardPage() {
         return null;
     }
   }, [report, products, prodOrders, scheduledImpact, produtosAbaixo, insumosAbaixo, ordensAndamento, ordensConcluidas, colabsTurno, movements, isBebidaGroup, pStock, pBelowMin, pInsumosBelowMin, pConsumoHoje, pOP, pColabsTurno]);
+
+  if (isLoading || !data) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Painel" subtitle="Carregando indicadores..." icon={LayoutDashboard} />
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="h-28 animate-pulse rounded-xl border border-border bg-card" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
