@@ -121,62 +121,95 @@ function RelatorioProducaoPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["report-data", from, to],
     queryFn: async () => {
-      const [pm, im, fm, anotaOrdersRes, prodConcluidasRes] = await Promise.all([
-        supabase
-          .from("product_movements")
-          .select("id, product_id, quantidade, created_at, tipo, destino, ref_order_id")
-          .gte("created_at", fromTs)
-          .lte("created_at", toTs)
-          .in("tipo", ["saida", "entrada"])
-          .order("created_at", { ascending: true }),
-        supabase
-          .from("ingredient_movements")
-          .select("id, ingredient_id, quantidade, created_at, tipo")
-          .gte("created_at", fromTs)
-          .lte("created_at", toTs)
-          .eq("tipo", "saida"),
-        supabase
-          .from("filling_movements")
-          .select("id, filling_id, quantidade, created_at, tipo")
-          .gte("created_at", fromTs)
-          .lte("created_at", toTs)
-          .eq("tipo", "saida"),
-        supabase
-          .from("anota_orders")
-          .select("id, pedido_em, imported_at, created_at, check_status")
-          .eq("check_status", 3)
-          .gte("imported_at", fromTs)
-          .lte("imported_at", toTs),
-        supabase
-          .from("production_orders")
-          .select("id, product_id, quantidade_produzida, quantidade_necessaria, created_at, fim, status, kind")
-          .eq("status", "concluida")
-          .eq("kind", "producao")
-          .is("deleted_at", null)
-          .gte("fim", fromTs)
-          .lte("fim", toTs),
+      // Supabase PostgREST limita em 1000 linhas por requisicao - paginar para garantir contagem correta em 30 dias
+      const fetchAll = async (build: () => any) => {
+        const all: any[] = [];
+        let off = 0;
+        const batch = 1000;
+        while (true) {
+          const { data, error } = await build().range(off, off + batch - 1);
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          all.push(...data);
+          if (data.length < batch) break;
+          off += batch;
+        }
+        return all;
+      };
+
+      const [product, ingredient, filling, anotaOrders, prodConcluidasBase] = await Promise.all([
+        fetchAll(() =>
+          supabase
+            .from("product_movements")
+            .select("id, product_id, quantidade, created_at, tipo, destino, ref_order_id")
+            .gte("created_at", fromTs)
+            .lte("created_at", toTs)
+            .in("tipo", ["saida", "entrada"])
+            .order("created_at", { ascending: true }),
+        ),
+        fetchAll(() =>
+          supabase
+            .from("ingredient_movements")
+            .select("id, ingredient_id, quantidade, created_at, tipo")
+            .gte("created_at", fromTs)
+            .lte("created_at", toTs)
+            .eq("tipo", "saida")
+            .order("created_at", { ascending: true }),
+        ),
+        fetchAll(() =>
+          supabase
+            .from("filling_movements")
+            .select("id, filling_id, quantidade, created_at, tipo")
+            .gte("created_at", fromTs)
+            .lte("created_at", toTs)
+            .eq("tipo", "saida")
+            .order("created_at", { ascending: true }),
+        ),
+        fetchAll(() =>
+          supabase
+            .from("anota_orders")
+            .select("id, pedido_em, imported_at, created_at, check_status")
+            .eq("check_status", 3)
+            .gte("imported_at", fromTs)
+            .lte("imported_at", toTs)
+            .order("imported_at", { ascending: true }),
+        ),
+        fetchAll(() =>
+          supabase
+            .from("production_orders")
+            .select("id, product_id, quantidade_produzida, quantidade_necessaria, created_at, fim, status, kind")
+            .eq("status", "concluida")
+            .eq("kind", "producao")
+            .is("deleted_at", null)
+            .gte("fim", fromTs)
+            .lte("fim", toTs)
+            .order("fim", { ascending: true }),
+        ),
       ]);
 
       // Inclui também concluídas sem fim preenchido (fallback por created_at)
-      let prodConcluidas = (prodConcluidasRes.data ?? []) as any[];
+      let prodConcluidas: any[] = [...prodConcluidasBase];
       {
-        const extra = await supabase
-          .from("production_orders")
-          .select("id, product_id, quantidade_produzida, quantidade_necessaria, created_at, fim, status, kind")
-          .eq("status", "concluida")
-          .eq("kind", "producao")
-          .is("deleted_at", null)
-          .is("fim", null)
-          .gte("created_at", fromTs)
-          .lte("created_at", toTs);
-        if (extra.data?.length) prodConcluidas = [...prodConcluidas, ...((extra.data ?? []) as any[])];
+        const extra = await fetchAll(() =>
+          supabase
+            .from("production_orders")
+            .select("id, product_id, quantidade_produzida, quantidade_necessaria, created_at, fim, status, kind")
+            .eq("status", "concluida")
+            .eq("kind", "producao")
+            .is("deleted_at", null)
+            .is("fim", null)
+            .gte("created_at", fromTs)
+            .lte("created_at", toTs)
+            .order("created_at", { ascending: true }),
+        );
+        if (extra.length) prodConcluidas = [...prodConcluidas, ...extra];
       }
 
       return {
-        product: (pm.data ?? []) as ProdMovement[],
-        ingredient: (im.data ?? []) as IngMovement[],
-        filling: (fm.data ?? []) as FilMovement[],
-        anotaOrders: (anotaOrdersRes.data ?? []) as { id: string; pedido_em: string | null; imported_at: string; created_at: string; check_status: number }[],
+        product: product as ProdMovement[],
+        ingredient: ingredient as IngMovement[],
+        filling: filling as FilMovement[],
+        anotaOrders: anotaOrders as { id: string; pedido_em: string | null; imported_at: string; created_at: string; check_status: number }[],
         prodConcluidas: prodConcluidas as { id: string; product_id: string | null; quantidade_produzida: number | null; quantidade_necessaria: number; created_at: string; fim: string | null; status: string; kind: string }[],
       };
     },
