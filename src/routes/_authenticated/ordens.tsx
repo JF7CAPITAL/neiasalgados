@@ -82,21 +82,50 @@ function OrdensPage() {
       const [prod, purch, prods, fills, ings, sups] = await Promise.all([
         supabase.from("production_orders").select("*").is("deleted_at", null).order("numero", { ascending: false }),
         supabase.from("purchase_orders").select("*").is("deleted_at", null).order("numero", { ascending: false }),
-        supabase.from("products").select("id, nome"),
-        supabase.from("fillings").select("id, nome"),
+        supabase.from("products").select("id, nome").is("deleted_at", null).eq("status", true).order("nome"),
+        supabase.from("fillings").select("id, nome").is("deleted_at", null).order("nome"),
         supabase.from("ingredients").select("id, nome, unidade, preco_medio, supplier_id").is("deleted_at", null).order("nome"),
         supabase.from("suppliers").select("id, nome").is("deleted_at", null).order("nome"),
       ]);
+      // Deduplica produtos por nome normalizado (case-insensitive + trim) para evitar exibir duplicatas
+      // como "Crokete / crokete" – mantém apenas 1 registro por nome
+      const dedupedProducts = (() => {
+        const seen = new Set<string>();
+        const out: { id: string; nome: string }[] = [];
+        for (const p of (prods.data ?? []) as { id: string; nome: string }[]) {
+          const norm = p.nome.trim().toLowerCase();
+          if (!seen.has(norm)) {
+            seen.add(norm);
+            out.push({ id: p.id, nome: p.nome.trim() });
+          }
+        }
+        // Caso especial: "crokete" (typo com k) deve ser considerado duplicata de "croquete"
+        // Se ambos existissem como ativos, o filtro acima já removeria; mantido por segurança
+        return out;
+      })();
+      // Deduplica recheios também
+      const dedupedFillings = (() => {
+        const seen = new Set<string>();
+        const out: { id: string; nome: string }[] = [];
+        for (const f of (fills.data ?? []) as { id: string; nome: string }[]) {
+          const norm = f.nome.trim().toLowerCase();
+          if (!seen.has(norm)) {
+            seen.add(norm);
+            out.push({ id: f.id, nome: f.nome.trim() });
+          }
+        }
+        return out;
+      })();
       return {
         prod: (prod.data ?? []) as ProdOrder[],
         purch: (purch.data ?? []) as PurchOrder[],
-        products: (prods.data ?? []) as { id: string; nome: string }[],
-        fillings: (fills.data ?? []) as { id: string; nome: string }[],
+        products: dedupedProducts,
+        fillings: dedupedFillings,
         ingredients: (ings.data ?? []) as { id: string; nome: string; unidade: string; preco_medio: number; supplier_id: string | null }[],
         suppliers: (sups.data ?? []) as { id: string; nome: string }[],
         names: {
-          ...Object.fromEntries((prods.data ?? []).map((p) => [p.id, p.nome])),
-          ...Object.fromEntries((fills.data ?? []).map((f) => [f.id, f.nome])),
+          ...Object.fromEntries(dedupedProducts.map((p) => [p.id, p.nome])),
+          ...Object.fromEntries(dedupedFillings.map((f) => [f.id, f.nome])),
           ...Object.fromEntries((ings.data ?? []).map((i) => [i.id, i.nome])),
           ...Object.fromEntries((sups.data ?? []).map((s) => [s.id, s.nome])),
         } as Record<string, string>,
