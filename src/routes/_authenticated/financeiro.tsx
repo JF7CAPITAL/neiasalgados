@@ -64,6 +64,9 @@ type DreRow = {
   pago?: boolean | null;
   id?: string;
   editable?: boolean;
+  recorrencia_grupo_id?: string | null;
+  recorrencia_tipo?: 'indefinida' | 'determinada' | null;
+  recorrencia_quantidade?: number | null;
 };
 
 const DRE_TIPOS = [
@@ -421,7 +424,7 @@ function FinanceiroPage() {
     queryFn: async () => {
       const { data, error } = await (supabase as any)
         .from("finance_dre_entries")
-        .select("id, valor, recorrencia_grupo_id, recorrente")
+        .select("id, valor, recorrencia_grupo_id, recorrente, recorrencia_tipo, recorrencia_quantidade, pago, vencimento, competencia")
         .eq("recorrente", true);
       if (error) {
         if (error.message?.includes("recorrente") || error.code === "42703") return [];
@@ -431,6 +434,38 @@ function FinanceiroPage() {
     },
     enabled: unlocked,
   });
+
+  // Estatísticas por grupo recorrente para exibir progresso de parcelas (ex: 15/30x)
+  const grupoProgressMap = useMemo(() => {
+    const map = new Map<string, { total: number; pagos: number; pendentes: number; entries: any[] }>();
+    for (const e of (manualRecorrentesAll as any[])) {
+      const gid = (e as any).recorrencia_grupo_id as string | null;
+      if (!gid) continue;
+      if (!map.has(gid)) map.set(gid, { total: 0, pagos: 0, pendentes: 0, entries: [] });
+      map.get(gid)!.entries.push(e);
+    }
+    for (const [gid, stat] of map) {
+      stat.entries.sort((a: any, b: any) => ((a.vencimento || a.competencia || "") as string).localeCompare((b.vencimento || b.competencia || "") as string));
+      const first = stat.entries[0] as any;
+      const qtd = Number(first?.recorrencia_quantidade);
+      const total = qtd > 0 ? qtd : stat.entries.length;
+      const pagos = stat.entries.filter((x: any) => x.pago === true).length;
+      stat.total = total;
+      stat.pagos = pagos;
+      stat.pendentes = Math.max(0, total - pagos);
+    }
+    return map;
+  }, [manualRecorrentesAll]);
+
+  // Índice da parcela dentro do grupo (1-based) para exibir "parcela N/Total"
+  const parcelIndexMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const [, stat] of grupoProgressMap) {
+      const sorted = [...stat.entries].sort((a: any, b: any) => ((a.vencimento || a.competencia || "") as string).localeCompare((b.vencimento || b.competencia || "") as string));
+      sorted.forEach((e: any, idx: number) => m.set(e.id as string, idx + 1));
+    }
+    return m;
+  }, [grupoProgressMap]);
 
   // Mapa de próximo vencimento por grupo recorrente (para exibir sempre o próximo)
   const nextVencimentoMap = useMemo(() => {
@@ -498,6 +533,7 @@ function FinanceiroPage() {
       qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
       toast.success("Lançamento quitado!");
     },
     onError: (e: Error) => toast.error(e.message),
@@ -624,14 +660,13 @@ function FinanceiroPage() {
   }, 0), [receivedPurchaseOrders]);
   const anotaTotal = useMemo(() => anotaOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
 
-  // Combine auto and manual entries - DRE só considera o que foi efetivamente PAGO (caixa)
+  // Combine auto and manual entries - DRE Completo agora mostra também lançamentos futuros pendentes ("Há pagar") com data correta do vencimento
   // Despesas com insumos entra como seção própria no DRE (somente pagos)
   const allDreRows = useMemo(() => {
     const rows: DreRow[] = [...autoDre.map(r => ({ ...r, vencimento: null, data_pagamento: null, pago: null })) as DreRow[]];
-    // Lançamentos manuais: só entram no DRE se pago=true (efetivamente realizado)
+    // Lançamentos manuais: entram tanto pagos quanto pendentes (futuros) para visualização completa no DRE
     for (const e of manualEntries) {
       const pago = (e as any).pago;
-      if (pago === false) continue; // pendentes vão para Vencimentos, não para DRE
       rows.push({
         secao: TIPO_PARA_SECAO[e.tipo] ?? e.tipo.toUpperCase().replace("_", " "),
         categoria: e.categoria,
@@ -643,6 +678,9 @@ function FinanceiroPage() {
         pago: pago ?? null,
         id: e.id,
         editable: true,
+        recorrencia_grupo_id: (e as any).recorrencia_grupo_id ?? null,
+        recorrencia_tipo: (e as any).recorrencia_tipo ?? null,
+        recorrencia_quantidade: (e as any).recorrencia_quantidade ?? null,
       });
     }
     // Despesas com insumos (somente pagas) - principal indicador agora no DRE
@@ -662,7 +700,7 @@ function FinanceiroPage() {
     return rows;
   }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders]);
 
-  // Calculate KPIs - DRE só com pagos (caixa)
+  // Calculate KPIs - DRE Completo: inclui pagos + "Há pagar" (forecast) dentro do período filtrado
   const kpis = useMemo(() => {
     const receita = allDreRows.filter(r => r.secao === "RECEITA BRUTA").reduce((s, r) => s + r.valor, 0);
     const custoDireto = allDreRows.filter(r => r.secao === "CUSTO DIRETO (CMV)").reduce((s, r) => s + r.valor, 0);
@@ -787,6 +825,10 @@ function FinanceiroPage() {
       const pagoVal = (entry as any).pago ?? true;
       // competencia sempre mês do vencimento para manter compatibilidade com DRE por competência
       const competenciaVal = vencimentoVal ? vencimentoVal.slice(0, 7) + "-01" : (entry.competencia || COMPETENCIA_DEFAULT);
+      // Lançamentos futuros devem sempre nascer como "Há pagar" (pago=false), mesmo se switch "pago" estiver marcado
+      const hojeISO = new Date().toISOString().split('T')[0];
+      const isVencimentoFuturo = vencimentoVal > hojeISO;
+      const pagoEfetivo = isVencimentoFuturo ? false : pagoVal;
       const basePayload: any = {
         tipo: entry.tipo!,
         categoria: entry.categoria!,
@@ -794,8 +836,8 @@ function FinanceiroPage() {
         valor: Number(entry.valor) || 0,
         competencia: competenciaVal,
         vencimento: vencimentoVal,
-        pago: pagoVal,
-        data_pagamento: pagoVal ? new Date().toISOString() : null,
+        pago: pagoEfetivo,
+        data_pagamento: pagoEfetivo ? new Date().toISOString() : null,
         recorrente: entry.recorrente ?? false,
       };
       // Tenta incluir novos campos se existirem na tabela (migration 20260831)
@@ -856,11 +898,16 @@ function FinanceiroPage() {
           const grupoId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
           const rows: any[] = [];
           for (let i = 0; i < quantidade; i++) {
+            const venc = addMonthsVencimento(basePayload.vencimento, i);
+            const comp = addMonths(basePayload.competencia, i);
+            const isFuturo = venc > hojeISO;
+            const pagoForThis = pagoVal && !isFuturo;
             rows.push({
               ...basePayload,
-              competencia: addMonths(basePayload.competencia, i),
-              vencimento: addMonthsVencimento(basePayload.vencimento, i),
-              data_pagamento: basePayload.pago ? new Date().toISOString() : null,
+              competencia: comp,
+              vencimento: venc,
+              pago: pagoForThis,
+              data_pagamento: pagoForThis ? new Date().toISOString() : null,
               recorrencia_grupo_id: grupoId,
               recorrencia_tipo: tipo,
               recorrencia_quantidade: tipo === 'determinada' ? quantidade : null,
@@ -912,6 +959,7 @@ function FinanceiroPage() {
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
       qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
       toast.success("Lançamento salvo!");
       setEditingEntry(null);
       setNewEntryOpen(false);
@@ -929,6 +977,7 @@ function FinanceiroPage() {
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
       qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
       toast.success("Lançamento removido!");
       setToDelete(null);
     },
@@ -1168,8 +1217,8 @@ function FinanceiroPage() {
               <TableCell />
               <TableCell />
               <TableCell className='text-right font-display text-lg font-semibold tabular'>{fmtMoney(total)}</TableCell>
-              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.vencimento).length ? `${sectionRows.filter((r: DreRow) => r.fonte === 'manual' && r.pago === false).length} pend.` : "—"}</TableCell>
-              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.pago === true).length} pago / {sectionRows.filter((r: DreRow) => r.pago === false).length} pend.</TableCell>
+              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.vencimento).length ? `${sectionRows.filter((r: DreRow) => r.fonte === 'manual' && r.pago === false).length} Há pagar` : "—"}</TableCell>
+              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.pago === true).length} pago / {sectionRows.filter((r: DreRow) => r.pago === false).length} Há pagar</TableCell>
               <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.fonte === 'auto').length} auto / {sectionRows.filter((r: DreRow) => r.fonte === 'manual').length} manual</TableCell>
               <TableCell className='text-right'>
                 <ChevronDown className={'size-4 mx-auto text-muted-foreground transition-transform ' + (isOpen ? 'rotate-180' : '')} />
@@ -1180,18 +1229,36 @@ function FinanceiroPage() {
           if (isOpen) {
             sectionRows.forEach((r: DreRow, i: number) => {
               const isVencido = r.vencimento && r.pago === false && new Date(r.vencimento + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
-              // DRE só mostra pagos - data do pagamento é data_pagamento se existir, senão vencimento
-              const dataPagamentoDisplay = r.fonte === 'manual' ? (r.data_pagamento ? fmtDate(r.data_pagamento) : r.vencimento ? fmtDate(r.vencimento) : "—") : r.secao === "DESPESAS COM INSUMOS" ? "—" : "—";
+              const isHaPagar = r.fonte === 'manual' && r.pago === false && !isVencido;
+              // Data do pagamento: para pagos mostra data_pagamento, para "Há pagar"/vencido mostra vencimento exato futuro
+              const dataPagamentoDisplay = r.fonte === 'manual' ? (r.pago ? (r.data_pagamento ? fmtDate(r.data_pagamento) : r.vencimento ? fmtDate(r.vencimento) : "—") : r.vencimento ? fmtDate(r.vencimento) : "—") : r.secao === "DESPESAS COM INSUMOS" ? "—" : "—";
+              // Progresso para recorrência determinada (ex: 15/30x) - exibe parcela atual e total pago
+              const gid = (r as any).recorrencia_grupo_id as string | null | undefined;
+              const isDeterminada = (r as any).recorrencia_tipo === 'determinada' && !!gid;
+              let parcelaBadge: string | null = null;
+              let progressoBadge: string | null = null;
+              if (isDeterminada && gid && grupoProgressMap.has(gid)) {
+                const stat = grupoProgressMap.get(gid)!;
+                const idx = parcelIndexMap.get(r.id ?? "") ?? 0;
+                if (idx) parcelaBadge = `${idx}/${stat.total}x`;
+                progressoBadge = `${stat.pagos}/${stat.total} pagas`;
+              }
               rowsToRender.push(
-                <TableRow key={r.id ?? i} className={(r.fonte === 'manual' ? 'bg-amber-50/30 ' : '') + (isVencido ? 'bg-destructive/5' : '')}>
+                <TableRow key={r.id ?? i} className={(r.fonte === 'manual' ? 'bg-amber-50/30 ' : '') + (isVencido ? 'bg-destructive/5' : '') + (isHaPagar ? ' bg-warning/5' : '')}>
                   <TableCell className='text-xs text-muted-foreground'>{r.secao}</TableCell>
-                  <TableCell className='font-medium'>{r.categoria}</TableCell>
+                  <TableCell className='font-medium'>
+                    <div className="flex items-center gap-1.5">
+                      <span>{r.categoria}</span>
+                      {parcelaBadge && <Badge variant="outline" className="text-xs border-info/30 text-info" title={progressoBadge ?? undefined}>{parcelaBadge}</Badge>}
+                    </div>
+                    {progressoBadge && <div className="text-xs text-muted-foreground">{progressoBadge}</div>}
+                  </TableCell>
                   <TableCell className='text-muted-foreground text-sm'>{r.descricao || '—'}</TableCell>
                   <TableCell className='text-right tabular font-medium'>{fmtMoney(r.valor)}</TableCell>
-                  <TableCell className={`text-center text-xs tabular ${r.fonte === 'manual' && r.pago ? "text-success font-medium" : isVencido ? "text-destructive font-medium" : "text-muted-foreground"}`}>{dataPagamentoDisplay}</TableCell>
+                  <TableCell className={`text-center text-xs tabular ${r.fonte === 'manual' && r.pago ? "text-success font-medium" : isVencido ? "text-destructive font-medium" : isHaPagar ? "text-warning font-medium" : "text-muted-foreground"}`}>{dataPagamentoDisplay}</TableCell>
                   <TableCell className='text-center'>
                     {r.fonte === 'manual' ? (
-                      r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Pendente</Badge>
+                      r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Há pagar</Badge>
                     ) : r.secao === "DESPESAS COM INSUMOS" ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : <span className="text-xs text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className='text-center'>
@@ -1393,27 +1460,50 @@ if (!unlocked) return null;
                   {manualEntries.map((e) => {
                     const tipo = (e as any).recorrencia_tipo as string | null;
                     const qtd = (e as any).recorrencia_quantidade as number | null;
-                    const label = !e.recorrente ? "Não" : tipo === 'determinada' && qtd ? `Determinada (${qtd}x)` : tipo === 'indefinida' ? 'Indefinida' : 'Sim';
+                    const gid = (e as any).recorrencia_grupo_id as string | null;
+                    let label: string = "Não";
+                    let parcelaProgress: string | null = null;
+                    let parcelaIdxBadge: string | null = null;
+                    if (!e.recorrente) {
+                      label = "Não";
+                    } else if (tipo === 'determinada' && qtd) {
+                      if (gid && grupoProgressMap.has(gid)) {
+                        const stat = grupoProgressMap.get(gid)!;
+                        const idx = parcelIndexMap.get(e.id) ?? 0;
+                        parcelaProgress = `${stat.pagos}/${stat.total} pagas`;
+                        parcelaIdxBadge = idx ? `${idx}/${stat.total}x` : `${qtd}x`;
+                        label = `Determinada (${parcelaIdxBadge})`;
+                      } else {
+                        label = `Determinada (${qtd}x)`;
+                      }
+                    } else if (tipo === 'indefinida') {
+                      label = 'Indefinida';
+                    } else {
+                      label = 'Sim';
+                    }
                     const vencOriginal = (e as any).vencimento || e.competencia;
                     const pago = (e as any).pago;
-                    // Para recorrentes, mostra sempre o próximo vencimento pendente do grupo
-                    const gid = (e as any).recorrencia_grupo_id as string | null;
-                    const venc = !pago && e.recorrente && gid && nextVencimentoMap.has(gid) ? nextVencimentoMap.get(gid)! : vencOriginal;
+                    // Mostra sempre a data exata do lançamento (vencimento real da parcela), não o próximo do grupo
+                    const venc = vencOriginal;
                     const isVencido = venc && !pago && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                    const isHaPagar = !pago && !isVencido;
                     return (
-                    <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : ""}>
+                    <TableRow key={e.id} className={(isVencido ? "bg-destructive/5 " : "") + (isHaPagar ? "bg-warning/5 " : "")}>
                       <TableCell>
                         <Badge variant="outline" className="capitalize">{e.tipo.replace("_", " ")}</Badge>
                       </TableCell>
-                      <TableCell className="font-medium">{e.categoria}</TableCell>
+                      <TableCell className="font-medium">
+                        <div>{e.categoria}</div>
+                        {parcelaProgress && <div className="text-xs text-muted-foreground">{parcelaProgress}</div>}
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
                       <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
-                      <TableCell className={isVencido ? "text-destructive font-medium" : "text-muted-foreground"}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                      <TableCell className={isVencido ? "text-destructive font-medium" : isHaPagar ? "text-warning font-medium" : "text-muted-foreground"}>{venc ? fmtDate(venc) : "—"}</TableCell>
                       <TableCell className="text-center">
-                        {pago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-success/30 text-success">Em dia</Badge>}
+                        {pago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
                       </TableCell>
                       <TableCell className="text-center">
-                        <Badge variant={e.recorrente ? "secondary" : "outline"} className="text-xs">
+                        <Badge variant={e.recorrente ? "secondary" : "outline"} className="text-xs" title={parcelaProgress ?? undefined}>
                           {label}
                         </Badge>
                       </TableCell>
@@ -1472,7 +1562,7 @@ if (!unlocked) return null;
                               <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
                               <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
                               <TableCell className="text-center">
-                                {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                                {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
                               </TableCell>
                               <TableCell className="text-right">
                                 <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
@@ -1506,14 +1596,30 @@ if (!unlocked) return null;
                         {manualVencimentos.map((e) => {
                           const venc = (e as any).vencimento || e.competencia;
                           const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                          const gid = (e as any).recorrencia_grupo_id as string | null;
+                          const isDeterminada = (e as any).recorrencia_tipo === 'determinada' && !!gid;
+                          let parcelaBadge: string | null = null;
+                          let progressoBadge: string | null = null;
+                          if (isDeterminada && gid && grupoProgressMap.has(gid)) {
+                            const stat = grupoProgressMap.get(gid)!;
+                            const idx = parcelIndexMap.get(e.id) ?? 0;
+                            if (idx) parcelaBadge = `${idx}/${stat.total}x`;
+                            progressoBadge = `${stat.pagos}/${stat.total} pagas`;
+                          }
                           return (
-                            <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : ""}>
-                              <TableCell className="font-medium">{e.categoria}</TableCell>
+                            <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : "bg-warning/5"}>
+                              <TableCell className="font-medium">
+                                <div className="flex items-center gap-1.5">
+                                  <span>{e.categoria}</span>
+                                  {parcelaBadge && <Badge variant="outline" className="text-xs border-info/30 text-info">{parcelaBadge}</Badge>}
+                                </div>
+                                {progressoBadge && <div className="text-xs text-muted-foreground">{progressoBadge}</div>}
+                              </TableCell>
                               <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
                               <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
-                              <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                              <TableCell className={isVencido ? "text-destructive font-medium" : "text-warning font-medium"}>{venc ? fmtDate(venc) : "—"}</TableCell>
                               <TableCell className="text-center">
-                                {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                                {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
                               </TableCell>
                               <TableCell className="text-right">
                                 <Button size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending}>
@@ -1553,18 +1659,27 @@ if (!unlocked) return null;
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs">Vencimento *</Label>
-                  <Input type="date" value={(editingEntry as any)?.vencimento || editingEntry?.competencia || VENCIMENTO_DEFAULT} onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), vencimento: e.target.value } as any)} />
-                  <p className="text-xs text-muted-foreground">Quando deve ser pago — entra em Vencimentos se futuro e não pago</p>
+                  <Input type="date" value={(editingEntry as any)?.vencimento || editingEntry?.competencia || VENCIMENTO_DEFAULT} onChange={(e) => { const v = e.target.value; const hoje = new Date().toISOString().split('T')[0]; const isFut = v > hoje; setEditingEntry({ ...(editingEntry ?? {}), vencimento: v, ...(isFut ? { pago: false } : {}) } as any); }} />
+                  <p className="text-xs text-muted-foreground">Quando deve ser pago — futuros ficam como "Há pagar" e aparecem no DRE com a data exata do vencimento</p>
                 </div>
               </div>
               <div className="rounded-xl border border-border p-3 flex items-center justify-between">
                 <div className="space-y-0.5">
                   <Label className="text-sm font-medium">Já foi pago?</Label>
-                  <p className="text-xs text-muted-foreground">{(editingEntry as any)?.pago ?? true ? "Quitado — não aparece em Vencimentos" : "Pendente — aparecerá em Vencimentos"}</p>
+                  <p className="text-xs text-muted-foreground">{(editingEntry as any)?.pago ?? true ? "Quitado — não aparece em Vencimentos" : "Há pagar — aparecerá em Vencimentos e no DRE como Há pagar"}</p>
                 </div>
                 <Switch
                   checked={(editingEntry as any)?.pago ?? true}
-                  onCheckedChange={(v) => setEditingEntry({ ...(editingEntry ?? {}), pago: v } as any)}
+                  onCheckedChange={(v) => {
+                    const venc = (editingEntry as any)?.vencimento || (editingEntry as any)?.competencia || VENCIMENTO_DEFAULT;
+                    const hoje = new Date().toISOString().split('T')[0];
+                    if (venc > hoje && v === true) {
+                      toast.info("Lançamentos futuros ficam como 'Há pagar' até o vencimento");
+                      setEditingEntry({ ...(editingEntry ?? {}), pago: false } as any);
+                      return;
+                    }
+                    setEditingEntry({ ...(editingEntry ?? {}), pago: v } as any);
+                  }}
                 />
               </div>
               <div className="space-y-1.5">
@@ -1852,9 +1967,9 @@ if (!unlocked) return null;
                                 <TableCell className="text-muted-foreground">{o.fornecedor_nome}</TableCell>
                                 <TableCell className="text-right tabular">{qtd ? fmtNum(qtd, 2) : "—"}</TableCell>
                                 <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
-                                <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                                <TableCell className={isVencido ? "text-destructive font-medium" : "text-warning font-medium"}>{venc ? fmtDate(venc) : "—"}</TableCell>
                                 <TableCell className="text-center">
-                                  {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                                  {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
                                 </TableCell>
                                 <TableCell className="text-right">
                                   <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
@@ -1888,14 +2003,30 @@ if (!unlocked) return null;
                           {manualVencimentos.map((e) => {
                             const venc = (e as any).vencimento || e.competencia;
                             const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                            const gid = (e as any).recorrencia_grupo_id as string | null;
+                            const isDeterminada = (e as any).recorrencia_tipo === 'determinada' && !!gid;
+                            let parcelaBadge: string | null = null;
+                            let progressoBadge: string | null = null;
+                            if (isDeterminada && gid && grupoProgressMap.has(gid)) {
+                              const stat = grupoProgressMap.get(gid)!;
+                              const idx = parcelIndexMap.get(e.id) ?? 0;
+                              if (idx) parcelaBadge = `${idx}/${stat.total}x`;
+                              progressoBadge = `${stat.pagos}/${stat.total} pagas`;
+                            }
                             return (
-                              <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : ""}>
-                                <TableCell className="font-medium">{e.categoria}</TableCell>
+                              <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : "bg-warning/5"}>
+                                <TableCell className="font-medium">
+                                  <div className="flex items-center gap-1.5">
+                                    <span>{e.categoria}</span>
+                                    {parcelaBadge && <Badge variant="outline" className="text-xs border-info/30 text-info">{parcelaBadge}</Badge>}
+                                  </div>
+                                  {progressoBadge && <div className="text-xs text-muted-foreground">{progressoBadge}</div>}
+                                </TableCell>
                                 <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
                                 <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
-                                <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                                <TableCell className={isVencido ? "text-destructive font-medium" : "text-warning font-medium"}>{venc ? fmtDate(venc) : "—"}</TableCell>
                                 <TableCell className="text-center">
-                                  {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                                  {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
                                 </TableCell>
                                 <TableCell className="text-right">
                                   <Button size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending}>
