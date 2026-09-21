@@ -28,6 +28,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 
 export const Route = createFileRoute("/_authenticated/financeiro")({
   component: FinanceiroPage,
@@ -40,6 +41,9 @@ type DreEntry = {
   descricao: string | null;
   valor: number;
   competencia: string;
+  vencimento?: string | null;
+  pago?: boolean | null;
+  data_pagamento?: string | null;
   recorrente: boolean;
   recorrencia_tipo?: 'indefinida' | 'determinada' | null;
   recorrencia_quantidade?: number | null;
@@ -55,6 +59,8 @@ type DreRow = {
   descricao: string;
   valor: number;
   fonte: "auto" | "manual";
+  vencimento?: string | null;
+  pago?: boolean | null;
   id?: string;
   editable?: boolean;
 };
@@ -70,6 +76,7 @@ const DRE_TIPOS = [
 ] as const;
 
 const COMPETENCIA_DEFAULT = new Date().toISOString().split("T")[0].slice(0, 7) + "-01";
+const VENCIMENTO_DEFAULT = new Date().toISOString().split("T")[0];
 
 function FinanceiroPage() {
   const qc = useQueryClient();
@@ -267,7 +274,7 @@ function FinanceiroPage() {
   };
   // Combine auto and manual entries
   const allDreRows = useMemo(() => {
-    const rows: DreRow[] = [...autoDre];
+    const rows: DreRow[] = [...autoDre.map(r => ({ ...r, vencimento: null, pago: null })) as DreRow[]];
     for (const e of manualEntries) {
       rows.push({
         secao: TIPO_PARA_SECAO[e.tipo] ?? e.tipo.toUpperCase().replace("_", " "),
@@ -275,6 +282,8 @@ function FinanceiroPage() {
         descricao: e.descricao ?? "",
         valor: Number(e.valor),
         fonte: "manual",
+        vencimento: (e as any).vencimento || e.competencia || null,
+        pago: (e as any).pago ?? null,
         id: e.id,
         editable: true,
       });
@@ -402,11 +411,40 @@ function FinanceiroPage() {
     enabled: unlocked,
   });
 
-  const vencimentosTotal = useMemo(() => vencimentosPendentes.reduce((s: number, r: any) => s + (Number(r.valor_total) || Number(r.quantidade_recebida || r.quantidade_necessaria) * Number(r.preco_recebido || r.preco_medio) || 0), 0), [vencimentosPendentes]);
+  // Lançamentos manuais pendentes (vencimentos futuros ainda não pagos)
+  const { data: manualVencimentos = [], refetch: refetchManualVencimentos } = useQuery({
+    queryKey: ["finance-manual-vencimentos"],
+    queryFn: async () => {
+      const { data, error } = await (supabase as any)
+        .from("finance_dre_entries")
+        .select("*")
+        .eq("pago", false)
+        .not("vencimento", "is", null)
+        .order("vencimento", { ascending: true });
+      if (error) {
+        if (error.message?.includes("pago") || error.message?.includes("vencimento") || error.code === "42703") {
+          console.warn("[manual-vencimentos] colunas ainda não existem, migration pendente:", error.message);
+          return [];
+        }
+        throw error;
+      }
+      return (data ?? []) as DreEntry[];
+    },
+    enabled: unlocked,
+  });
+
+  const vencimentosTotal = useMemo(() => {
+    const totalCompras = vencimentosPendentes.reduce((s: number, r: any) => s + (Number(r.valor_total) || Number(r.quantidade_recebida || r.quantidade_necessaria) * Number(r.preco_recebido || r.preco_medio) || 0), 0);
+    const totalManual = manualVencimentos.reduce((s: number, r: any) => s + (Number(r.valor) || 0), 0);
+    return totalCompras + totalManual;
+  }, [vencimentosPendentes, manualVencimentos]);
   const vencimentosVencidos = useMemo(() => {
     const hoje = new Date().toISOString().split("T")[0];
-    return vencimentosPendentes.filter((r: any) => r.data_vencimento && r.data_vencimento < hoje);
-  }, [vencimentosPendentes]);
+    const comprasVencidas = vencimentosPendentes.filter((r: any) => r.data_vencimento && r.data_vencimento < hoje);
+    const manualVencidas = manualVencimentos.filter((r: any) => r.vencimento && r.vencimento < hoje);
+    return [...comprasVencidas, ...manualVencidas];
+  }, [vencimentosPendentes, manualVencimentos]);
+  const vencimentosPendentesTotal = useMemo(() => vencimentosPendentes.length + manualVencimentos.length, [vencimentosPendentes, manualVencimentos]);
 
   const payVencimentoFinanceiro = useMutation({
     mutationFn: async (id: string) => {
@@ -429,6 +467,31 @@ function FinanceiroPage() {
       qc.invalidateQueries({ queryKey: ["purchase-orders-received"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
       toast.success("Vencimento quitado!");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const payManualVencimento = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await (supabase as any).rpc("pay_dre_entry", { p_entry: id });
+      if (error) {
+        const msg = (error as any)?.message || "";
+        const isMissing = msg.includes("does not exist") || msg.includes("42883") || msg.includes("pay_dre_entry") || msg.includes("42703");
+        if (isMissing) {
+          console.warn("[payManualVencimento] fallback para update direto:", msg);
+          const { error: err2 } = await (supabase as any).from("finance_dre_entries").update({ pago: true, data_pagamento: new Date().toISOString() } as any).eq("id", id);
+          if (err2) throw err2;
+          return;
+        }
+        throw error;
+      }
+      await logActivity("financeiro", "quitou vencimento manual", id);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      toast.success("Lançamento quitado!");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -614,12 +677,19 @@ function FinanceiroPage() {
 
   const saveEntry = useMutation({
     mutationFn: async (entry: Partial<DreEntry> & { id?: string }) => {
+      const vencimentoVal = (entry as any).vencimento || entry.competencia || VENCIMENTO_DEFAULT;
+      const pagoVal = (entry as any).pago ?? true;
+      // competencia sempre mês do vencimento para manter compatibilidade com DRE por competência
+      const competenciaVal = vencimentoVal ? vencimentoVal.slice(0, 7) + "-01" : (entry.competencia || COMPETENCIA_DEFAULT);
       const basePayload: any = {
         tipo: entry.tipo!,
         categoria: entry.categoria!,
         descricao: entry.descricao || null,
         valor: Number(entry.valor) || 0,
-        competencia: entry.competencia || COMPETENCIA_DEFAULT,
+        competencia: competenciaVal,
+        vencimento: vencimentoVal,
+        pago: pagoVal,
+        data_pagamento: pagoVal ? new Date().toISOString() : null,
         recorrente: entry.recorrente ?? false,
       };
       // Tenta incluir novos campos se existirem na tabela (migration 20260831)
@@ -635,6 +705,11 @@ function FinanceiroPage() {
         d.setUTCMonth(d.getUTCMonth() + months);
         return d.toISOString().split('T')[0];
       };
+      const addMonthsVencimento = (isoDate: string, months: number) => {
+        const d = new Date(isoDate);
+        d.setUTCMonth(d.getUTCMonth() + months);
+        return d.toISOString().split('T')[0];
+      };
 
       if (entry.id) {
         // Edição: atualiza apenas o registro selecionado (não replica recorrência)
@@ -643,10 +718,23 @@ function FinanceiroPage() {
         if ((entry as any).recorrencia_grupo_id) payload.recorrencia_grupo_id = (entry as any).recorrencia_grupo_id;
         let { error } = await supabase.from("finance_dre_entries").update(payload).eq("id", entry.id);
         // Fallback se colunas novas ainda não existem (migration pendente)
-        if (error && /recorrencia/i.test(error.message)) {
-          const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...fallback } = payload;
-          const { error: err2 } = await supabase.from("finance_dre_entries").update(fallback).eq("id", entry.id);
-          if (err2) throw err2;
+        if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message))) {
+          const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, ...fallback } = payload;
+          // tenta sem novas colunas, depois tenta apenas sem recorrencia
+          if (/vencimento|pago/.test(error.message)) {
+            const { error: err2 } = await supabase.from("finance_dre_entries").update(fallback).eq("id", entry.id);
+            if (err2) {
+              // tenta fallback parcial só sem recorrencia
+              const { recorrencia_tipo: _rt, recorrencia_quantidade: _rq, recorrencia_grupo_id: _rg, ...fallback2 } = payload;
+              const { error: err3 } = await supabase.from("finance_dre_entries").update(fallback2).eq("id", entry.id);
+              if (err3) throw err3;
+              await logActivity("financeiro", "editou lançamento DRE", entry.id, { categoria: entry.categoria });
+              return;
+            }
+          } else {
+            const { error: err2 } = await supabase.from("finance_dre_entries").update(fallback).eq("id", entry.id);
+            if (err2) throw err2;
+          }
         } else if (error) throw error;
         await logActivity("financeiro", "editou lançamento DRE", entry.id, { categoria: entry.categoria });
       } else {
@@ -665,6 +753,8 @@ function FinanceiroPage() {
             rows.push({
               ...basePayload,
               competencia: addMonths(basePayload.competencia, i),
+              vencimento: addMonthsVencimento(basePayload.vencimento, i),
+              data_pagamento: basePayload.pago ? new Date().toISOString() : null,
               recorrencia_grupo_id: grupoId,
               recorrencia_tipo: tipo,
               recorrencia_quantidade: tipo === 'determinada' ? quantidade : null,
@@ -672,21 +762,41 @@ function FinanceiroPage() {
           }
           // Tenta inserir com novas colunas
           let { error, data } = await supabase.from("finance_dre_entries").insert(rows).select("id");
-          if (error && /recorrencia/i.test(error.message)) {
+          if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message))) {
             // Fallback sem colunas novas
-            const fallbackRows = rows.map(({ recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...r }) => r);
-            const { error: err2, data: data2 } = await supabase.from("finance_dre_entries").insert(fallbackRows).select("id");
-            if (err2) throw err2;
-            data = data2;
+            const fallbackRows = rows.map(({ recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, ...r }) => r);
+            // se erro for só recorrencia, tenta com vencimento/pago mantidos
+            if (/recorrencia/.test(error.message) && !/vencimento|pago/.test(error.message)) {
+              const fallback2 = rows.map(({ recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...r }) => r);
+              const { error: err2, data: data2 } = await supabase.from("finance_dre_entries").insert(fallback2).select("id");
+              if (err2) throw err2;
+              data = data2;
+            } else {
+              const { error: err2, data: data2 } = await supabase.from("finance_dre_entries").insert(fallbackRows).select("id");
+              if (err2) throw err2;
+              data = data2;
+            }
           } else if (error) throw error;
           await logActivity("financeiro", "criou lançamentos DRE recorrentes", (data as any)?.[0]?.id ?? null, { categoria: entry.categoria, tipo, quantidade });
         } else {
           let { data, error } = await supabase.from("finance_dre_entries").insert(basePayload).select("id").single();
-          if (error && /recorrencia/i.test(error.message)) {
-            const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...fallback } = basePayload;
-            const { data: d2, error: err2 } = await supabase.from("finance_dre_entries").insert(fallback).select("id").single();
-            if (err2) throw err2;
-            data = d2;
+          if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message))) {
+            const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, ...fallback } = basePayload;
+            if (/vencimento|pago/.test(error.message)) {
+              const { error: err2, data: d2 } = await supabase.from("finance_dre_entries").insert(fallback).select("id").single();
+              if (err2) {
+                const { recorrencia_tipo: _rt, recorrencia_quantidade: _rq, recorrencia_grupo_id: _rg, ...fallback2 } = basePayload;
+                const { error: err3, data: d3 } = await supabase.from("finance_dre_entries").insert(fallback2).select("id").single();
+                if (err3) throw err3;
+                data = d3 as any;
+              } else {
+                data = d2;
+              }
+            } else {
+              const { error: err2, data: d2 } = await supabase.from("finance_dre_entries").insert(fallback).select("id").single();
+              if (err2) throw err2;
+              data = d2;
+            }
           } else if (error) throw error;
           await logActivity("financeiro", "criou lançamento DRE", (data as any).id, { categoria: entry.categoria });
         }
@@ -694,6 +804,8 @@ function FinanceiroPage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
       toast.success("Lançamento salvo!");
       setEditingEntry(null);
       setNewEntryOpen(false);
@@ -709,6 +821,8 @@ function FinanceiroPage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
       toast.success("Lançamento removido!");
       setToDelete(null);
     },
@@ -947,6 +1061,8 @@ function FinanceiroPage() {
               <TableCell />
               <TableCell />
               <TableCell className='text-right font-display text-lg font-semibold tabular'>{fmtMoney(total)}</TableCell>
+              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.vencimento).length ? `${sectionRows.filter((r: DreRow) => r.fonte === 'manual' && r.pago === false).length} pend.` : "—"}</TableCell>
+              <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.pago === true).length} pago / {sectionRows.filter((r: DreRow) => r.pago === false).length} pend.</TableCell>
               <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.fonte === 'auto').length} auto / {sectionRows.filter((r: DreRow) => r.fonte === 'manual').length} manual</TableCell>
               <TableCell className='text-right'>
                 <ChevronDown className={'size-4 mx-auto text-muted-foreground transition-transform ' + (isOpen ? 'rotate-180' : '')} />
@@ -956,12 +1072,19 @@ function FinanceiroPage() {
 
           if (isOpen) {
             sectionRows.forEach((r: DreRow, i: number) => {
+              const isVencido = r.vencimento && r.pago === false && new Date(r.vencimento + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
               rowsToRender.push(
-                <TableRow key={r.id ?? i} className={r.fonte === 'manual' ? 'bg-amber-50/30' : ''}>
+                <TableRow key={r.id ?? i} className={(r.fonte === 'manual' ? 'bg-amber-50/30 ' : '') + (isVencido ? 'bg-destructive/5' : '')}>
                   <TableCell className='text-xs text-muted-foreground'>{r.secao}</TableCell>
                   <TableCell className='font-medium'>{r.categoria}</TableCell>
                   <TableCell className='text-muted-foreground text-sm'>{r.descricao || '—'}</TableCell>
                   <TableCell className='text-right tabular font-medium'>{fmtMoney(r.valor)}</TableCell>
+                  <TableCell className={`text-center text-xs tabular ${isVencido ? "text-destructive font-medium" : "text-muted-foreground"}`}>{r.fonte === 'manual' && r.vencimento ? fmtDate(r.vencimento) : r.fonte === 'manual' && !r.vencimento ? "—" : "—"}</TableCell>
+                  <TableCell className='text-center'>
+                    {r.fonte === 'manual' ? (
+                      r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Pendente</Badge>
+                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                  </TableCell>
                   <TableCell className='text-center'>
                     <Badge variant={r.fonte === 'auto' ? 'default' : 'outline'} className='text-xs'>
                       {r.fonte === 'auto' ? 'Automático' : 'Manual'}
@@ -969,9 +1092,12 @@ function FinanceiroPage() {
                   </TableCell>
                   <TableCell className='text-right'>
                     {r.editable && r.id && (
-                      <Button variant='ghost' size='icon' onClick={(e) => { e.stopPropagation(); }}>
-                        <Pencil className='size-4' />
-                      </Button>
+                      <>
+                        {r.pago === false && <Button variant='ghost' size="icon" onClick={(e) => { e.stopPropagation(); payManualVencimento.mutate(r.id!); }} title="Quitar"><CreditCard className="size-4" /></Button>}
+                        <Button variant='ghost' size='icon' onClick={(e) => { e.stopPropagation(); setEditingEntry(manualEntries.find(m => m.id === r.id) || null); setNewEntryOpen(true); }}>
+                          <Pencil className='size-4' />
+                        </Button>
+                      </>
                     )}
                   </TableCell>
                 </TableRow>
@@ -983,7 +1109,7 @@ function FinanceiroPage() {
                 <TableRow key={section.key + '-total'} className='bg-muted/50 font-bold'>
                   <TableCell colSpan={3} className='text-right'>Total {section.title}</TableCell>
                   <TableCell className='text-right font-display text-lg'>{fmtMoney(total)}</TableCell>
-                  <TableCell colSpan={2} />
+                  <TableCell colSpan={4} />
                 </TableRow>
               );
             }
@@ -1035,7 +1161,7 @@ if (!unlocked) return null;
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4">
         <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint={`Anota direto: ${fmtMoney(anotaDirectTotal)} | iFood: ${fmtMoney(ifoodTotal)}`} onClick={() => setShowReceitaDetail(true)} />
-        <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentes.length > 0 ? "warning" : "success"} hint={`${vencimentosPendentes.length} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""} • Itens em estoque ainda não pagos`} onClick={() => setShowVencimentosDetail(true)} />
+        <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentesTotal > 0 ? "warning" : "success"} hint={`${vencimentosPendentesTotal} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""} • ${vencimentosPendentes.length} compras + ${manualVencimentos.length} lançamentos`} onClick={() => setShowVencimentosDetail(true)} />
         <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV (CMV zerado temporariamente)" />
         <KpiCard
           label="Folha dos colaboradores"
@@ -1089,7 +1215,7 @@ if (!unlocked) return null;
         <TabsList>
           <TabsTrigger value="dre">DRE Completo</TabsTrigger>
           <TabsTrigger value="lancamentos">Lançamentos Manuais</TabsTrigger>
-          <TabsTrigger value="vencimentos">Vencimentos {vencimentosPendentes.length ? `(${vencimentosPendentes.length})` : ""}</TabsTrigger>
+          <TabsTrigger value="vencimentos">Vencimentos {vencimentosPendentesTotal ? `(${vencimentosPendentesTotal})` : ""}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="dre" className="pt-4">
@@ -1110,6 +1236,8 @@ if (!unlocked) return null;
                     <TableHead className="min-w-[200px]">Categoria</TableHead>
                     <TableHead className="min-w-[300px]">Descrição</TableHead>
                     <TableHead className="min-w-[160px] text-right">Valor</TableHead>
+                    <TableHead className="min-w-[130px] text-center">Vencimento</TableHead>
+                    <TableHead className="min-w-[110px] text-center">Pago</TableHead>
                     <TableHead className="min-w-[140px] text-center">Fonte</TableHead>
                     <TableHead className="min-w-[100px] text-right">Ações</TableHead>
                   </TableRow>
@@ -1125,7 +1253,7 @@ if (!unlocked) return null;
         <TabsContent value="lancamentos" className="pt-4">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold">Lançamentos Manuais do Contador</h3>
-            <Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}>
+            <Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}>
               <Plus className="mr-1.5 size-4" /> Novo lançamento
             </Button>
           </div>
@@ -1135,7 +1263,7 @@ if (!unlocked) return null;
               icon={FileSpreadsheet}
               title="Nenhum lançamento manual"
               description="Adicione ajustes, provisões, impostos e outras despesas que não vêm do sistema."
-              action={<Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}><Plus className="mr-1.5 size-4" /> Criar primeiro lançamento</Button>}
+              action={<Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}><Plus className="mr-1.5 size-4" /> Criar primeiro lançamento</Button>}
             />
           ) : (
             <div className="rounded-xl border border-border bg-card overflow-x-auto">
@@ -1146,7 +1274,8 @@ if (!unlocked) return null;
                     <TableHead className="w-48 min-w-48">Categoria</TableHead>
                     <TableHead className="w-64 min-w-64">Descrição</TableHead>
                     <TableHead className="w-40 min-w-40 text-right">Valor</TableHead>
-                    <TableHead className="w-36 min-w-36">Competência</TableHead>
+                    <TableHead className="w-36 min-w-36">Vencimento</TableHead>
+                    <TableHead className="w-32 min-w-32 text-center">Pago</TableHead>
                     <TableHead className="w-40 min-w-40 text-center">Recorrente</TableHead>
                     <TableHead className="w-28 min-w-28 text-right">Ações</TableHead>
                   </TableRow>
@@ -1156,21 +1285,28 @@ if (!unlocked) return null;
                     const tipo = (e as any).recorrencia_tipo as string | null;
                     const qtd = (e as any).recorrencia_quantidade as number | null;
                     const label = !e.recorrente ? "Não" : tipo === 'determinada' && qtd ? `Determinada (${qtd}x)` : tipo === 'indefinida' ? 'Indefinida' : 'Sim';
+                    const venc = (e as any).vencimento || e.competencia;
+                    const pago = (e as any).pago;
+                    const isVencido = venc && !pago && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
                     return (
-                    <TableRow key={e.id}>
+                    <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : ""}>
                       <TableCell>
                         <Badge variant="outline" className="capitalize">{e.tipo.replace("_", " ")}</Badge>
                       </TableCell>
                       <TableCell className="font-medium">{e.categoria}</TableCell>
                       <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
                       <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
-                      <TableCell className="text-muted-foreground">{fmtDate(e.competencia)}</TableCell>
+                      <TableCell className={isVencido ? "text-destructive font-medium" : "text-muted-foreground"}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                      <TableCell className="text-center">
+                        {pago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Pendente</Badge>}
+                      </TableCell>
                       <TableCell className="text-center">
                         <Badge variant={e.recorrente ? "secondary" : "outline"} className="text-xs">
                           {label}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
+                        {!pago && venc && <Button variant="ghost" size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending} title="Quitar"><CreditCard className="size-4" /></Button>}
                         <Button variant="ghost" size="icon" onClick={() => { setEditingEntry(e); setNewEntryOpen(true); }}><Pencil className="size-4" /></Button>
                         <Button variant="ghost" size="icon" onClick={() => setToDelete(e)}><Trash2 className="size-4 text-destructive" /></Button>
                       </TableCell>
@@ -1186,52 +1322,100 @@ if (!unlocked) return null;
         <TabsContent value="vencimentos" className="pt-4">
           <div className="flex justify-between items-center mb-4">
             <div>
-              <h3 className="font-semibold flex items-center gap-2"><CalendarDays className="size-4" /> Vencimentos — Compras a prazo</h3>
-              <p className="text-xs text-muted-foreground">{vencimentosPendentes.length} pendente(s) • Total {fmtMoney(vencimentosTotal)}{vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}</p>
+              <h3 className="font-semibold flex items-center gap-2"><CalendarDays className="size-4" /> Vencimentos — Compras e lançamentos a prazo</h3>
+              <p className="text-xs text-muted-foreground">{vencimentosPendentesTotal} pendente(s) • Total {fmtMoney(vencimentosTotal)}{vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""} • {vencimentosPendentes.length} compras + {manualVencimentos.length} lançamentos</p>
             </div>
-            <Button variant="outline" size="sm" onClick={() => refetchVencimentos()}><RefreshCw className="mr-1.5 size-4" /> Atualizar</Button>
+            <Button variant="outline" size="sm" onClick={() => { refetchVencimentos(); refetchManualVencimentos(); }}><RefreshCw className="mr-1.5 size-4" /> Atualizar</Button>
           </div>
-          {vencimentosPendentes.length === 0 ? (
-            <EmptyState icon={CalendarDays} title="Nenhum vencimento pendente" description="Compras lançadas a prazo aparecerão aqui até serem quitadas." />
+          {vencimentosPendentesTotal === 0 ? (
+            <EmptyState icon={CalendarDays} title="Nenhum vencimento pendente" description="Compras a prazo e lançamentos manuais com vencimento futuro aparecerão aqui até serem quitados." />
           ) : (
-            <div className="rounded-xl border border-border bg-card overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead>Nº</TableHead>
-                    <TableHead>Insumo</TableHead>
-                    <TableHead>Fornecedor</TableHead>
-                    <TableHead className="text-right">Valor</TableHead>
-                    <TableHead>Vencimento</TableHead>
-                    <TableHead className="text-center">Status</TableHead>
-                    <TableHead className="text-right">Ações</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {vencimentosPendentes.map((o: any) => {
-                    const venc = o.data_vencimento;
-                    const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
-                    const valor = Number(o.valor_total) || Number(o.quantidade_recebida || o.quantidade_necessaria) * Number(o.preco_recebido || o.preco_medio) || 0;
-                    return (
-                      <TableRow key={o.id} className={isVencido ? "bg-destructive/5" : ""}>
-                        <TableCell className="tabular font-medium">#{o.numero}</TableCell>
-                        <TableCell>{o.ingrediente_nome}</TableCell>
-                        <TableCell className="text-muted-foreground">{o.fornecedor_nome}</TableCell>
-                        <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
-                        <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
-                        <TableCell className="text-center">
-                          {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
-                            {payVencimentoFinanceiro.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+            <div className="space-y-6">
+              {vencimentosPendentes.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><ShoppingCart className="size-4" /> Compras a prazo — itens em estoque não pagos</h4>
+                  <div className="rounded-xl border border-border bg-card overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/50">
+                          <TableHead>Nº</TableHead>
+                          <TableHead>Insumo</TableHead>
+                          <TableHead>Fornecedor</TableHead>
+                          <TableHead className="text-right">Valor</TableHead>
+                          <TableHead>Vencimento</TableHead>
+                          <TableHead className="text-center">Status</TableHead>
+                          <TableHead className="text-right">Ações</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {vencimentosPendentes.map((o: any) => {
+                          const venc = o.data_vencimento;
+                          const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                          const valor = Number(o.valor_total) || Number(o.quantidade_recebida || o.quantidade_necessaria) * Number(o.preco_recebido || o.preco_medio) || 0;
+                          return (
+                            <TableRow key={o.id} className={isVencido ? "bg-destructive/5" : ""}>
+                              <TableCell className="tabular font-medium">#{o.numero}</TableCell>
+                              <TableCell>{o.ingrediente_nome}</TableCell>
+                              <TableCell className="text-muted-foreground">{o.fornecedor_nome}</TableCell>
+                              <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
+                              <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                              <TableCell className="text-center">
+                                {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
+                                  {payVencimentoFinanceiro.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+              {manualVencimentos.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><FileSpreadsheet className="size-4" /> Lançamentos manuais pendentes</h4>
+                  <div className="rounded-xl border border-border bg-card overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/50">
+                          <TableHead>Categoria</TableHead>
+                          <TableHead>Descrição</TableHead>
+                          <TableHead className="text-right">Valor</TableHead>
+                          <TableHead>Vencimento</TableHead>
+                          <TableHead className="text-center">Status</TableHead>
+                          <TableHead className="text-right">Ações</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {manualVencimentos.map((e) => {
+                          const venc = (e as any).vencimento || e.competencia;
+                          const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                          return (
+                            <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : ""}>
+                              <TableCell className="font-medium">{e.categoria}</TableCell>
+                              <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
+                              <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
+                              <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                              <TableCell className="text-center">
+                                {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending}>
+                                  {payManualVencimento.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </TabsContent>
@@ -1244,7 +1428,7 @@ if (!unlocked) return null;
             <DialogTitle>{editingEntry?.id ? "Editar lançamento" : "Novo lançamento manual"}</DialogTitle>
           </DialogHeader>
           {(editingEntry || newEntryOpen) && (
-            <form onSubmit={(e) => { e.preventDefault(); saveEntry.mutate(editingEntry ?? { tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); }} className="space-y-4">
+            <form onSubmit={(e) => { e.preventDefault(); saveEntry.mutate(editingEntry ?? { tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); }} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Tipo</Label>
@@ -1256,9 +1440,20 @@ if (!unlocked) return null;
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Competência</Label>
-                  <Input type="date" value={editingEntry?.competencia || COMPETENCIA_DEFAULT} onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), competencia: e.target.value })} />
+                  <Label className="text-xs">Vencimento *</Label>
+                  <Input type="date" value={(editingEntry as any)?.vencimento || editingEntry?.competencia || VENCIMENTO_DEFAULT} onChange={(e) => setEditingEntry({ ...(editingEntry ?? {}), vencimento: e.target.value } as any)} />
+                  <p className="text-xs text-muted-foreground">Quando deve ser pago — entra em Vencimentos se futuro e não pago</p>
                 </div>
+              </div>
+              <div className="rounded-xl border border-border p-3 flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-medium">Já foi pago?</Label>
+                  <p className="text-xs text-muted-foreground">{(editingEntry as any)?.pago ?? true ? "Quitado — não aparece em Vencimentos" : "Pendente — aparecerá em Vencimentos"}</p>
+                </div>
+                <Switch
+                  checked={(editingEntry as any)?.pago ?? true}
+                  onCheckedChange={(v) => setEditingEntry({ ...(editingEntry ?? {}), pago: v } as any)}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Categoria</Label>
@@ -1495,72 +1690,120 @@ if (!unlocked) return null;
         </DialogContent>
       </Dialog>
 
-      {/* Vencimentos Detail Dialog - itens em estoque ainda não pagos */}
+      {/* Vencimentos Detail Dialog - itens em estoque e lançamentos ainda não pagos */}
       <Dialog open={showVencimentosDetail} onOpenChange={setShowVencimentosDetail}>
         <DialogContent className="max-w-5xl max-h-[85vh] flex flex-col overflow-hidden">
           <DialogHeader className="shrink-0">
-            <DialogTitle>Vencimentos — Itens em estoque ainda não pagos</DialogTitle>
-            <p className="text-sm text-muted-foreground">Ordens de compra já recebidas (entradas no estoque) com pagamento pendente • {vencimentosPendentes.length} pendente(s) • Total {fmtMoney(vencimentosTotal)}{vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}</p>
+            <DialogTitle>Vencimentos — Itens em estoque e lançamentos a pagar</DialogTitle>
+            <p className="text-sm text-muted-foreground">Ordens de compra já recebidas + lançamentos manuais com pagamento pendente • {vencimentosPendentesTotal} pendente(s) • Total {fmtMoney(vencimentosTotal)}{vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""} • {vencimentosPendentes.length} compras + {manualVencimentos.length} lançamentos</p>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
-            {vencimentosPendentes.length === 0 ? (
+            {vencimentosPendentesTotal === 0 ? (
               <div className="py-12 text-center">
                 <CalendarDays className="mx-auto size-10 text-muted-foreground/40" />
                 <p className="mt-3 text-sm font-medium">Nenhum vencimento pendente</p>
-                <p className="mt-1 text-xs text-muted-foreground">Compras lançadas a prazo aparecerão aqui até serem quitadas.</p>
+                <p className="mt-1 text-xs text-muted-foreground">Compras a prazo e lançamentos com vencimento futuro aparecerão aqui até serem quitados.</p>
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-border">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-muted/50">
-                      <TableHead>Nº</TableHead>
-                      <TableHead>Insumo / Produto</TableHead>
-                      <TableHead>Fornecedor</TableHead>
-                      <TableHead className="text-right">Qtd. recebida</TableHead>
-                      <TableHead className="text-right">Valor</TableHead>
-                      <TableHead>Vencimento</TableHead>
-                      <TableHead className="text-center">Status</TableHead>
-                      <TableHead className="text-right">Ações</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {vencimentosPendentes.map((o: any) => {
-                      const venc = o.data_vencimento;
-                      const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
-                      const valor = Number(o.valor_total) || Number(o.quantidade_recebida || o.quantidade_necessaria) * Number(o.preco_recebido || o.preco_medio) || 0;
-                      const qtd = Number(o.quantidade_recebida ?? o.quantidade_necessaria) || 0;
-                      const preco = Number(o.preco_recebido ?? o.preco_medio) || 0;
-                      return (
-                        <TableRow key={o.id} className={isVencido ? "bg-destructive/5" : ""}>
-                          <TableCell className="tabular font-medium">#{o.numero}</TableCell>
-                          <TableCell>
-                            <div className="font-medium">{o.ingrediente_nome}</div>
-                            <div className="text-xs text-muted-foreground">{qtd ? `${fmtNum(qtd, 2)} × ${fmtMoney(preco)}` : ""}</div>
-                          </TableCell>
-                          <TableCell className="text-muted-foreground">{o.fornecedor_nome}</TableCell>
-                          <TableCell className="text-right tabular">{qtd ? fmtNum(qtd, 2) : "—"}</TableCell>
-                          <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
-                          <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
-                          <TableCell className="text-center">
-                            {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
-                              {payVencimentoFinanceiro.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
+              <div className="space-y-6">
+                {vencimentosPendentes.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><ShoppingCart className="size-4" /> Compras — itens em estoque não pagos</h4>
+                    <div className="overflow-x-auto rounded-xl border border-border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-muted/50">
+                            <TableHead>Nº</TableHead>
+                            <TableHead>Insumo / Produto</TableHead>
+                            <TableHead>Fornecedor</TableHead>
+                            <TableHead className="text-right">Qtd. recebida</TableHead>
+                            <TableHead className="text-right">Valor</TableHead>
+                            <TableHead>Vencimento</TableHead>
+                            <TableHead className="text-center">Status</TableHead>
+                            <TableHead className="text-right">Ações</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {vencimentosPendentes.map((o: any) => {
+                            const venc = o.data_vencimento;
+                            const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                            const valor = Number(o.valor_total) || Number(o.quantidade_recebida || o.quantidade_necessaria) * Number(o.preco_recebido || o.preco_medio) || 0;
+                            const qtd = Number(o.quantidade_recebida ?? o.quantidade_necessaria) || 0;
+                            const preco = Number(o.preco_recebido ?? o.preco_medio) || 0;
+                            return (
+                              <TableRow key={o.id} className={isVencido ? "bg-destructive/5" : ""}>
+                                <TableCell className="tabular font-medium">#{o.numero}</TableCell>
+                                <TableCell>
+                                  <div className="font-medium">{o.ingrediente_nome}</div>
+                                  <div className="text-xs text-muted-foreground">{qtd ? `${fmtNum(qtd, 2)} × ${fmtMoney(preco)}` : ""}</div>
+                                </TableCell>
+                                <TableCell className="text-muted-foreground">{o.fornecedor_nome}</TableCell>
+                                <TableCell className="text-right tabular">{qtd ? fmtNum(qtd, 2) : "—"}</TableCell>
+                                <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
+                                <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                                <TableCell className="text-center">
+                                  {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
+                                    {payVencimentoFinanceiro.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
+                {manualVencimentos.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><FileSpreadsheet className="size-4" /> Lançamentos manuais pendentes</h4>
+                    <div className="overflow-x-auto rounded-xl border border-border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-muted/50">
+                            <TableHead>Categoria</TableHead>
+                            <TableHead>Descrição</TableHead>
+                            <TableHead className="text-right">Valor</TableHead>
+                            <TableHead>Vencimento</TableHead>
+                            <TableHead className="text-center">Status</TableHead>
+                            <TableHead className="text-right">Ações</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {manualVencimentos.map((e) => {
+                            const venc = (e as any).vencimento || e.competencia;
+                            const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                            return (
+                              <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : ""}>
+                                <TableCell className="font-medium">{e.categoria}</TableCell>
+                                <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
+                                <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
+                                <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                                <TableCell className="text-center">
+                                  {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Button size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending}>
+                                    {payManualVencimento.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             <div className="grid grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg">
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Pendentes</p>
-                <p className="font-display text-xl font-semibold">{vencimentosPendentes.length}</p>
+                <p className="font-display text-xl font-semibold">{vencimentosPendentesTotal}</p>
               </div>
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Total a pagar</p>
