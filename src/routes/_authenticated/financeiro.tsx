@@ -254,12 +254,22 @@ function FinanceiroPage() {
     enabled: unlocked,
   });
 
+  // Mapeia tipo DRE para seção exibida no DRE (precisa coincidir com seções do backend)
+  const TIPO_PARA_SECAO: Record<string, string> = {
+    receita: "RECEITA BRUTA",
+    custo_direto: "CUSTO DIRETO (CMV)",
+    custo_variavel: "CUSTO VARIAVEL",
+    despesa_operacional: "DESPESAS OPERACIONAIS",
+    despesa_administrativa: "DESPESA ADMINISTRATIVA",
+    despesa_financeira: "DESPESA FINANCEIRA",
+    outros: "OUTROS",
+  };
   // Combine auto and manual entries
   const allDreRows = useMemo(() => {
     const rows: DreRow[] = [...autoDre];
     for (const e of manualEntries) {
       rows.push({
-        secao: e.tipo.toUpperCase().replace("_", " "),
+        secao: TIPO_PARA_SECAO[e.tipo] ?? e.tipo.toUpperCase().replace("_", " "),
         categoria: e.categoria,
         descricao: e.descricao ?? "",
         valor: Number(e.valor),
@@ -304,19 +314,47 @@ function FinanceiroPage() {
   });
 
   // Fetch received purchase orders for Despesas com Insumos
+  // Period filter uses updated_at (data de recebimento) em vez de created_at,
+  // para ordens criadas em período anterior mas recebidas no período atual aparecerem.
+  // Usa valor_total / quantidade_recebida quando disponível (migration 20261001)
   const { data: receivedPurchaseOrders = [] } = useQuery({
     queryKey: ["purchase-orders-received", periodoInicio, periodoFim],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("purchase_orders")
-        .select("id, numero, ingredient_id, quantidade_necessaria, preco_medio, created_at, ingredients(nome, unidade, preco_medio, preco_ultima_compra)")
-        .eq("status", "concluida")
-        .is("deleted_at", null)
-        .gte("created_at", periodoInicio)
-        .lte("created_at", periodoFim)
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as { id: string; numero: number; ingredient_id: string; quantidade_necessaria: number; preco_medio: number; created_at: string; ingredients: { nome: string; unidade: string; preco_medio: number; preco_ultima_compra: number } | null }[];
+      let data: any[] | null = null;
+      let error: any = null;
+      try {
+        const res = await (supabase as any)
+          .from("purchase_orders")
+          .select("id, numero, ingredient_id, quantidade_necessaria, quantidade_recebida, preco_medio, preco_recebido, valor_total, pago, data_pagamento, data_vencimento, created_at, updated_at, ingredients(nome, unidade, preco_medio, preco_ultima_compra)")
+          .eq("status", "concluida")
+          .is("deleted_at", null)
+          .gte("updated_at", periodoInicio)
+          .lte("updated_at", periodoFim + "T23:59:59")
+          .order("updated_at", { ascending: false });
+        data = res.data;
+        error = res.error;
+      } catch (e) {
+        error = e;
+      }
+      if (error) {
+        const msg = error?.message || "";
+        const isMissingCol = msg.includes("quantidade_recebida") || msg.includes("preco_recebido") || msg.includes("valor_total") || msg.includes("pago") || error?.code === "42703";
+        if (isMissingCol) {
+          console.warn("[purchase-orders-received] fallback para colunas antigas, migration pendente:", msg);
+          const { data: fallback, error: err2 } = await supabase
+            .from("purchase_orders")
+            .select("id, numero, ingredient_id, quantidade_necessaria, preco_medio, created_at, ingredients(nome, unidade, preco_medio, preco_ultima_compra)")
+            .eq("status", "concluida")
+            .is("deleted_at", null)
+            .gte("created_at", periodoInicio)
+            .lte("created_at", periodoFim)
+            .order("created_at", { ascending: false });
+          if (err2) throw err2;
+          return (fallback ?? []) as any;
+        }
+        throw error;
+      }
+      return (data ?? []) as { id: string; numero: number; ingredient_id: string; quantidade_necessaria: number; quantidade_recebida: number | null; preco_medio: number; preco_recebido: number | null; valor_total: number | null; pago: boolean | null; data_pagamento: string | null; data_vencimento: string | null; created_at: string; updated_at: string; ingredients: { nome: string; unidade: string; preco_medio: number; preco_ultima_compra: number } | null }[];
     },
     enabled: unlocked,
   });
@@ -494,14 +532,16 @@ function FinanceiroPage() {
     return s + Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
   }, 0), [collaborators]);
   const folhaSaldoExibido = totalSaldoDevedor > 0 ? totalSaldoDevedor : totalSaldoDerivado;
-  const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s, o: any) => {
-    const precoUnit = Number(o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || Number(o.ingredients?.preco_medio) || 0;
-    return s + (precoUnit * (Number(o.quantidade_necessaria) || 0));
+  // Total considera valor_total quando disponível, senão quantidade_recebida * preco_recebido (valor efetivo pago)
+  // Fallback mantém compatibilidade com ordens antigas
+  const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s: number, o: any) => {
+    const valor = Number(o.valor_total) || (Number(o.quantidade_recebida ?? o.quantidade_necessaria) || 0) * (Number(o.preco_recebido ?? o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || Number(o.ingredients?.preco_medio) || 0);
+    return s + valor;
   }, 0), [receivedPurchaseOrders]);
   const insumosAvgPrice = useMemo(() => {
     if (receivedPurchaseOrders.length === 0) return 0;
     const sumUnit = receivedPurchaseOrders.reduce((s: number, o: any) => {
-      const precoUnit = Number(o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || 0;
+      const precoUnit = Number(o.preco_recebido ?? o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || 0;
       return s + precoUnit;
     }, 0);
     return sumUnit / receivedPurchaseOrders.length;
@@ -994,8 +1034,8 @@ if (!unlocked) return null;
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4">
         <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint={`Anota direto: ${fmtMoney(anotaDirectTotal)} | iFood: ${fmtMoney(ifoodTotal)}`} onClick={() => setShowReceitaDetail(true)} />
-        <KpiCard label="Custo Direto (CMV)" value={fmtMoney(kpis.custoDireto)} icon={Package} tone="warning" hint="Insumos consumidos no período" />
-        <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV" />
+        <KpiCard label="Custo Direto (CMV)" value={fmtMoney(kpis.custoDireto)} icon={Package} tone={kpis.custoDireto > 0 ? "warning" : "info"} hint={kpis.custoDireto > 0 ? "Outros custos diretos do período" : "Insumos agora em Despesas com insumos — aguardando novos custos"} />
+        <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV (sem insumos por enquanto)" />
         <KpiCard
           label="Folha dos colaboradores"
           value={fmtMoney(folhaSaldoExibido)}
@@ -1004,7 +1044,7 @@ if (!unlocked) return null;
           hint={`Saldo devedor · Pagamentos realizados: ${fmtMoney(totalPagamentos)} · Salários: ${fmtMoney(totalSalarios)}`}
           onClick={() => setShowFolhaDetail(true)}
         />
-        <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas · Média: ${fmtMoney(insumosAvgPrice)}`} onClick={() => setShowInsumosDetail(true)} />
+        <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais" />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita" />
@@ -1390,7 +1430,7 @@ if (!unlocked) return null;
         <DialogContent className="max-w-5xl max-h-[85vh] flex flex-col overflow-hidden">
           <DialogHeader className="shrink-0">
             <DialogTitle>Despesas com Insumos (Ordens Recebidas)</DialogTitle>
-            <p className="text-sm text-muted-foreground">Preço unitário = última compra · Preço médio = média histórica do insumo · % variação vs médio</p>
+            <p className="text-sm text-muted-foreground">Valor efetivo recebido (quantidade_recebida × preco_recebido) — principal indicador de custo de insumos. Preço médio = média histórica do insumo · % variação vs médio</p>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
             <div className="overflow-x-auto rounded-xl border border-border">
@@ -1404,27 +1444,31 @@ if (!unlocked) return null;
                     <TableHead className="text-right">Preço Médio</TableHead>
                     <TableHead className="text-right">% vs Médio</TableHead>
                     <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-center">Pagamento</TableHead>
                     <TableHead className="text-right">Data</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {receivedPurchaseOrders.map((o) => {
-                    const precoUnit = Number(o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || 0;
+                  {receivedPurchaseOrders.map((o: any) => {
+                    const precoUnit = Number(o.preco_recebido ?? o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || 0;
                     const precoMedio = Number(o.ingredients?.preco_medio) || 0;
-                    const total = Number(o.quantidade_necessaria) * precoUnit;
+                    const qtd = Number(o.quantidade_recebida ?? o.quantidade_necessaria) || 0;
+                    const total = Number(o.valor_total) || qtd * precoUnit;
                     const pct = precoMedio > 0 ? ((precoUnit - precoMedio) / precoMedio) * 100 : 0;
                     const pctFmt = precoMedio > 0 ? `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%` : "—";
                     const pctTone = pct > 0.5 ? "text-destructive" : pct < -0.5 ? "text-success" : "text-muted-foreground";
+                    const pagoLabel = o.pago ? "Pago" : o.data_vencimento ? `Venc. ${fmtDate(o.data_vencimento)}` : "—";
                     return (
                     <TableRow key={o.id}>
                       <TableCell>#{o.numero}</TableCell>
                       <TableCell className="font-medium">{o.ingredients?.nome || "—"}</TableCell>
-                      <TableCell className="text-right">{fmtNum(o.quantidade_necessaria, 2)} {o.ingredients?.unidade || ""}</TableCell>
+                      <TableCell className="text-right">{fmtNum(qtd, 2)} {o.ingredients?.unidade || ""}</TableCell>
                       <TableCell className="text-right tabular">{precoUnit ? fmtMoney(precoUnit) : "—"}</TableCell>
                       <TableCell className="text-right tabular text-muted-foreground">{precoMedio ? fmtMoney(precoMedio) : "—"}</TableCell>
                       <TableCell className={`text-right tabular font-medium ${pctTone}`}>{pctFmt}</TableCell>
                       <TableCell className="text-right tabular font-medium">{total ? fmtMoney(total) : "—"}</TableCell>
-                      <TableCell className="text-right text-muted-foreground">{fmtDate(o.created_at)}</TableCell>
+                      <TableCell className="text-center"><Badge variant={o.pago ? "default" : "outline"} className="text-xs">{pagoLabel}</Badge></TableCell>
+                      <TableCell className="text-right text-muted-foreground">{fmtDate(o.updated_at || o.created_at)}</TableCell>
                     </TableRow>
                   )})}
                 </TableBody>
