@@ -60,6 +60,7 @@ type DreRow = {
   valor: number;
   fonte: "auto" | "manual";
   vencimento?: string | null;
+  data_pagamento?: string | null;
   pago?: boolean | null;
   id?: string;
   editable?: boolean;
@@ -103,6 +104,7 @@ function FinanceiroPage() {
   const [showInsumosDetail, setShowInsumosDetail] = useState(false);
   const [showReceitaDetail, setShowReceitaDetail] = useState(false);
   const [showVencimentosDetail, setShowVencimentosDetail] = useState(false);
+  const [showOutrasDespesasDetail, setShowOutrasDespesasDetail] = useState(false);
   const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     "RECEITA BRUTA": true,
@@ -272,40 +274,7 @@ function FinanceiroPage() {
     despesa_financeira: "DESPESA FINANCEIRA",
     outros: "OUTROS",
   };
-  // Combine auto and manual entries
-  const allDreRows = useMemo(() => {
-    const rows: DreRow[] = [...autoDre.map(r => ({ ...r, vencimento: null, pago: null })) as DreRow[]];
-    for (const e of manualEntries) {
-      rows.push({
-        secao: TIPO_PARA_SECAO[e.tipo] ?? e.tipo.toUpperCase().replace("_", " "),
-        categoria: e.categoria,
-        descricao: e.descricao ?? "",
-        valor: Number(e.valor),
-        fonte: "manual",
-        vencimento: (e as any).vencimento || e.competencia || null,
-        pago: (e as any).pago ?? null,
-        id: e.id,
-        editable: true,
-      });
-    }
-    return rows;
-  }, [autoDre, manualEntries]);
 
-  // Calculate KPIs
-  const kpis = useMemo(() => {
-    const receita = allDreRows.filter(r => r.secao === "RECEITA BRUTA").reduce((s, r) => s + r.valor, 0);
-    const custoDireto = allDreRows.filter(r => r.secao === "CUSTO DIRETO (CMV)").reduce((s, r) => s + r.valor, 0);
-    const custoVariavel = allDreRows.filter(r => r.secao === "CUSTO VARIAVEL").reduce((s, r) => s + r.valor, 0);
-    const lucroBruto = receita - custoDireto - custoVariavel;
-    const despesasOp = allDreRows.filter(r => r.secao === "DESPESAS OPERACIONAIS").reduce((s, r) => s + r.valor, 0);
-    const outrasDespesas = allDreRows
-      .filter(r => ["DESPESA ADMINISTRATIVA", "DESPESA FINANCEIRA", "OUTROS"].includes(r.secao))
-      .reduce((s, r) => s + r.valor, 0);
-    const resultado = lucroBruto - despesasOp - outrasDespesas;
-    const margem = receita > 0 ? ((resultado / receita) * 100) : 0;
-
-    return { receita, custoDireto, custoVariavel, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
-  }, [allDreRows]);
 
   // Fetch collaborators with salaries for Folha dos Colaboradores
   const { data: collaborators = [] } = useQuery({
@@ -445,6 +414,44 @@ function FinanceiroPage() {
     return [...comprasVencidas, ...manualVencidas];
   }, [vencimentosPendentes, manualVencimentos]);
   const vencimentosPendentesTotal = useMemo(() => vencimentosPendentes.length + manualVencimentos.length, [vencimentosPendentes, manualVencimentos]);
+
+  // Todos recorrentes (para ponto de equilíbrio - não diminui quando parcela paga, só quando grupo removido)
+  const { data: manualRecorrentesAll = [] } = useQuery({
+    queryKey: ["finance-recorrentes-all"],
+    queryFn: async () => {
+      const { data, error } = await (supabase as any)
+        .from("finance_dre_entries")
+        .select("id, valor, recorrencia_grupo_id, recorrente")
+        .eq("recorrente", true);
+      if (error) {
+        if (error.message?.includes("recorrente") || error.code === "42703") return [];
+        throw error;
+      }
+      return (data ?? []) as any[];
+    },
+    enabled: unlocked,
+  });
+
+  // Mapa de próximo vencimento por grupo recorrente (para exibir sempre o próximo)
+  const nextVencimentoMap = useMemo(() => {
+    const map = new Map<string, string>();
+    const grupos = new Map<string, DreEntry[]>();
+    for (const e of manualVencimentos) {
+      const gid = (e as any).recorrencia_grupo_id as string | null;
+      if (!gid) continue;
+      if (!grupos.has(gid)) grupos.set(gid, []);
+      grupos.get(gid)!.push(e);
+    }
+    const hoje = new Date().toISOString().split("T")[0];
+    for (const [gid, list] of grupos) {
+      const sorted = [...list].sort((a, b) => ((a as any).vencimento || a.competencia || "").localeCompare((b as any).vencimento || b.competencia || ""));
+      const next = sorted.find(e => ((e as any).vencimento || e.competencia) && ((e as any).vencimento || e.competencia) >= hoje) || sorted[0];
+      if (next) map.set(gid, (next as any).vencimento || next.competencia);
+    }
+    return map;
+  }, [manualVencimentos]);
+
+
 
   const payVencimentoFinanceiro = useMutation({
     mutationFn: async (id: string) => {
@@ -610,7 +617,106 @@ function FinanceiroPage() {
     }, 0);
     return sumUnit / receivedPurchaseOrders.length;
   }, [receivedPurchaseOrders]);
+  // Somente pagos — para DRE (realizado)
+  const insumosPaidTotal = useMemo(() => receivedPurchaseOrders.filter((o: any) => o.pago).reduce((s: number, o: any) => {
+    const valor = Number(o.valor_total) || (Number(o.quantidade_recebida ?? o.quantidade_necessaria) || 0) * (Number(o.preco_recebido ?? o.preco_medio) || Number(o.ingredients?.preco_ultima_compra) || Number(o.ingredients?.preco_medio) || 0);
+    return s + valor;
+  }, 0), [receivedPurchaseOrders]);
   const anotaTotal = useMemo(() => anotaOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
+
+  // Combine auto and manual entries - DRE só considera o que foi efetivamente PAGO (caixa)
+  // Despesas com insumos entra como seção própria no DRE (somente pagos)
+  const allDreRows = useMemo(() => {
+    const rows: DreRow[] = [...autoDre.map(r => ({ ...r, vencimento: null, data_pagamento: null, pago: null })) as DreRow[]];
+    // Lançamentos manuais: só entram no DRE se pago=true (efetivamente realizado)
+    for (const e of manualEntries) {
+      const pago = (e as any).pago;
+      if (pago === false) continue; // pendentes vão para Vencimentos, não para DRE
+      rows.push({
+        secao: TIPO_PARA_SECAO[e.tipo] ?? e.tipo.toUpperCase().replace("_", " "),
+        categoria: e.categoria,
+        descricao: e.descricao ?? "",
+        valor: Number(e.valor),
+        fonte: "manual",
+        vencimento: (e as any).vencimento || e.competencia || null,
+        data_pagamento: (e as any).data_pagamento || null,
+        pago: pago ?? null,
+        id: e.id,
+        editable: true,
+      });
+    }
+    // Despesas com insumos (somente pagas) - principal indicador agora no DRE
+    if (insumosPaidTotal > 0) {
+      rows.push({
+        secao: "DESPESAS COM INSUMOS",
+        categoria: "Insumos pagos",
+        descricao: `${receivedPurchaseOrders.filter((o: any) => o.pago).length} ordens quitadas no período`,
+        valor: insumosPaidTotal,
+        fonte: "auto",
+        vencimento: null,
+        data_pagamento: null,
+        pago: true,
+        editable: false,
+      });
+    }
+    return rows;
+  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders]);
+
+  // Calculate KPIs - DRE só com pagos (caixa)
+  const kpis = useMemo(() => {
+    const receita = allDreRows.filter(r => r.secao === "RECEITA BRUTA").reduce((s, r) => s + r.valor, 0);
+    const custoDireto = allDreRows.filter(r => r.secao === "CUSTO DIRETO (CMV)").reduce((s, r) => s + r.valor, 0);
+    const custoVariavel = allDreRows.filter(r => r.secao === "CUSTO VARIAVEL").reduce((s, r) => s + r.valor, 0);
+    const despesasInsumos = allDreRows.filter(r => r.secao === "DESPESAS COM INSUMOS").reduce((s, r) => s + r.valor, 0);
+    const lucroBruto = receita - custoDireto - custoVariavel - despesasInsumos;
+    const despesasOp = allDreRows.filter(r => r.secao === "DESPESAS OPERACIONAIS").reduce((s, r) => s + r.valor, 0);
+    const outrasDespesas = allDreRows
+      .filter(r => ["DESPESA ADMINISTRATIVA", "DESPESA FINANCEIRA", "OUTROS"].includes(r.secao))
+      .reduce((s, r) => s + r.valor, 0);
+    const resultado = lucroBruto - despesasOp - outrasDespesas;
+    const margem = receita > 0 ? ((resultado / receita) * 100) : 0;
+
+    return { receita, custoDireto, custoVariavel, despesasInsumos, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
+  }, [allDreRows]);
+
+  // Ponto de equilíbrio: soma de todas as despesas/custos recorrentes + folha + insumos
+  // Não diminui quando parcela é paga, só quando quitada/removida (grupo pendente continua contando)
+  const pontoDeEquilibrio = useMemo(() => {
+    const folha = totalSalarios; // fixa mensal, não diminui com pagamento parcial
+    // Manual recorrentes distintos (cada grupo conta uma vez)
+    const grupos = new Map<string, number>();
+    let avulsos = 0;
+    for (const e of (manualRecorrentesAll as any[])) {
+      const gid = (e as any).recorrencia_grupo_id as string | null;
+      const val = Number((e as any).valor) || 0;
+      if (gid) {
+        if (!grupos.has(gid)) grupos.set(gid, val);
+      } else {
+        avulsos += val;
+      }
+    }
+    let manualRecorrenteTotal = avulsos;
+    for (const v of grupos.values()) manualRecorrenteTotal += v;
+    // Fallback: se ainda 0, usa manualVencimentos recorrentes (pendentes) para não ficar 0 enquanto carrega
+    if (manualRecorrenteTotal === 0 && manualVencimentos.length) {
+      const tmpGrupos = new Map<string, number>();
+      let tmpAv = 0;
+      for (const e of manualVencimentos) {
+        if (!(e as any).recorrente) continue;
+        const gid = (e as any).recorrencia_grupo_id as string | null;
+        const val = Number((e as any).valor) || 0;
+        if (gid) {
+          if (!tmpGrupos.has(gid)) tmpGrupos.set(gid, val);
+        } else tmpAv += val;
+      }
+      for (const v of tmpGrupos.values()) tmpAv += v;
+      if (tmpAv > 0) manualRecorrenteTotal = tmpAv;
+    }
+    // Insumos: usa total do período (todos recebidos) como proxy mensal recorrente, estável mesmo após quitar
+    const insumosRecorrente = insumosTotal;
+    return folha + manualRecorrenteTotal + insumosRecorrente;
+  }, [totalSalarios, manualRecorrentesAll, manualVencimentos, insumosTotal]);
+
   // Separa iFood vs Anota direto (iFood passa pelo Anota AI mas tem salesChannel/from com 'ifood')
   const ifoodOrders = useMemo(() => anotaOrders.filter(isIfoodOrder), [anotaOrders, isIfoodOrder]);
   const anotaDirectOrders = useMemo(() => anotaOrders.filter(o => !isIfoodOrder(o)), [anotaOrders, isIfoodOrder]);
@@ -1032,6 +1138,7 @@ function FinanceiroPage() {
           { key: 'RECEITA BRUTA', title: 'RECEITA BRUTA', icon: TrendingUp, tone: 'success' },
           { key: 'CUSTO DIRETO (CMV)', title: 'CUSTO DIRETO (CMV)', icon: Package, tone: 'warning' },
           { key: 'CUSTO VARIAVEL', title: 'CUSTO VARIÁVEL', icon: TrendingDown, tone: 'warning' },
+          { key: 'DESPESAS COM INSUMOS', title: 'DESPESAS COM INSUMOS', icon: ShoppingCart, tone: 'warning' },
           { key: 'LUCRO BRUTO', title: 'LUCRO BRUTO', icon: PiggyBank, tone: 'info' },
           { key: 'DESPESAS OPERACIONAIS', title: 'DESPESAS OPERACIONAIS', icon: Users, tone: 'danger' },
           { key: 'DESPESA ADMINISTRATIVA', title: 'DESPESAS ADMINISTRATIVAS', icon: Calculator, tone: 'danger' },
@@ -1073,17 +1180,19 @@ function FinanceiroPage() {
           if (isOpen) {
             sectionRows.forEach((r: DreRow, i: number) => {
               const isVencido = r.vencimento && r.pago === false && new Date(r.vencimento + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+              // DRE só mostra pagos - data do pagamento é data_pagamento se existir, senão vencimento
+              const dataPagamentoDisplay = r.fonte === 'manual' ? (r.data_pagamento ? fmtDate(r.data_pagamento) : r.vencimento ? fmtDate(r.vencimento) : "—") : r.secao === "DESPESAS COM INSUMOS" ? "—" : "—";
               rowsToRender.push(
                 <TableRow key={r.id ?? i} className={(r.fonte === 'manual' ? 'bg-amber-50/30 ' : '') + (isVencido ? 'bg-destructive/5' : '')}>
                   <TableCell className='text-xs text-muted-foreground'>{r.secao}</TableCell>
                   <TableCell className='font-medium'>{r.categoria}</TableCell>
                   <TableCell className='text-muted-foreground text-sm'>{r.descricao || '—'}</TableCell>
                   <TableCell className='text-right tabular font-medium'>{fmtMoney(r.valor)}</TableCell>
-                  <TableCell className={`text-center text-xs tabular ${isVencido ? "text-destructive font-medium" : "text-muted-foreground"}`}>{r.fonte === 'manual' && r.vencimento ? fmtDate(r.vencimento) : r.fonte === 'manual' && !r.vencimento ? "—" : "—"}</TableCell>
+                  <TableCell className={`text-center text-xs tabular ${r.fonte === 'manual' && r.pago ? "text-success font-medium" : isVencido ? "text-destructive font-medium" : "text-muted-foreground"}`}>{dataPagamentoDisplay}</TableCell>
                   <TableCell className='text-center'>
                     {r.fonte === 'manual' ? (
                       r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Pendente</Badge>
-                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                    ) : r.secao === "DESPESAS COM INSUMOS" ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : <span className="text-xs text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className='text-center'>
                     <Badge variant={r.fonte === 'auto' ? 'default' : 'outline'} className='text-xs'>
@@ -1172,7 +1281,7 @@ if (!unlocked) return null;
           onClick={() => setShowFolhaDetail(true)}
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
-        <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais" />
+        <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais pagos no período — clique para detalhes" onClick={() => setShowOutrasDespesasDetail(true)} />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita" />
       </div>
@@ -1197,8 +1306,8 @@ if (!unlocked) return null;
           />
           <InsightCard
             title="Ponto de Equilíbrio"
-            value={fmtMoney(kpis.custoDireto + kpis.despesasOp + kpis.outrasDespesas)}
-            description="Faturamento mínimo p/ não ter prejuízo"
+            value={fmtMoney(pontoDeEquilibrio)}
+            description="Folha + insumos + recorrentes (não diminui com pagamento parcial, só quando quitada)"
             tone="info"
           />
           <InsightCard
@@ -1236,7 +1345,7 @@ if (!unlocked) return null;
                     <TableHead className="min-w-[200px]">Categoria</TableHead>
                     <TableHead className="min-w-[300px]">Descrição</TableHead>
                     <TableHead className="min-w-[160px] text-right">Valor</TableHead>
-                    <TableHead className="min-w-[130px] text-center">Vencimento</TableHead>
+                    <TableHead className="min-w-[140px] text-center">Data do pagamento</TableHead>
                     <TableHead className="min-w-[110px] text-center">Pago</TableHead>
                     <TableHead className="min-w-[140px] text-center">Fonte</TableHead>
                     <TableHead className="min-w-[100px] text-right">Ações</TableHead>
@@ -1285,8 +1394,11 @@ if (!unlocked) return null;
                     const tipo = (e as any).recorrencia_tipo as string | null;
                     const qtd = (e as any).recorrencia_quantidade as number | null;
                     const label = !e.recorrente ? "Não" : tipo === 'determinada' && qtd ? `Determinada (${qtd}x)` : tipo === 'indefinida' ? 'Indefinida' : 'Sim';
-                    const venc = (e as any).vencimento || e.competencia;
+                    const vencOriginal = (e as any).vencimento || e.competencia;
                     const pago = (e as any).pago;
+                    // Para recorrentes, mostra sempre o próximo vencimento pendente do grupo
+                    const gid = (e as any).recorrencia_grupo_id as string | null;
+                    const venc = !pago && e.recorrente && gid && nextVencimentoMap.has(gid) ? nextVencimentoMap.get(gid)! : vencOriginal;
                     const isVencido = venc && !pago && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
                     return (
                     <TableRow key={e.id} className={isVencido ? "bg-destructive/5" : ""}>
@@ -1298,7 +1410,7 @@ if (!unlocked) return null;
                       <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
                       <TableCell className={isVencido ? "text-destructive font-medium" : "text-muted-foreground"}>{venc ? fmtDate(venc) : "—"}</TableCell>
                       <TableCell className="text-center">
-                        {pago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Pendente</Badge>}
+                        {pago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-success/30 text-success">Em dia</Badge>}
                       </TableCell>
                       <TableCell className="text-center">
                         <Badge variant={e.recorrente ? "secondary" : "outline"} className="text-xs">
@@ -1817,6 +1929,65 @@ if (!unlocked) return null;
           </div>
           <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowVencimentosDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Outras Despesas Detail Dialog */}
+      <Dialog open={showOutrasDespesasDetail} onOpenChange={setShowOutrasDespesasDetail}>
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Outras Despesas — Detalhamento</DialogTitle>
+            <p className="text-sm text-muted-foreground">Lançamentos manuais pagos classificados como despesa administrativa, financeira e outros • {allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).length} itens • Total {fmtMoney(kpis.outrasDespesas)} no período</p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            {allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).length === 0 ? (
+              <div className="py-12 text-center">
+                <Calculator className="mx-auto size-10 text-muted-foreground/40" />
+                <p className="mt-3 text-sm font-medium">Nenhuma outra despesa no período</p>
+                <p className="mt-1 text-xs text-muted-foreground">Lançamentos pagos com vencimento neste período aparecem aqui e no DRE.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Seção</TableHead>
+                      <TableHead>Categoria</TableHead>
+                      <TableHead>Descrição</TableHead>
+                      <TableHead className="text-right">Valor</TableHead>
+                      <TableHead className="text-center">Data do pagamento</TableHead>
+                      <TableHead className="text-center">Fonte</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).map((r, i) => (
+                      <TableRow key={r.id ?? i}>
+                        <TableCell className="text-xs text-muted-foreground">{r.secao}</TableCell>
+                        <TableCell className="font-medium">{r.categoria}</TableCell>
+                        <TableCell className="text-muted-foreground text-sm">{r.descricao || "—"}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{fmtMoney(r.valor)}</TableCell>
+                        <TableCell className="text-center text-xs tabular text-muted-foreground">{r.data_pagamento ? fmtDate(r.data_pagamento) : r.vencimento ? fmtDate(r.vencimento) : "—"}</TableCell>
+                        <TableCell className="text-center"><Badge variant={r.fonte === 'auto' ? 'default' : 'outline'} className="text-xs">{r.fonte === 'auto' ? 'Automático' : 'Manual'}</Badge></TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Itens</p>
+                <p className="font-display text-xl font-semibold">{allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).length}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Total pago</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(kpis.outrasDespesas)}</p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="shrink-0 pt-2">
+            <Button variant="outline" onClick={() => setShowOutrasDespesasDetail(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
