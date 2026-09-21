@@ -236,18 +236,32 @@ function FinanceiroPage() {
     }
   };
 
-  // Fetch DRE entries
+  // Fetch DRE entries - filtra por vencimento (data exata da parcela) para refletir período selecionado
   const { data: manualEntries = [], refetch: refetchEntries } = useQuery({
     queryKey: ["finance-dre-entries", periodoInicio, periodoFim],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("finance_dre_entries")
         .select("*")
-        .gte("competencia", periodoInicio)
-        .lte("competencia", periodoFim)
-        .order("competencia", { ascending: false })
+        .gte("vencimento", periodoInicio)
+        .lte("vencimento", periodoFim)
+        .order("vencimento", { ascending: true })
         .order("tipo");
-      if (error) throw error;
+      if (error) {
+        // Fallback para competencia se coluna vencimento ainda não existir
+        if (error.message?.includes("vencimento") || (error as any)?.code === "42703") {
+          const { data: fallback, error: err2 } = await supabase
+            .from("finance_dre_entries")
+            .select("*")
+            .gte("competencia", periodoInicio)
+            .lte("competencia", periodoFim)
+            .order("competencia", { ascending: false })
+            .order("tipo");
+          if (err2) throw err2;
+          return (fallback ?? []) as DreEntry[];
+        }
+        throw error;
+      }
       return (data ?? []) as DreEntry[];
     },
     enabled: unlocked,
@@ -436,7 +450,9 @@ function FinanceiroPage() {
   });
 
   // Estatísticas por grupo recorrente para exibir progresso de parcelas (ex: 15/30x)
+  // Corrige legado onde futuros foram gravados como pago=true: só conta como pago se vencimento <= hoje
   const grupoProgressMap = useMemo(() => {
+    const hoje = new Date().toISOString().split('T')[0];
     const map = new Map<string, { total: number; pagos: number; pendentes: number; entries: any[] }>();
     for (const e of (manualRecorrentesAll as any[])) {
       const gid = (e as any).recorrencia_grupo_id as string | null;
@@ -449,7 +465,8 @@ function FinanceiroPage() {
       const first = stat.entries[0] as any;
       const qtd = Number(first?.recorrencia_quantidade);
       const total = qtd > 0 ? qtd : stat.entries.length;
-      const pagos = stat.entries.filter((x: any) => x.pago === true).length;
+      // Só conta como "pago" o que já venceu ou foi efetivamente quitado com vencimento <= hoje; futuros com pago=true (bug legado) contam como pendente
+      const pagos = stat.entries.filter((x: any) => x.pago === true && ((x.vencimento || x.competencia || "") as string) <= hoje).length;
       stat.total = total;
       stat.pagos = pagos;
       stat.pendentes = Math.max(0, total - pagos);
@@ -1198,6 +1215,8 @@ function FinanceiroPage() {
 
         return sections.flatMap((section) => {
           const sectionRows = rows.filter((r: DreRow) => r.secao === section.key);
+          // Ordena por vencimento (data exata da parcela) para exibir 1/33 -> 2/33 ... até período final
+          sectionRows.sort((a, b) => (a.vencimento || "").localeCompare(b.vencimento || ""));
           const total = sectionRows.reduce((s: number, r: DreRow) => s + r.valor, 0);
           const isTotalRow = ['LUCRO BRUTO', 'RESULTADO LÍQUIDO'].includes(section.key);
           const isOpen = openSections[section.key] ?? true;
@@ -1230,8 +1249,8 @@ function FinanceiroPage() {
             sectionRows.forEach((r: DreRow, i: number) => {
               const isVencido = r.vencimento && r.pago === false && new Date(r.vencimento + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
               const isHaPagar = r.fonte === 'manual' && r.pago === false && !isVencido;
-              // Data do pagamento: para pagos mostra data_pagamento, para "Há pagar"/vencido mostra vencimento exato futuro
-              const dataPagamentoDisplay = r.fonte === 'manual' ? (r.pago ? (r.data_pagamento ? fmtDate(r.data_pagamento) : r.vencimento ? fmtDate(r.vencimento) : "—") : r.vencimento ? fmtDate(r.vencimento) : "—") : r.secao === "DESPESAS COM INSUMOS" ? "—" : "—";
+              // Data do pagamento: sempre reflete o campo "vencimento" definido na edição (ex: 27/09/2026, 27/10/2026 ...). Para "Há pagar" e "Pago" a data exibida é o vencimento exato da parcela
+              const dataPagamentoDisplay = r.fonte === 'manual' ? (r.vencimento ? fmtDate(r.vencimento) : r.data_pagamento ? fmtDate(r.data_pagamento) : "—") : r.secao === "DESPESAS COM INSUMOS" ? "—" : "—";
               // Progresso para recorrência determinada (ex: 15/30x) - exibe parcela atual e total pago
               const gid = (r as any).recorrencia_grupo_id as string | null | undefined;
               const isDeterminada = (r as any).recorrencia_tipo === 'determinada' && !!gid;
