@@ -95,6 +95,7 @@ function FinanceiroPage() {
   const [showFolhaDetail, setShowFolhaDetail] = useState(false);
   const [showInsumosDetail, setShowInsumosDetail] = useState(false);
   const [showReceitaDetail, setShowReceitaDetail] = useState(false);
+  const [showVencimentosDetail, setShowVencimentosDetail] = useState(false);
   const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     "RECEITA BRUTA": true,
@@ -1034,8 +1035,8 @@ if (!unlocked) return null;
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4">
         <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint={`Anota direto: ${fmtMoney(anotaDirectTotal)} | iFood: ${fmtMoney(ifoodTotal)}`} onClick={() => setShowReceitaDetail(true)} />
-        <KpiCard label="Custo Direto (CMV)" value={fmtMoney(kpis.custoDireto)} icon={Package} tone={kpis.custoDireto > 0 ? "warning" : "info"} hint={kpis.custoDireto > 0 ? "Outros custos diretos do período" : "Insumos agora em Despesas com insumos — aguardando novos custos"} />
-        <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV (sem insumos por enquanto)" />
+        <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentes.length > 0 ? "warning" : "success"} hint={`${vencimentosPendentes.length} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""} • Itens em estoque ainda não pagos`} onClick={() => setShowVencimentosDetail(true)} />
+        <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV (CMV zerado temporariamente)" />
         <KpiCard
           label="Folha dos colaboradores"
           value={fmtMoney(folhaSaldoExibido)}
@@ -1048,7 +1049,6 @@ if (!unlocked) return null;
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais" />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita" />
-        <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentes.length > 0 ? "warning" : "success"} hint={`${vencimentosPendentes.length} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}`} />
       </div>
 
       {/* Insights */}
@@ -1491,6 +1491,89 @@ if (!unlocked) return null;
           </div>
           <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowInsumosDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Vencimentos Detail Dialog - itens em estoque ainda não pagos */}
+      <Dialog open={showVencimentosDetail} onOpenChange={setShowVencimentosDetail}>
+        <DialogContent className="max-w-5xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Vencimentos — Itens em estoque ainda não pagos</DialogTitle>
+            <p className="text-sm text-muted-foreground">Ordens de compra já recebidas (entradas no estoque) com pagamento pendente • {vencimentosPendentes.length} pendente(s) • Total {fmtMoney(vencimentosTotal)}{vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}</p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            {vencimentosPendentes.length === 0 ? (
+              <div className="py-12 text-center">
+                <CalendarDays className="mx-auto size-10 text-muted-foreground/40" />
+                <p className="mt-3 text-sm font-medium">Nenhum vencimento pendente</p>
+                <p className="mt-1 text-xs text-muted-foreground">Compras lançadas a prazo aparecerão aqui até serem quitadas.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Nº</TableHead>
+                      <TableHead>Insumo / Produto</TableHead>
+                      <TableHead>Fornecedor</TableHead>
+                      <TableHead className="text-right">Qtd. recebida</TableHead>
+                      <TableHead className="text-right">Valor</TableHead>
+                      <TableHead>Vencimento</TableHead>
+                      <TableHead className="text-center">Status</TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {vencimentosPendentes.map((o: any) => {
+                      const venc = o.data_vencimento;
+                      const isVencido = venc && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                      const valor = Number(o.valor_total) || Number(o.quantidade_recebida || o.quantidade_necessaria) * Number(o.preco_recebido || o.preco_medio) || 0;
+                      const qtd = Number(o.quantidade_recebida ?? o.quantidade_necessaria) || 0;
+                      const preco = Number(o.preco_recebido ?? o.preco_medio) || 0;
+                      return (
+                        <TableRow key={o.id} className={isVencido ? "bg-destructive/5" : ""}>
+                          <TableCell className="tabular font-medium">#{o.numero}</TableCell>
+                          <TableCell>
+                            <div className="font-medium">{o.ingrediente_nome}</div>
+                            <div className="text-xs text-muted-foreground">{qtd ? `${fmtNum(qtd, 2)} × ${fmtMoney(preco)}` : ""}</div>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">{o.fornecedor_nome}</TableCell>
+                          <TableCell className="text-right tabular">{qtd ? fmtNum(qtd, 2) : "—"}</TableCell>
+                          <TableCell className="text-right tabular font-medium">{fmtMoney(valor)}</TableCell>
+                          <TableCell className={isVencido ? "text-destructive font-medium" : ""}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                          <TableCell className="text-center">
+                            {isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">A vencer</Badge>}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button size="sm" onClick={() => payVencimentoFinanceiro.mutate(o.id)} disabled={payVencimentoFinanceiro.isPending}>
+                              {payVencimentoFinanceiro.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <CreditCard className="mr-1.5 size-4" />} Quitar
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg">
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Pendentes</p>
+                <p className="font-display text-xl font-semibold">{vencimentosPendentes.length}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Total a pagar</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(vencimentosTotal)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Vencidos</p>
+                <p className={`font-display text-xl font-semibold ${vencimentosVencidos.length > 0 ? "text-destructive" : "text-success"}`}>{vencimentosVencidos.length}</p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="shrink-0 pt-2">
+            <Button variant="outline" onClick={() => setShowVencimentosDetail(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
