@@ -501,6 +501,30 @@ export type Database = {
         }
         Relationships: []
       }
+      ingredient_groups: {
+        Row: {
+          created_at: string
+          id: string
+          nome: string
+          ordem: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          nome: string
+          ordem?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          nome?: string
+          ordem?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       ingredient_movements: {
         Row: {
           created_at: string
@@ -561,11 +585,13 @@ export type Database = {
           estoque_ideal: number
           estoque_maximo: number
           estoque_minimo: number
+          group_id: string | null
           id: string
           localizacao: string | null
           lote: string | null
           nome: string
           observacoes: string | null
+          ordem: number
           preco_medio: number
           preco_ultima_compra: number
           quantidade_atual: number
@@ -583,11 +609,13 @@ export type Database = {
           estoque_ideal?: number
           estoque_maximo?: number
           estoque_minimo?: number
+          group_id?: string | null
           id?: string
           localizacao?: string | null
           lote?: string | null
           nome: string
           observacoes?: string | null
+          ordem?: number
           preco_medio?: number
           preco_ultima_compra?: number
           quantidade_atual?: number
@@ -605,11 +633,13 @@ export type Database = {
           estoque_ideal?: number
           estoque_maximo?: number
           estoque_minimo?: number
+          group_id?: string | null
           id?: string
           localizacao?: string | null
           lote?: string | null
           nome?: string
           observacoes?: string | null
+          ordem?: number
           preco_medio?: number
           preco_ultima_compra?: number
           quantidade_atual?: number
@@ -619,6 +649,13 @@ export type Database = {
           validade?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "ingredients_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "ingredient_groups"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "ingredients_supplier_id_fkey"
             columns: ["supplier_id"]
