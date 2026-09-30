@@ -294,17 +294,22 @@ function FinanceiroPage() {
 
 
   // Fetch collaborators with salaries for Folha dos Colaboradores
+  // NOTA: status é filtrado de forma case-insensitive no cliente (normalizado
+  // com trim().toLowerCase()) porque o cadastro permite digitação livre
+  // ("Ativo", "ATIVO", "ativo " etc. não podem sumir da folha).
   const { data: collaborators = [] } = useQuery({
     queryKey: ["collaborators-salaries", periodoFim],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("collaborators")
-        .select("id, nome, cargo, salario, saldo_devedor, pagamento")
-        .eq("status", "ativo")
+        .select("id, nome, cargo, salario, saldo_devedor, pagamento, status, data_admissao")
         .is("deleted_at", null)
-        .or(`data_admissao.is.null,data_admissao.lte.${periodoFim}`);
+        .or(`data_admissao.is.null,data_admissao.lte.${periodoFim}`)
+        .order("nome");
       if (error) throw error;
-      return (data ?? []) as any;
+      return ((data ?? []) as any).filter(
+        (c: any) => String(c.status ?? "ativo").trim().toLowerCase() === "ativo",
+      );
     },
     enabled: unlocked,
   });

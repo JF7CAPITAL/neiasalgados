@@ -18,6 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -55,6 +56,7 @@ type CollabDoc = {
 
 const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, pagamento: 0, saldo_devedor: 0 };
 const docTypes = ["documento", "foto", "comprovante", "contrato", "outro"] as const;
+const STATUS_OPTIONS = ["ativo", "inativo", "afastado", "desligado"] as const;
 
 function ColaboradoresPage() {
   const qc = useQueryClient();
@@ -137,7 +139,10 @@ function ColaboradoresPage() {
       const payload = {
         nome: c.nome!, cpf: c.cpf || null, rg: c.rg || null, telefone: c.telefone || null,
         celular: c.celular || null, email: c.email || null, endereco: c.endereco || null,
-        cargo: c.cargo || null, data_admissao: c.data_admissao || null, status: c.status || "ativo",
+        cargo: c.cargo || null, data_admissao: c.data_admissao || null,
+        // Normaliza para minúsculas sem espaços: evita "Ativo"/"ATIVO "/"ativo"
+        // sumirem da Folha de pagamento no Financeiro (filtro case-sensitive).
+        status: String(c.status || "ativo").trim().toLowerCase() || "ativo",
         em_turno: c.em_turno ?? false, turno: c.turno || null, horario: c.horario || null,
         escala: c.escala || null, observacoes: c.observacoes || null,
         salario, pagamento, saldo_devedor,
@@ -323,7 +328,19 @@ function ColaboradoresPage() {
                     <F label="Turno"><Input value={editing.turno ?? ""} onChange={(e) => setEditing({ ...editing, turno: e.target.value })} /></F>
                     <F label="Horário"><Input value={editing.horario ?? ""} onChange={(e) => setEditing({ ...editing, horario: e.target.value })} /></F>
                     <F label="Escala"><Input value={editing.escala ?? ""} onChange={(e) => setEditing({ ...editing, escala: e.target.value })} /></F>
-                    <F label="Status"><Input value={editing.status ?? "ativo"} onChange={(e) => setEditing({ ...editing, status: e.target.value })} /></F>
+                    <F label="Status">
+                      <Select
+                        value={String(editing.status || "ativo").trim().toLowerCase() || "ativo"}
+                        onValueChange={(v) => setEditing({ ...editing, status: v })}
+                      >
+                        <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+                        <SelectContent>
+                          {STATUS_OPTIONS.map((s) => (
+                            <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </F>
                     <F label="Salário (R$)"><Input type="number" step="0.01" value={editing.salario ?? 0} onChange={(e) => setEditing({ ...editing, salario: Number(e.target.value) })} /></F>
                     <F label="Pagamentos realizados (R$)"><Input type="number" step="0.01" value={editing.pagamento ?? 0} onChange={(e) => setEditing({ ...editing, pagamento: Number(e.target.value) })} /></F>
                     <F label="Saldo devedor (R$) - calculado">

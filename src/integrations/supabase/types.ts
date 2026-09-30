@@ -260,7 +260,10 @@ export type Database = {
           id: string
           nome: string
           observacoes: string | null
+          pagamento: number | null
           rg: string | null
+          salario: number | null
+          saldo_devedor: number | null
           status: string
           telefone: string | null
           turno: string | null
@@ -283,7 +286,10 @@ export type Database = {
           id?: string
           nome: string
           observacoes?: string | null
+          pagamento?: number | null
           rg?: string | null
+          salario?: number | null
+          saldo_devedor?: number | null
           status?: string
           telefone?: string | null
           turno?: string | null
@@ -306,7 +312,10 @@ export type Database = {
           id?: string
           nome?: string
           observacoes?: string | null
+          pagamento?: number | null
           rg?: string | null
+          salario?: number | null
+          saldo_devedor?: number | null
           status?: string
           telefone?: string | null
           turno?: string | null
