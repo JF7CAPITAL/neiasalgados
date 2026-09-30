@@ -661,6 +661,30 @@ function FinanceiroPage() {
     return s + Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
   }, 0), [collaborators]);
   const folhaSaldoExibido = totalSaldoDevedor > 0 ? totalSaldoDevedor : totalSaldoDerivado;
+  // Folha acumulada no período selecionado (X a Y): espelha a regra do
+  // backend (calc_folha_pagamento): meses corridos inclusive entre as
+  // competências, contando cada colaborador a partir do mês de admissão.
+  // Usada nos hints/projeção — o valor oficial do DRE vem do RPC get_dre_data.
+  const folhaMeses = useMemo(() => {
+    const ini = new Date(periodoInicio + "T12:00:00");
+    const fim = new Date(periodoFim + "T12:00:00");
+    if (isNaN(ini.getTime()) || isNaN(fim.getTime()) || fim < ini) return 0;
+    return (fim.getFullYear() * 12 + fim.getMonth()) - (ini.getFullYear() * 12 + ini.getMonth()) + 1;
+  }, [periodoInicio, periodoFim]);
+  const folhaAcumulada = useMemo(() => {
+    if (folhaMeses <= 0) return 0;
+    const ini = new Date(periodoInicio + "T12:00:00");
+    const fim = new Date(periodoFim + "T12:00:00");
+    return collaborators.reduce((s: number, c: any) => {
+      const salario = Number(c.salario) || 0;
+      if (salario <= 0) return s;
+      const adm = c.data_admissao ? new Date(c.data_admissao + "T12:00:00") : null;
+      const effIni = adm && !isNaN(adm.getTime()) && adm > ini ? adm : ini;
+      if (effIni > fim) return s;
+      const meses = (fim.getFullYear() * 12 + fim.getMonth()) - (effIni.getFullYear() * 12 + effIni.getMonth()) + 1;
+      return s + salario * Math.max(0, meses);
+    }, 0);
+  }, [collaborators, periodoInicio, periodoFim, folhaMeses]);
   // Total considera valor_total quando disponível, senão quantidade_recebida * preco_recebido (valor efetivo pago)
   // Fallback mantém compatibilidade com ordens antigas
   const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s: number, o: any) => {
@@ -1368,7 +1392,7 @@ if (!unlocked) return null;
           value={fmtMoney(folhaSaldoExibido)}
           icon={Users}
           tone={folhaSaldoExibido > 0 ? "warning" : "success"}
-          hint={`Saldo devedor · Pagamentos realizados: ${fmtMoney(totalPagamentos)} · Salários: ${fmtMoney(totalSalarios)}`}
+          hint={`Saldo devedor · Pagamentos realizados: ${fmtMoney(totalPagamentos)} · Salários/mês: ${fmtMoney(totalSalarios)} · Projeção período (${folhaMeses} ${folhaMeses === 1 ? "mês" : "meses"}): ${fmtMoney(folhaAcumulada)}`}
           onClick={() => setShowFolhaDetail(true)}
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
@@ -1792,6 +1816,7 @@ if (!unlocked) return null;
           <DialogHeader className="shrink-0">
             <DialogTitle>Folha dos Colaboradores</DialogTitle>
             <p className="text-sm text-muted-foreground">Saldo devedor = salário − pagamentos realizados. Se pagamento &lt; salário, o restante acumula para o próximo mês.</p>
+            <p className="text-sm text-muted-foreground">Projeção acumulada no período {fmtDate(periodoInicio)} a {fmtDate(periodoFim)} ({folhaMeses} {folhaMeses === 1 ? "mês" : "meses"}): <span className="font-semibold text-foreground">{fmtMoney(folhaAcumulada)}</span> — mesmo valor usado no DRE.</p>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
             <div className="overflow-x-auto rounded-xl border border-border">
