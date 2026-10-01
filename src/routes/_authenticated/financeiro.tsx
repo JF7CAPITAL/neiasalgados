@@ -181,6 +181,7 @@ function FinanceiroPage() {
   const [showReceitaDetail, setShowReceitaDetail] = useState(false);
   const [showVencimentosDetail, setShowVencimentosDetail] = useState(false);
   const [showOutrasDespesasDetail, setShowOutrasDespesasDetail] = useState(false);
+  const [showTaxasDetail, setShowTaxasDetail] = useState(false);
   const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     "RECEITA BRUTA": true,
@@ -1511,6 +1512,8 @@ if (!unlocked) return null;
           onClick={() => setShowFolhaDetail(true)}
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
+        <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa no período — clique para detalhes`} onClick={() => setShowTaxasDetail(true)} />
+        <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : "Taxas extras dos pedidos no período — clique para detalhes"} onClick={() => setShowTaxasDetail(true)} />
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais pagos no período — clique para detalhes" onClick={() => setShowOutrasDespesasDetail(true)} />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita" />
@@ -2334,6 +2337,91 @@ if (!unlocked) return null;
           </div>
           <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowOutrasDespesasDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Taxas de Entrega e Outras Taxas Detail Dialog */}
+      <Dialog open={showTaxasDetail} onOpenChange={setShowTaxasDetail}>
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Taxas de Entrega e Outras Taxas — Detalhamento</DialogTitle>
+            <p className="text-sm text-muted-foreground">Taxas dos pedidos Anota AI no período {fmtDate(periodoInicio)} a {fmtDate(periodoFim)} • Entrega {fmtMoney(taxasEntregaTotal)} ({pedidosComTaxaEntrega} pedido(s)) • Outras {fmtMoney(outrasTaxasTotal)} ({pedidosComOutrasTaxas} pedido(s)) • Total {fmtMoney(taxasTotalGeral)}</p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            {outrasTaxasPorNome.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Tipo de taxa extra</TableHead>
+                      <TableHead className="text-center">Pedidos</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {outrasTaxasPorNome.map((t) => (
+                      <TableRow key={t.nome}>
+                        <TableCell className="font-medium">{t.nome}</TableCell>
+                        <TableCell className="text-center tabular">{t.qtd}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{fmtMoney(t.total)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+            {taxasPorPedido.filter(t => t.totalTaxas > 0).length === 0 ? (
+              <div className="py-12 text-center">
+                <ReceiptText className="mx-auto size-10 text-muted-foreground/40" />
+                <p className="mt-3 text-sm font-medium">Nenhuma taxa nos pedidos do período</p>
+                <p className="mt-1 text-xs text-muted-foreground">Pedidos com taxa de entrega ou taxas adicionais (ex.: embalagem, serviço) aparecerão aqui detalhados por pedido.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Pedido</TableHead>
+                      <TableHead>Data</TableHead>
+                      <TableHead className="text-right">Taxa de entrega</TableHead>
+                      <TableHead className="text-right">Outras taxas</TableHead>
+                      <TableHead>Detalhe outras taxas</TableHead>
+                      <TableHead className="text-right">Total taxas</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {taxasPorPedido.filter(t => t.totalTaxas > 0).map((t) => (
+                      <TableRow key={t.id}>
+                        <TableCell className="tabular font-medium">#{t.id.slice(0, 8)}</TableCell>
+                        <TableCell className="text-muted-foreground">{fmtDate(t.imported_at)}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{t.taxaEntrega > 0 ? fmtMoney(t.taxaEntrega) : "—"}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{t.outrasTaxas > 0 ? fmtMoney(t.outrasTaxas) : "—"}</TableCell>
+                        <TableCell className="text-muted-foreground text-xs">{t.outrasItens.length > 0 ? t.outrasItens.map(i => `${i.nome}: ${fmtMoney(i.valor)}`).join(" • ") : "—"}</TableCell>
+                        <TableCell className="text-right tabular font-semibold">{fmtMoney(t.totalTaxas)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg">
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Taxas de entrega</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(taxasEntregaTotal)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Outras taxas</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(outrasTaxasTotal)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Total em taxas</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(taxasTotalGeral)}</p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="shrink-0 pt-2">
+            <Button variant="outline" onClick={() => setShowTaxasDetail(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
