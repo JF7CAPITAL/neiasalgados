@@ -6,7 +6,7 @@ import {
   Plus, Pencil, Trash2, Lock, Unlock, Eye, EyeOff, Loader2, AlertTriangle,
   ChevronDown, ChevronUp, Save, X, RefreshCw, DollarSign, Users, Package,
   CreditCard, ShoppingCart, ArrowUpRight, ArrowDownRight, List, CalendarDays,
-  Truck, ReceiptText
+  Truck, ReceiptText, Bike
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -156,6 +156,42 @@ function extractOtherFees(payload: unknown): { total: number; itens: { nome: str
   return { total: itens.reduce((s, i) => s + i.valor, 0), itens };
 }
 
+// Agregadores de folha por lista de colaboradores (staff ou motoboys)
+function somaPagamentos(list: any[]): number {
+  return list.reduce((s: number, c: any) => s + (Number(c.pagamento) || 0), 0);
+}
+function somaSalarios(list: any[]): number {
+  return list.reduce((s: number, c: any) => s + (Number(c.salario) || 0), 0);
+}
+function somaSaldoDevedor(list: any[]): number {
+  return list.reduce((s: number, c: any) => s + (Number(c.saldo_devedor) || 0), 0);
+}
+// Fallback derivado caso saldo_devedor ainda não esteja preenchido (salário - pagamento)
+function somaSaldoDerivado(list: any[]): number {
+  return list.reduce((s: number, c: any) => {
+    const saldoStored = Number(c.saldo_devedor);
+    if (!isNaN(saldoStored) && saldoStored !== 0) return s + saldoStored;
+    return s + Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
+  }, 0);
+}
+// Folha acumulada no período (X a Y) para uma lista: espelha a regra do
+// backend (calc_folha_pagamento): meses corridos inclusive entre as
+// competências, contando cada colaborador a partir do mês de admissão.
+function calcFolhaAcumulada(list: any[], periodoInicio: string, periodoFim: string, folhaMeses: number): number {
+  if (folhaMeses <= 0) return 0;
+  const ini = new Date(periodoInicio + "T12:00:00");
+  const fim = new Date(periodoFim + "T12:00:00");
+  return list.reduce((s: number, c: any) => {
+    const salario = Number(c.salario) || 0;
+    if (salario <= 0) return s;
+    const adm = c.data_admissao ? new Date(c.data_admissao + "T12:00:00") : null;
+    const effIni = adm && !isNaN(adm.getTime()) && adm > ini ? adm : ini;
+    if (effIni > fim) return s;
+    const meses = (fim.getFullYear() * 12 + fim.getMonth()) - (effIni.getFullYear() * 12 + effIni.getMonth()) + 1;
+    return s + salario * Math.max(0, meses);
+  }, 0);
+}
+
 function FinanceiroPage() {
   const qc = useQueryClient();
   const [periodoInicio, setPeriodoInicio] = useState(() => {
@@ -183,6 +219,7 @@ function FinanceiroPage() {
   const [showVencimentosDetail, setShowVencimentosDetail] = useState(false);
   const [showOutrasDespesasDetail, setShowOutrasDespesasDetail] = useState(false);
   const [showTaxasDetail, setShowTaxasDetail] = useState(false);
+  const [showMotoboysDetail, setShowMotoboysDetail] = useState(false);
   const [showPontoEquilibrioDetail, setShowPontoEquilibrioDetail] = useState(false);
   const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
@@ -369,19 +406,33 @@ function FinanceiroPage() {
   };
 
 
-  // Fetch collaborators with salaries for Folha dos Colaboradores
+  // Fetch collaborators with salaries for Folha dos Colaboradores / Motoboys
   // NOTA: status é filtrado de forma case-insensitive no cliente (normalizado
   // com trim().toLowerCase()) porque o cadastro permite digitação livre
   // ("Ativo", "ATIVO", "ativo " etc. não podem sumir da folha).
+  // is_motoboy / inclui_ponto_equilibrio vêm da migration 20261008; sem ela, fallback sem as colunas.
   const { data: collaborators = [] } = useQuery({
     queryKey: ["collaborators-salaries", periodoFim],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const COLS_FULL = "id, nome, cargo, salario, saldo_devedor, pagamento, status, data_admissao, is_motoboy, inclui_ponto_equilibrio";
+      const COLS_LEGACY = "id, nome, cargo, salario, saldo_devedor, pagamento, status, data_admissao";
+      let { data, error } = await supabase
         .from("collaborators")
-        .select("id, nome, cargo, salario, saldo_devedor, pagamento, status, data_admissao")
+        .select(COLS_FULL)
         .is("deleted_at", null)
         .or(`data_admissao.is.null,data_admissao.lte.${periodoFim}`)
         .order("nome");
+      if (error && (error.code === "42703" || /is_motoboy|inclui_ponto_equilibrio/i.test(error.message))) {
+        console.warn("[collaborators-salaries] sem colunas novas, migration pendente:", error.message);
+        const retry = await supabase
+          .from("collaborators")
+          .select(COLS_LEGACY)
+          .is("deleted_at", null)
+          .or(`data_admissao.is.null,data_admissao.lte.${periodoFim}`)
+          .order("nome");
+        data = retry.data as any;
+        error = retry.error as any;
+      }
       if (error) throw error;
       return ((data ?? []) as any).filter(
         (c: any) => String(c.status ?? "ativo").trim().toLowerCase() === "ativo",
@@ -666,6 +717,21 @@ function FinanceiroPage() {
     onError: (e: Error) => toast.error(/inclui_ponto_equilibrio|42703/.test(e.message) ? "Aplique a migration 20261007000000_ponto_equilibrio_optout.sql no Supabase para usar este controle." : e.message),
   });
 
+  // Liga/desliga a participação de um colaborador no Ponto de Equilíbrio (folha)
+  const toggleColabPonto = useMutation({
+    mutationFn: async ({ id, incluir }: { id: string; incluir: boolean }) => {
+      const { error } = await supabase.from("collaborators").update({ inclui_ponto_equilibrio: incluir } as any).eq("id", id);
+      if (error) throw error;
+      await logActivity("financeiro", incluir ? "incluiu colaborador no ponto de equilíbrio" : "removeu colaborador do ponto de equilíbrio", id, {});
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["collaborators-salaries"] });
+      qc.invalidateQueries({ queryKey: ["collaborators"] });
+      toast.success(vars.incluir ? "Colaborador incluído no ponto de equilíbrio!" : "Colaborador fora do ponto de equilíbrio!");
+    },
+    onError: (e: Error) => toast.error(/inclui_ponto_equilibrio|42703/.test(e.message) ? "Aplique a migration 20261008000000_motoboy_e_ponto_colaborador.sql no Supabase para usar este controle." : e.message),
+  });
+
   // Fetch Anota AI orders for Receita Bruta breakdown (D+1) - inclui payload para diferenciar iFood vs Anota direto
   const { data: anotaOrders = [] } = useQuery({
     queryKey: ["anota-orders-receita", periodoInicio, periodoFim],
@@ -756,41 +822,30 @@ function FinanceiroPage() {
 
   // Computed values for KPIs (must come after queries that provide the data)
   // Saldo devedor = salário - pagamentos realizados (acumula se pagamento < salário)
-  const folhaTotal = useMemo(() => collaborators.reduce((s: number, c: any) => s + (Number(c.pagamento) || 0), 0), [collaborators]);
+  // Motoboys (is_motoboy) têm folha separada; a folha principal cobre os demais colaboradores.
+  const staffCollabs = useMemo(() => collaborators.filter((c: any) => !(c as any).is_motoboy), [collaborators]);
+  const motoboyCollabs = useMemo(() => collaborators.filter((c: any) => !!(c as any).is_motoboy), [collaborators]);
+  const folhaTotal = useMemo(() => somaPagamentos(staffCollabs), [staffCollabs]);
   const totalPagamentos = folhaTotal;
-  const totalSalarios = useMemo(() => collaborators.reduce((s: number, c: any) => s + (Number(c.salario) || 0), 0), [collaborators]);
-  const totalSaldoDevedor = useMemo(() => collaborators.reduce((s: number, c: any) => s + (Number(c.saldo_devedor) || 0), 0), [collaborators]);
-  // Fallback derivado caso saldo_devedor ainda não esteja preenchido (salário - pagamento)
-  const totalSaldoDerivado = useMemo(() => collaborators.reduce((s: number, c: any) => {
-    const saldoStored = Number(c.saldo_devedor);
-    if (!isNaN(saldoStored) && saldoStored !== 0) return s + saldoStored;
-    return s + Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
-  }, 0), [collaborators]);
+  const totalSalarios = useMemo(() => somaSalarios(staffCollabs), [staffCollabs]);
+  const totalSaldoDevedor = useMemo(() => somaSaldoDevedor(staffCollabs), [staffCollabs]);
+  const totalSaldoDerivado = useMemo(() => somaSaldoDerivado(staffCollabs), [staffCollabs]);
   const folhaSaldoExibido = totalSaldoDevedor > 0 ? totalSaldoDevedor : totalSaldoDerivado;
-  // Folha acumulada no período selecionado (X a Y): espelha a regra do
-  // backend (calc_folha_pagamento): meses corridos inclusive entre as
-  // competências, contando cada colaborador a partir do mês de admissão.
-  // Usada nos hints/projeção — o valor oficial do DRE vem do RPC get_dre_data.
+  const motoboysPagamentos = useMemo(() => somaPagamentos(motoboyCollabs), [motoboyCollabs]);
+  const motoboysSalarios = useMemo(() => somaSalarios(motoboyCollabs), [motoboyCollabs]);
+  const motoboysSaldoDevedor = useMemo(() => somaSaldoDevedor(motoboyCollabs), [motoboyCollabs]);
+  const motoboysSaldoDerivado = useMemo(() => somaSaldoDerivado(motoboyCollabs), [motoboyCollabs]);
+  const motoboysSaldoExibido = motoboysSaldoDevedor > 0 ? motoboysSaldoDevedor : motoboysSaldoDerivado;
+  // Folha acumulada no período selecionado (X a Y) por grupo (equipe e motoboys).
+  // Usada nos hints/projeção — o valor oficial do DRE vem do RPC get_dre_data (soma toda a equipe).
   const folhaMeses = useMemo(() => {
     const ini = new Date(periodoInicio + "T12:00:00");
     const fim = new Date(periodoFim + "T12:00:00");
     if (isNaN(ini.getTime()) || isNaN(fim.getTime()) || fim < ini) return 0;
     return (fim.getFullYear() * 12 + fim.getMonth()) - (ini.getFullYear() * 12 + ini.getMonth()) + 1;
   }, [periodoInicio, periodoFim]);
-  const folhaAcumulada = useMemo(() => {
-    if (folhaMeses <= 0) return 0;
-    const ini = new Date(periodoInicio + "T12:00:00");
-    const fim = new Date(periodoFim + "T12:00:00");
-    return collaborators.reduce((s: number, c: any) => {
-      const salario = Number(c.salario) || 0;
-      if (salario <= 0) return s;
-      const adm = c.data_admissao ? new Date(c.data_admissao + "T12:00:00") : null;
-      const effIni = adm && !isNaN(adm.getTime()) && adm > ini ? adm : ini;
-      if (effIni > fim) return s;
-      const meses = (fim.getFullYear() * 12 + fim.getMonth()) - (effIni.getFullYear() * 12 + effIni.getMonth()) + 1;
-      return s + salario * Math.max(0, meses);
-    }, 0);
-  }, [collaborators, periodoInicio, periodoFim, folhaMeses]);
+  const folhaAcumulada = useMemo(() => calcFolhaAcumulada(staffCollabs, periodoInicio, periodoFim, folhaMeses), [staffCollabs, periodoInicio, periodoFim, folhaMeses]);
+  const folhaAcumuladaMotoboys = useMemo(() => calcFolhaAcumulada(motoboyCollabs, periodoInicio, periodoFim, folhaMeses), [motoboyCollabs, periodoInicio, periodoFim, folhaMeses]);
   // Total considera valor_total quando disponível, senão quantidade_recebida * preco_recebido (valor efetivo pago)
   // Fallback mantém compatibilidade com ordens antigas
   const insumosTotal = useMemo(() => receivedPurchaseOrders.reduce((s: number, o: any) => {
@@ -871,13 +926,17 @@ function FinanceiroPage() {
 
   // Ponto de equilíbrio: soma de todas as despesas/custos recorrentes + folha + insumos
   // Não diminui quando parcela é paga, só quando quitada/removida (grupo pendente continua contando)
+  // Folha e recorrentes respeitam o opt-out individual (inclui_ponto_equilibrio !== false integra)
   const pontoDeEquilibrio = useMemo(() => {
-    const folha = totalSalarios; // fixa mensal, não diminui com pagamento parcial
     const folhaItens = (collaborators as any[]).map((c: any) => ({
+      id: String(c.id ?? ""),
       nome: c.nome ?? "—",
       cargo: c.cargo ?? null,
       salario: Number(c.salario) || 0,
+      is_motoboy: !!(c as any).is_motoboy,
+      incluido: (c as any).inclui_ponto_equilibrio !== false,
     }));
+    const folha = folhaItens.filter(c => c.incluido).reduce((s, c) => s + c.salario, 0);
     // Manual recorrentes distintos (cada grupo conta uma vez)
     // Apenas lançamentos com inclui_ponto_equilibrio !== false integram o indicador (padrão: inclui)
     const montarRecorrentes = (list: any[]) => {
@@ -945,7 +1004,7 @@ function FinanceiroPage() {
       insumos: insumosRecorrente,
       insumosQtd: receivedPurchaseOrders.length,
     };
-  }, [totalSalarios, collaborators, manualRecorrentesAll, manualVencimentos, insumosTotal, receivedPurchaseOrders]);
+  }, [collaborators, manualRecorrentesAll, manualVencimentos, insumosTotal, receivedPurchaseOrders]);
 
   // Separa iFood vs Anota direto (iFood passa pelo Anota AI mas tem salesChannel/from com 'ifood')
   const ifoodOrders = useMemo(() => anotaOrders.filter(isIfoodOrder), [anotaOrders, isIfoodOrder]);
@@ -1584,6 +1643,14 @@ if (!unlocked) return null;
           hint={`Saldo devedor · Pagamentos realizados: ${fmtMoney(totalPagamentos)} · Salários/mês: ${fmtMoney(totalSalarios)} · Projeção período (${folhaMeses} ${folhaMeses === 1 ? "mês" : "meses"}): ${fmtMoney(folhaAcumulada)}`}
           onClick={() => setShowFolhaDetail(true)}
         />
+        <KpiCard
+          label="Folha dos motoboys"
+          value={fmtMoney(motoboysSaldoExibido)}
+          icon={Bike}
+          tone={motoboysSaldoExibido > 0 ? "warning" : "success"}
+          hint={motoboyCollabs.length > 0 ? `${motoboyCollabs.length} motoboy(s) · Pagamentos realizados: ${fmtMoney(motoboysPagamentos)} · Salários/mês: ${fmtMoney(motoboysSalarios)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
+          onClick={() => setShowMotoboysDetail(true)}
+        />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
         <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa no período — clique para detalhes`} onClick={() => setShowTaxasDetail(true)} />
         <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : "Taxas extras dos pedidos no período — clique para detalhes"} onClick={() => setShowTaxasDetail(true)} />
@@ -2079,8 +2146,8 @@ if (!unlocked) return null;
         <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
           <DialogHeader className="shrink-0">
             <DialogTitle>Folha dos Colaboradores</DialogTitle>
-            <p className="text-sm text-muted-foreground">Saldo devedor = salário − pagamentos realizados. Se pagamento &lt; salário, o restante acumula para o próximo mês.</p>
-            <p className="text-sm text-muted-foreground">Projeção acumulada no período {fmtDate(periodoInicio)} a {fmtDate(periodoFim)} ({folhaMeses} {folhaMeses === 1 ? "mês" : "meses"}): <span className="font-semibold text-foreground">{fmtMoney(folhaAcumulada)}</span> — mesmo valor usado no DRE.</p>
+            <p className="text-sm text-muted-foreground">Saldo devedor = salário − pagamentos realizados. Se pagamento &lt; salário, o restante acumula para o próximo mês. Motoboys ficam na folha própria.</p>
+            <p className="text-sm text-muted-foreground">Projeção acumulada da equipe no período {fmtDate(periodoInicio)} a {fmtDate(periodoFim)} ({folhaMeses} {folhaMeses === 1 ? "mês" : "meses"}): <span className="font-semibold text-foreground">{fmtMoney(folhaAcumulada)}</span>.</p>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
             <div className="overflow-x-auto rounded-xl border border-border">
@@ -2096,7 +2163,7 @@ if (!unlocked) return null;
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {collaborators.map((c: any) => {
+                  {staffCollabs.map((c: any) => {
                     const saldo = Number(c.saldo_devedor) || Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
                     return (
                     <TableRow key={c.id}>
@@ -2138,7 +2205,7 @@ if (!unlocked) return null;
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-muted/50 rounded-lg text-sm">
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Colaboradores</p>
-                <p className="font-display text-lg font-semibold">{collaborators.length}</p>
+                <p className="font-display text-lg font-semibold">{staffCollabs.length}</p>
               </div>
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Total salários</p>
@@ -2156,6 +2223,100 @@ if (!unlocked) return null;
           </div>
           <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowFolhaDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Folha dos Motoboys Detail Dialog - mesmo sistema da Folha dos Colaboradores */}
+      <Dialog open={showMotoboysDetail} onOpenChange={setShowMotoboysDetail}>
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Folha dos Motoboys</DialogTitle>
+            <p className="text-sm text-muted-foreground">Saldo devedor = salário − pagamentos realizados. Se pagamento &lt; salário, o restante acumula para o próximo mês. Marque quem é motoboy na página Colaboradores.</p>
+            <p className="text-sm text-muted-foreground">Projeção acumulada dos motoboys no período {fmtDate(periodoInicio)} a {fmtDate(periodoFim)} ({folhaMeses} {folhaMeses === 1 ? "mês" : "meses"}): <span className="font-semibold text-foreground">{fmtMoney(folhaAcumuladaMotoboys)}</span>.</p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            {motoboyCollabs.length === 0 ? (
+              <div className="py-12 text-center">
+                <Bike className="mx-auto size-10 text-muted-foreground/40" />
+                <p className="mt-3 text-sm font-medium">Nenhum motoboy marcado</p>
+                <p className="mt-1 text-xs text-muted-foreground">Ative "É motoboy" no cadastro do colaborador, na página Colaboradores.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Motoboy</TableHead>
+                      <TableHead>Cargo</TableHead>
+                      <TableHead className="text-right">Salário</TableHead>
+                      <TableHead className="text-right">Pagamentos realizados</TableHead>
+                      <TableHead className="text-right">Saldo devedor</TableHead>
+                      <TableHead className="text-right">Registrar pagamento</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {motoboyCollabs.map((c: any) => {
+                      const saldo = Number(c.saldo_devedor) || Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
+                      return (
+                      <TableRow key={c.id}>
+                        <TableCell className="font-medium">{c.nome}</TableCell>
+                        <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
+                        <TableCell className="text-right tabular">{fmtMoney(c.salario)}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{fmtMoney(c.pagamento)}</TableCell>
+                        <TableCell className={`text-right tabular font-medium ${saldo > 0 ? "text-destructive" : "text-success"}`}>{fmtMoney(saldo)}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center gap-2 justify-end">
+                            <Input
+                              type="number"
+                              step="0.01"
+                              placeholder="Valor"
+                              value={adiantarPagamento[c.id] || ""}
+                              onChange={(e) => setAdiantarPagamento(prev => ({ ...prev, [c.id]: Number(e.target.value) || 0 }))}
+                              className="w-32"
+                            />
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                const valor = adiantarPagamento[c.id];
+                                if (valor > 0) {
+                                  adiantarPagamentoMutate.mutate({ collaboratorId: c.id, valor });
+                                }
+                              }}
+                              disabled={!adiantarPagamento[c.id] || adiantarPagamentoMutate.isPending}
+                            >
+                              {adiantarPagamentoMutate.isPending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
+                              Confirmar
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )})}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-muted/50 rounded-lg text-sm">
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Motoboys</p>
+                <p className="font-display text-lg font-semibold">{motoboyCollabs.length}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Total salários</p>
+                <p className="font-display text-lg font-semibold">{fmtMoney(motoboysSalarios)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Pagamentos realizados</p>
+                <p className="font-display text-lg font-semibold text-success">{fmtMoney(motoboysPagamentos)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Saldo devedor</p>
+                <p className={`font-display text-lg font-semibold ${motoboysSaldoExibido > 0 ? "text-destructive" : "text-success"}`}>{fmtMoney(motoboysSaldoExibido)}</p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="shrink-0 pt-2">
+            <Button variant="outline" onClick={() => setShowMotoboysDetail(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2531,7 +2692,7 @@ if (!unlocked) return null;
           <div className="flex-1 overflow-y-auto space-y-6 pr-1 -mr-1">
             <div>
               <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><Users className="size-4" /> Folha dos colaboradores — {fmtMoney(pontoDeEquilibrio.folha)}/mês</h4>
-              <p className="text-xs text-muted-foreground mb-2">Salários mensais dos colaboradores ativos (valor fixo, independente de pagamentos realizados).</p>
+              <p className="text-xs text-muted-foreground mb-2">Salários mensais dos colaboradores ativos (valor fixo, independente de pagamentos realizados) • Use o interruptor para tirar ou recolocar cada pessoa no indicador.</p>
               {pontoDeEquilibrio.folhaItens.length === 0 ? (
                 <p className="text-xs text-muted-foreground">Nenhum colaborador ativo com salário.</p>
               ) : (
@@ -2542,14 +2703,28 @@ if (!unlocked) return null;
                         <TableHead>Colaborador</TableHead>
                         <TableHead>Cargo</TableHead>
                         <TableHead className="text-right">Salário/mês</TableHead>
+                        <TableHead className="text-center">No ponto</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {pontoDeEquilibrio.folhaItens.map((c, i) => (
-                        <TableRow key={`${c.nome}-${i}`}>
-                          <TableCell className="font-medium">{c.nome}</TableCell>
+                      {pontoDeEquilibrio.folhaItens.map((c) => (
+                        <TableRow key={c.id || c.nome} className={c.incluido ? "" : "opacity-60"}>
+                          <TableCell className="font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <span>{c.nome}</span>
+                              {c.is_motoboy && <Badge variant="outline" className="text-xs border-info/30 text-info">Motoboy</Badge>}
+                            </div>
+                          </TableCell>
                           <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
                           <TableCell className="text-right tabular font-medium">{fmtMoney(c.salario)}</TableCell>
+                          <TableCell className="text-center">
+                            <Switch
+                              checked={c.incluido}
+                              onCheckedChange={(v) => c.id && toggleColabPonto.mutate({ id: c.id, incluir: v })}
+                              disabled={toggleColabPonto.isPending || !c.id}
+                              title={c.incluido ? "Tirar do ponto de equilíbrio" : "Recolocar no ponto de equilíbrio"}
+                            />
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

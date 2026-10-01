@@ -24,6 +24,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { formatFileSize } from "@/lib/format";
 
@@ -40,6 +41,7 @@ type Collab = {
   salario: number | null;
   saldo_devedor: number | null;
   pagamento: number | null;
+  is_motoboy?: boolean | null;
 };
 
 type CollabDoc = {
@@ -54,7 +56,7 @@ type CollabDoc = {
   created_at: string;
 };
 
-const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, pagamento: 0, saldo_devedor: 0 };
+const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, pagamento: 0, saldo_devedor: 0, is_motoboy: false };
 const docTypes = ["documento", "foto", "comprovante", "contrato", "outro"] as const;
 const STATUS_OPTIONS = ["ativo", "inativo", "afastado", "desligado"] as const;
 
@@ -146,14 +148,26 @@ function ColaboradoresPage() {
         em_turno: c.em_turno ?? false, turno: c.turno || null, horario: c.horario || null,
         escala: c.escala || null, observacoes: c.observacoes || null,
         salario, pagamento, saldo_devedor,
+        is_motoboy: c.is_motoboy ?? false,
       } as any;
+      // Fallback se a coluna is_motoboy ainda não existir (migration pendente)
+      const semMotoboy = ({ is_motoboy, ...r }: any) => r;
       if (c.id) {
-        const { error } = await supabase.from("collaborators").update(payload).eq("id", c.id);
-        if (error) throw error;
+        let { error } = await supabase.from("collaborators").update(payload).eq("id", c.id);
+        if (error && (error.code === "42703" || /is_motoboy/i.test(error.message))) {
+          console.warn("[colaboradores] sem coluna is_motoboy, migration pendente:", error.message);
+          const retry = await supabase.from("collaborators").update(semMotoboy(payload)).eq("id", c.id);
+          if (retry.error) throw retry.error;
+        } else if (error) throw error;
         await logActivity("rh", "editou colaborador", c.id, { nome: c.nome });
       } else {
-        const { data, error } = await supabase.from("collaborators").insert(payload).select("id").single();
-        if (error) throw error;
+        let { data, error } = await supabase.from("collaborators").insert(payload).select("id").single();
+        if (error && (error.code === "42703" || /is_motoboy/i.test(error.message))) {
+          console.warn("[colaboradores] sem coluna is_motoboy, migration pendente:", error.message);
+          const retry = await supabase.from("collaborators").insert(semMotoboy(payload)).select("id").single();
+          if (retry.error) throw retry.error;
+          data = retry.data;
+        } else if (error) throw error;
         await logActivity("rh", "criou colaborador", data.id, { nome: c.nome });
       }
     },
@@ -287,7 +301,12 @@ function ColaboradoresPage() {
                 {filtered.map((c) => (
                   <TableRow key={c.id}>
                     <TableCell><Checkbox checked={selected.has(c.id)} onCheckedChange={() => toggle(c.id)} /></TableCell>
-                    <TableCell className="font-medium">{c.nome}</TableCell>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-1.5">
+                        <span>{c.nome}</span>
+                        {c.is_motoboy && <Badge variant="outline" className="text-xs border-info/30 text-info">Motoboy</Badge>}
+                      </div>
+                    </TableCell>
                     <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
                     <TableCell className="text-muted-foreground">{c.turno || "—"}</TableCell>
                     <TableCell className="text-muted-foreground">{fmtDate(c.data_admissao)}</TableCell>
@@ -375,6 +394,13 @@ function ColaboradoresPage() {
                     <div className="flex items-center gap-2 sm:col-span-2">
                       <Switch checked={editing.em_turno ?? false} onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })} />
                       <Label>Em turno agora</Label>
+                    </div>
+                    <div className="flex items-center gap-2 sm:col-span-2 rounded-lg border border-border p-3">
+                      <Switch checked={editing.is_motoboy ?? false} onCheckedChange={(v) => setEditing({ ...editing, is_motoboy: v })} />
+                      <div className="space-y-0.5">
+                        <Label>É motoboy</Label>
+                        <p className="text-[11px] text-muted-foreground">Motoboys aparecem na Folha dos motoboys no Financeiro.</p>
+                      </div>
                     </div>
                   </div>
                 </TabsContent>
