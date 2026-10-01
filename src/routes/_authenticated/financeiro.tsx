@@ -5,7 +5,8 @@ import {
   Wallet, TrendingUp, TrendingDown, PiggyBank, Calculator, FileSpreadsheet,
   Plus, Pencil, Trash2, Lock, Unlock, Eye, EyeOff, Loader2, AlertTriangle,
   ChevronDown, ChevronUp, Save, X, RefreshCw, DollarSign, Users, Package,
-  CreditCard, ShoppingCart, ArrowUpRight, ArrowDownRight, List, CalendarDays
+  CreditCard, ShoppingCart, ArrowUpRight, ArrowDownRight, List, CalendarDays,
+  Truck, ReceiptText
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -81,6 +82,78 @@ const DRE_TIPOS = [
 
 const COMPETENCIA_DEFAULT = new Date().toISOString().split("T")[0].slice(0, 7) + "-01";
 const VENCIMENTO_DEFAULT = new Date().toISOString().split("T")[0];
+
+// ---------------------------------------------------------------------------
+// Taxas de entrega / outras taxas (pedidos Anota AI)
+// O payload do Anota varia por versão/loja, então a extração é defensiva:
+// - taxa de entrega: delivery_fee, deliveryFee, taxa_entrega, shipping_fee, fee, delivery_info.fee etc.
+// - outras taxas: additionalFees / additional_fees / fees / taxas (array com valor + nome)
+// ---------------------------------------------------------------------------
+function numOrZero(v: unknown): number {
+  if (typeof v === "number" && isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v))) return Number(v);
+  return 0;
+}
+
+function asRec(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+function extractDeliveryFee(payload: unknown): number {
+  const root = asRec(payload);
+  if (!root) return 0;
+  const info =
+    asRec(root.delivery_info) ?? asRec(root.deliveryInfo) ?? asRec(root.delivery);
+  const candidates: unknown[] = [
+    root.delivery_fee,
+    root.deliveryFee,
+    root.taxa_entrega,
+    root.taxaEntrega,
+    root.taxa_entrega_valor,
+    root.taxaEntregaValor,
+    root.shipping_fee,
+    root.shippingFee,
+    root.delivery_tax,
+    root.deliveryTax,
+    info?.fee,
+    info?.valor,
+    info?.taxa,
+    info?.price,
+  ];
+  for (const c of candidates) {
+    const n = numOrZero(c);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+function extractOtherFees(payload: unknown): { total: number; itens: { nome: string; valor: number }[] } {
+  const root = asRec(payload);
+  if (!root) return { total: 0, itens: [] };
+  const rawList =
+    root.additionalFees ?? root.additional_fees ?? root.additionalfees ??
+    root.fees ?? root.taxas ?? root.outras_taxas ?? root.outrasTaxas;
+  if (!Array.isArray(rawList)) return { total: 0, itens: [] };
+  const itens: { nome: string; valor: number }[] = [];
+  for (const entry of rawList) {
+    const rec = asRec(entry);
+    // Alguns formatos usam número direto no array
+    if (!rec) {
+      const n = numOrZero(entry);
+      if (n > 0) itens.push({ nome: "Taxa adicional", valor: n });
+      continue;
+    }
+    const valor = numOrZero(
+      rec.value ?? rec.valor ?? rec.amount ?? rec.price ?? rec.preco ?? rec.total,
+    );
+    if (valor <= 0) continue;
+    const nomeRaw =
+      rec.name ?? rec.nome ?? rec.description ?? rec.descricao ?? rec.label ?? rec.tipo ?? rec.type;
+    const nome = typeof nomeRaw === "string" && nomeRaw.trim() ? nomeRaw.trim() : "Taxa adicional";
+    itens.push({ nome, valor });
+  }
+  return { total: itens.reduce((s, i) => s + i.valor, 0), itens };
+}
 
 function FinanceiroPage() {
   const qc = useQueryClient();
@@ -865,6 +938,48 @@ function FinanceiroPage() {
   // Mantido para compatibilidade (legado 30%)
   const ifoodFuture = ifoodTotal;
 
+  // Taxas de entrega + outras taxas por pedido (período selecionado, mesma base do anotaOrders)
+  const taxasPorPedido = useMemo(() => anotaOrders.map(o => {
+    const taxaEntrega = extractDeliveryFee(o.payload);
+    const outras = extractOtherFees(o.payload);
+    return {
+      id: o.id,
+      imported_at: o.imported_at,
+      total: Number(o.total) || 0,
+      taxaEntrega,
+      outrasTaxas: outras.total,
+      outrasItens: outras.itens,
+      totalTaxas: taxaEntrega + outras.total,
+    };
+  }), [anotaOrders]);
+  const taxasEntregaTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.taxaEntrega, 0), [taxasPorPedido]);
+  const outrasTaxasTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.outrasTaxas, 0), [taxasPorPedido]);
+  const taxasTotalGeral = useMemo(() => taxasEntregaTotal + outrasTaxasTotal, [taxasEntregaTotal, outrasTaxasTotal]);
+  const pedidosComTaxaEntrega = useMemo(() => taxasPorPedido.filter(t => t.taxaEntrega > 0).length, [taxasPorPedido]);
+  const pedidosComOutrasTaxas = useMemo(() => taxasPorPedido.filter(t => t.outrasTaxas > 0).length, [taxasPorPedido]);
+  const outrasTaxasPorNome = useMemo(() => {
+    const map = new Map<string, { total: number; qtd: number }>();
+    for (const t of taxasPorPedido) {
+      for (const item of t.outrasItens) {
+        const cur = map.get(item.nome) ?? { total: 0, qtd: 0 };
+        cur.total += item.valor;
+        cur.qtd += 1;
+        map.set(item.nome, cur);
+      }
+    }
+    return [...map.entries()]
+      .map(([nome, v]) => ({ nome, ...v }))
+      .sort((a, b) => b.total - a.total);
+  }, [taxasPorPedido]);
+  // Insumos a pagar = compras a prazo pendentes (parcela de vencimentos ligada a estoque)
+  const insumosAPagarTotal = useMemo(() =>
+    vencimentosPendentes.reduce((s: number, r: any) =>
+      s + (Number(r.valor_total) || Number(r.quantidade_recebida || r.quantidade_necessaria) * Number(r.preco_recebido || r.preco_medio) || 0), 0),
+  [vencimentosPendentes]);
+  const manualAPagarTotal = useMemo(() =>
+    manualVencimentos.reduce((s: number, r: any) => s + (Number(r.valor) || 0), 0),
+  [manualVencimentos]);
+
   const saveEntry = useMutation({
     mutationFn: async (entry: Partial<DreEntry> & { id?: string }) => {
       const vencimentoVal = (entry as any).vencimento || entry.competencia || VENCIMENTO_DEFAULT;
@@ -1577,6 +1692,13 @@ if (!unlocked) return null;
             </div>
             <Button variant="outline" size="sm" onClick={() => { refetchVencimentos(); refetchManualVencimentos(); }}><RefreshCw className="mr-1.5 size-4" /> Atualizar</Button>
           </div>
+          {/* Indicadores da aba — vencimentos, insumos a pagar e taxas dos pedidos, lado a lado */}
+          <div className="grid grid-cols-2 gap-4 mb-6 lg:grid-cols-4">
+            <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentesTotal > 0 ? "warning" : "success"} hint={`${vencimentosPendentesTotal} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}`} />
+            <KpiCard label="Despesas com insumos a pagar" value={fmtMoney(insumosAPagarTotal)} icon={ShoppingCart} tone={vencimentosPendentes.length > 0 ? "warning" : "success"} hint={`${vencimentosPendentes.length} compra(s) a prazo não paga(s)${manualAPagarTotal > 0 ? ` • ${fmtMoney(manualAPagarTotal)} em lançamentos` : ""}`} />
+            <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa no período • ${fmtDate(periodoInicio)} a ${fmtDate(periodoFim)}`} />
+            <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : `${pedidosComOutrasTaxas} pedido(s) com taxas extras no período`} />
+          </div>
           {vencimentosPendentesTotal === 0 ? (
             <EmptyState icon={CalendarDays} title="Nenhum vencimento pendente" description="Compras a prazo e lançamentos manuais com vencimento futuro aparecerão aqui até serem quitados." />
           ) : (
@@ -1684,6 +1806,50 @@ if (!unlocked) return null;
               )}
             </div>
           )}
+          {/* Taxas dos pedidos no período — detalhamento separado, sempre visível */}
+          <div className="mt-6">
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><Truck className="size-4" /> Taxas dos pedidos — {fmtDate(periodoInicio)} a {fmtDate(periodoFim)}</h4>
+            <p className="text-xs text-muted-foreground mb-3">
+              Taxas de entrega {fmtMoney(taxasEntregaTotal)} ({pedidosComTaxaEntrega} pedido(s))
+              {" • "}Outras taxas {fmtMoney(outrasTaxasTotal)} ({pedidosComOutrasTaxas} pedido(s))
+              {" • "}Total em taxas {fmtMoney(taxasTotalGeral)} em {anotaOrders.length} pedido(s) no período
+              {outrasTaxasPorNome.length > 0 && ` • ${outrasTaxasPorNome.map(t => `${t.nome} (${t.qtd}x): ${fmtMoney(t.total)}`).join(" • ")}`}
+            </p>
+            {taxasPorPedido.filter(t => t.totalTaxas > 0).length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/50 px-6 py-8 text-center">
+                <ReceiptText className="mx-auto size-8 text-muted-foreground/40" />
+                <p className="mt-2 text-sm font-medium">Nenhuma taxa de entrega ou taxa extra nos pedidos do período</p>
+                <p className="mt-1 text-xs text-muted-foreground">Pedidos com taxa de entrega ou taxas adicionais (ex.: embalagem, serviço) aparecerão aqui detalhados por pedido.</p>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border bg-card overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Pedido</TableHead>
+                      <TableHead>Data</TableHead>
+                      <TableHead className="text-right">Taxa de entrega</TableHead>
+                      <TableHead className="text-right">Outras taxas</TableHead>
+                      <TableHead>Detalhe outras taxas</TableHead>
+                      <TableHead className="text-right">Total taxas</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {taxasPorPedido.filter(t => t.totalTaxas > 0).map((t) => (
+                      <TableRow key={t.id}>
+                        <TableCell className="tabular font-medium">#{t.id.slice(0, 8)}</TableCell>
+                        <TableCell className="text-muted-foreground">{fmtDate(t.imported_at)}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{t.taxaEntrega > 0 ? fmtMoney(t.taxaEntrega) : "—"}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{t.outrasTaxas > 0 ? fmtMoney(t.outrasTaxas) : "—"}</TableCell>
+                        <TableCell className="text-muted-foreground text-xs">{t.outrasItens.length > 0 ? t.outrasItens.map(i => `${i.nome}: ${fmtMoney(i.valor)}`).join(" • ") : "—"}</TableCell>
+                        <TableCell className="text-right tabular font-semibold">{fmtMoney(t.totalTaxas)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
         </TabsContent>
       </Tabs>
 
