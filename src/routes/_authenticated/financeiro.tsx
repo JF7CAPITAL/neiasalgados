@@ -49,6 +49,7 @@ type DreEntry = {
   recorrencia_tipo?: 'indefinida' | 'determinada' | null;
   recorrencia_quantidade?: number | null;
   recorrencia_grupo_id?: string | null;
+  inclui_ponto_equilibrio?: boolean | null;
   created_at: string;
   created_by: string | null;
   fonte: "auto" | "manual";
@@ -513,13 +514,25 @@ function FinanceiroPage() {
   const vencimentosPendentesTotal = useMemo(() => vencimentosPendentes.length + manualVencimentos.length, [vencimentosPendentes, manualVencimentos]);
 
   // Todos recorrentes (para ponto de equilíbrio - não diminui quando parcela paga, só quando grupo removido)
+  // Inclui a flag inclui_ponto_equilibrio (migration 20261007); sem ela, assume true (fallback)
   const { data: manualRecorrentesAll = [] } = useQuery({
     queryKey: ["finance-recorrentes-all"],
     queryFn: async () => {
-      const { data, error } = await (supabase as any)
+      const COLS_FULL = "id, valor, categoria, descricao, recorrencia_grupo_id, recorrente, recorrencia_tipo, recorrencia_quantidade, pago, vencimento, competencia, inclui_ponto_equilibrio";
+      const COLS_LEGACY = "id, valor, categoria, descricao, recorrencia_grupo_id, recorrente, recorrencia_tipo, recorrencia_quantidade, pago, vencimento, competencia";
+      let { data, error } = await (supabase as any)
         .from("finance_dre_entries")
-        .select("id, valor, categoria, descricao, recorrencia_grupo_id, recorrente, recorrencia_tipo, recorrencia_quantidade, pago, vencimento, competencia")
+        .select(COLS_FULL)
         .eq("recorrente", true);
+      if (error && (error.code === "42703" || error.message?.includes("inclui_ponto_equilibrio"))) {
+        console.warn("[finance-recorrentes-all] sem coluna inclui_ponto_equilibrio, migration pendente:", error.message);
+        const retry = await (supabase as any)
+          .from("finance_dre_entries")
+          .select(COLS_LEGACY)
+          .eq("recorrente", true);
+        data = retry.data;
+        error = retry.error;
+      }
       if (error) {
         if (error.message?.includes("recorrente") || error.code === "42703") return [];
         throw error;
@@ -634,6 +647,23 @@ function FinanceiroPage() {
       toast.success("Lançamento quitado!");
     },
     onError: (e: Error) => toast.error(e.message),
+  });
+
+  // Liga/desliga a participação de lançamento(s) recorrente(s) no Ponto de Equilíbrio
+  const togglePontoEquilibrio = useMutation({
+    mutationFn: async ({ ids, incluir }: { ids: string[]; incluir: boolean }) => {
+      const { error } = await (supabase as any).from("finance_dre_entries").update({ inclui_ponto_equilibrio: incluir } as any).in("id", ids);
+      if (error) throw error;
+      await logActivity("financeiro", incluir ? "incluiu lançamento no ponto de equilíbrio" : "removeu lançamento do ponto de equilíbrio", ids[0] ?? null, { ids: ids.length });
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
+      toast.success(vars.incluir ? "Lançamento incluído no ponto de equilíbrio!" : "Lançamento fora do ponto de equilíbrio!");
+    },
+    onError: (e: Error) => toast.error(/inclui_ponto_equilibrio|42703/.test(e.message) ? "Aplique a migration 20261007000000_ponto_equilibrio_optout.sql no Supabase para usar este controle." : e.message),
   });
 
   // Fetch Anota AI orders for Receita Bruta breakdown (D+1) - inclui payload para diferenciar iFood vs Anota direto
@@ -849,25 +879,45 @@ function FinanceiroPage() {
       salario: Number(c.salario) || 0,
     }));
     // Manual recorrentes distintos (cada grupo conta uma vez)
+    // Apenas lançamentos com inclui_ponto_equilibrio !== false integram o indicador (padrão: inclui)
     const montarRecorrentes = (list: any[]) => {
-      const grupos = new Map<string, { valor: number; categoria: string; descricao: string; tipo: string | null; quantidade: number | null }>();
-      const avulsos: { categoria: string; descricao: string; valor: number }[] = [];
+      const grupos = new Map<string, { valor: number; categoria: string; descricao: string; tipo: string | null; quantidade: number | null; ids: string[]; incluido: boolean }>();
+      const avulsos: { id: string; categoria: string; descricao: string; valor: number; incluido: boolean }[] = [];
       for (const e of list) {
         const gid = (e as any).recorrencia_grupo_id as string | null;
         const val = Number((e as any).valor) || 0;
         const categoria = String((e as any).categoria ?? "—");
         const descricao = String((e as any).descricao ?? "");
+        const incluido = (e as any).inclui_ponto_equilibrio !== false;
+        const id = String((e as any).id ?? "");
         if (gid) {
-          if (!grupos.has(gid)) grupos.set(gid, { valor: val, categoria, descricao, tipo: (e as any).recorrencia_tipo ?? null, quantidade: (e as any).recorrencia_quantidade ?? null });
+          if (!grupos.has(gid)) {
+            grupos.set(gid, { valor: val, categoria, descricao, tipo: (e as any).recorrencia_tipo ?? null, quantidade: (e as any).recorrencia_quantidade ?? null, ids: [], incluido: true });
+          }
+          const g = grupos.get(gid)!;
+          if (id && !g.ids.includes(id)) g.ids.push(id);
+          g.incluido = g.incluido && incluido;
         } else {
-          avulsos.push({ categoria, descricao, valor: val });
+          avulsos.push({ id, categoria, descricao, valor: val, incluido });
         }
       }
       return { grupos, avulsos };
     };
+    // Completa os ids de cada grupo com todas as listas (para o toggle afetar o grupo inteiro)
+    const completarIdsGrupos = (rec: { grupos: Map<string, { ids: string[]; incluido: boolean }> }) => {
+      for (const e of [...(manualRecorrentesAll as any[]), ...(manualVencimentos as any[])]) {
+        const gid = (e as any).recorrencia_grupo_id as string | null;
+        if (!gid) continue;
+        const g = rec.grupos.get(gid);
+        if (!g) continue;
+        const id = String((e as any).id ?? "");
+        if (id && !g.ids.includes(id)) g.ids.push(id);
+        g.incluido = g.incluido && (e as any).inclui_ponto_equilibrio !== false;
+      }
+    };
     let rec = montarRecorrentes(manualRecorrentesAll as any[]);
-    const somaRec = (r: { grupos: Map<string, { valor: number }>; avulsos: { valor: number }[] }) =>
-      [...r.grupos.values()].reduce((s, g) => s + g.valor, 0) + r.avulsos.reduce((s, a) => s + a.valor, 0);
+    const somaRec = (r: { grupos: Map<string, { valor: number; incluido: boolean }>; avulsos: { valor: number; incluido: boolean }[] }) =>
+      [...r.grupos.values()].filter(g => g.incluido).reduce((s, g) => s + g.valor, 0) + r.avulsos.filter(a => a.incluido).reduce((s, a) => s + a.valor, 0);
     let recorrenteTotal = somaRec(rec);
     let usouFallback = false;
     // Fallback: se ainda 0, usa manualVencimentos recorrentes (pendentes) para não ficar 0 enquanto carrega
@@ -880,6 +930,7 @@ function FinanceiroPage() {
         usouFallback = true;
       }
     }
+    completarIdsGrupos(rec);
     // Insumos: usa total do período (todos recebidos) como proxy mensal recorrente, estável mesmo após quitar
     const insumosRecorrente = insumosTotal;
     const total = folha + recorrenteTotal + insumosRecorrente;
@@ -1022,6 +1073,7 @@ function FinanceiroPage() {
         pago: pagoEfetivo,
         data_pagamento: pagoEfetivo ? new Date().toISOString() : null,
         recorrente: entry.recorrente ?? false,
+        inclui_ponto_equilibrio: (entry as any).inclui_ponto_equilibrio ?? true,
       };
       // Tenta incluir novos campos se existirem na tabela (migration 20260831)
       const recorrenciaTipo = (entry as any).recorrencia_tipo as 'indefinida' | 'determinada' | null | undefined;
@@ -1049,8 +1101,8 @@ function FinanceiroPage() {
         if ((entry as any).recorrencia_grupo_id) payload.recorrencia_grupo_id = (entry as any).recorrencia_grupo_id;
         let { error } = await supabase.from("finance_dre_entries").update(payload).eq("id", entry.id);
         // Fallback se colunas novas ainda não existem (migration pendente)
-        if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message))) {
-          const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, ...fallback } = payload;
+        if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message) || /inclui_ponto_equilibrio/i.test(error.message))) {
+          const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, inclui_ponto_equilibrio, ...fallback } = payload;
           // tenta sem novas colunas, depois tenta apenas sem recorrencia
           if (/vencimento|pago/.test(error.message)) {
             const { error: err2 } = await supabase.from("finance_dre_entries").update(fallback).eq("id", entry.id);
@@ -1098,9 +1150,9 @@ function FinanceiroPage() {
           }
           // Tenta inserir com novas colunas
           let { error, data } = await supabase.from("finance_dre_entries").insert(rows).select("id");
-          if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message))) {
+          if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message) || /inclui_ponto_equilibrio/i.test(error.message))) {
             // Fallback sem colunas novas
-            const fallbackRows = rows.map(({ recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, ...r }) => r);
+            const fallbackRows = rows.map(({ recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, inclui_ponto_equilibrio, ...r }) => r);
             // se erro for só recorrencia, tenta com vencimento/pago mantidos
             if (/recorrencia/.test(error.message) && !/vencimento|pago/.test(error.message)) {
               const fallback2 = rows.map(({ recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, ...r }) => r);
@@ -1116,8 +1168,8 @@ function FinanceiroPage() {
           await logActivity("financeiro", "criou lançamentos DRE recorrentes", (data as any)?.[0]?.id ?? null, { categoria: entry.categoria, tipo, quantidade });
         } else {
           let { data, error } = await supabase.from("finance_dre_entries").insert(basePayload).select("id").single();
-          if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message))) {
-            const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, ...fallback } = basePayload;
+          if (error && (/recorrencia/i.test(error.message) || /vencimento/i.test(error.message) || /pago/i.test(error.message) || /inclui_ponto_equilibrio/i.test(error.message))) {
+            const { recorrencia_tipo, recorrencia_quantidade, recorrencia_grupo_id, vencimento, pago, data_pagamento, inclui_ponto_equilibrio, ...fallback } = basePayload;
             if (/vencimento|pago/.test(error.message)) {
               const { error: err2, data: d2 } = await supabase.from("finance_dre_entries").insert(fallback).select("id").single();
               if (err2) {
@@ -1617,7 +1669,7 @@ if (!unlocked) return null;
         <TabsContent value="lancamentos" className="pt-4">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold">Lançamentos Manuais do Contador</h3>
-            <Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}>
+            <Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); setNewEntryOpen(true); }}>
               <Plus className="mr-1.5 size-4" /> Novo lançamento
             </Button>
           </div>
@@ -1627,7 +1679,7 @@ if (!unlocked) return null;
               icon={FileSpreadsheet}
               title="Nenhum lançamento manual"
               description="Adicione ajustes, provisões, impostos e outras despesas que não vêm do sistema."
-              action={<Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); setNewEntryOpen(true); }}><Plus className="mr-1.5 size-4" /> Criar primeiro lançamento</Button>}
+              action={<Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); setNewEntryOpen(true); }}><Plus className="mr-1.5 size-4" /> Criar primeiro lançamento</Button>}
             />
           ) : (
             <div className="rounded-xl border border-border bg-card overflow-x-auto">
@@ -1694,6 +1746,15 @@ if (!unlocked) return null;
                         <Badge variant={e.recorrente ? "secondary" : "outline"} className="text-xs" title={parcelaProgress ?? undefined}>
                           {label}
                         </Badge>
+                        {e.recorrente && (
+                          <div className="mt-1">
+                            {(e as any).inclui_ponto_equilibrio !== false ? (
+                              <Badge variant="outline" className="text-xs border-info/30 text-info" title="Integra o Ponto de Equilíbrio">No ponto</Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-xs text-muted-foreground" title="Fora do Ponto de Equilíbrio">Fora do ponto</Badge>
+                            )}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-right">
                         {!pago && venc && <Button variant="ghost" size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending} title="Quitar"><CreditCard className="size-4" /></Button>}
@@ -1885,7 +1946,7 @@ if (!unlocked) return null;
             <DialogTitle>{editingEntry?.id ? "Editar lançamento" : "Novo lançamento manual"}</DialogTitle>
           </DialogHeader>
           {(editingEntry || newEntryOpen) && (
-            <form onSubmit={(e) => { e.preventDefault(); saveEntry.mutate(editingEntry ?? { tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null } as any); }} className="space-y-4">
+            <form onSubmit={(e) => { e.preventDefault(); saveEntry.mutate(editingEntry ?? { tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); }} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Tipo</Label>
@@ -1973,6 +2034,18 @@ if (!unlocked) return null;
                 )}
                 {editingEntry?.recorrente && (editingEntry as any)?.recorrencia_tipo === 'determinada' && (
                   <p className="text-xs text-muted-foreground">Serão criados {(editingEntry as any)?.recorrencia_quantidade || 3} lançamentos mensais sequenciais.</p>
+                )}
+                {editingEntry?.recorrente && (
+                  <div className="flex items-center justify-between rounded-lg border border-border p-3 bg-card">
+                    <div className="space-y-0.5">
+                      <Label className="text-xs font-medium">Integra o ponto de equilíbrio?</Label>
+                      <p className="text-xs text-muted-foreground">{(editingEntry as any)?.inclui_ponto_equilibrio ?? true ? "Conta no Ponto de Equilíbrio" : "Fora do Ponto de Equilíbrio"}</p>
+                    </div>
+                    <Switch
+                      checked={(editingEntry as any)?.inclui_ponto_equilibrio ?? true}
+                      onCheckedChange={(v) => setEditingEntry({ ...(editingEntry ?? {}), inclui_ponto_equilibrio: v } as any)}
+                    />
+                  </div>
                 )}
               </div>
               <DialogFooter>
@@ -2486,7 +2559,7 @@ if (!unlocked) return null;
             </div>
             <div>
               <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><RefreshCw className="size-4" /> Despesas recorrentes — {fmtMoney(pontoDeEquilibrio.recorrenteTotal)}/mês</h4>
-              <p className="text-xs text-muted-foreground mb-2">Lançamentos manuais recorrentes (cada grupo conta uma única vez, mesmo com várias parcelas futuras){pontoDeEquilibrio.usouFallback ? " • Exibindo pendentes (carregamento parcial)" : ""}.</p>
+              <p className="text-xs text-muted-foreground mb-2">Lançamentos manuais recorrentes (cada grupo conta uma única vez, mesmo com várias parcelas futuras){pontoDeEquilibrio.usouFallback ? " • Exibindo pendentes (carregamento parcial)" : ""} • Use o interruptor para tirar ou recolocar um item no indicador.</p>
               {(pontoDeEquilibrio.recorrenteGrupos.length === 0 && pontoDeEquilibrio.recorrenteAvulsos.length === 0) ? (
                 <p className="text-xs text-muted-foreground">Nenhuma despesa recorrente cadastrada.</p>
               ) : (
@@ -2498,6 +2571,7 @@ if (!unlocked) return null;
                         <TableHead>Descrição</TableHead>
                         <TableHead className="text-right">Valor/mês</TableHead>
                         <TableHead className="text-center">Parcelas</TableHead>
+                        <TableHead className="text-center">No ponto</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2505,20 +2579,36 @@ if (!unlocked) return null;
                         const stat = grupoProgressMap.get(g.gid);
                         const progresso = stat ? `${stat.pagos}/${stat.total} pagas` : (g.tipo === "determinada" && g.quantidade ? `${g.quantidade}x` : g.tipo === "indefinida" ? "Indefinida" : "—");
                         return (
-                          <TableRow key={g.gid}>
+                          <TableRow key={g.gid} className={g.incluido ? "" : "opacity-60"}>
                             <TableCell className="font-medium">{g.categoria}</TableCell>
                             <TableCell className="text-muted-foreground text-sm">{g.descricao || "—"}</TableCell>
                             <TableCell className="text-right tabular font-medium">{fmtMoney(g.valor)}</TableCell>
                             <TableCell className="text-center text-xs text-muted-foreground">{progresso}</TableCell>
+                            <TableCell className="text-center">
+                              <Switch
+                                checked={g.incluido}
+                                onCheckedChange={(v) => togglePontoEquilibrio.mutate({ ids: g.ids, incluir: v })}
+                                disabled={togglePontoEquilibrio.isPending || g.ids.length === 0}
+                                title={g.incluido ? "Tirar do ponto de equilíbrio" : "Recolocar no ponto de equilíbrio"}
+                              />
+                            </TableCell>
                           </TableRow>
                         );
                       })}
                       {pontoDeEquilibrio.recorrenteAvulsos.map((a, i) => (
-                        <TableRow key={`avulso-${i}`}>
+                        <TableRow key={a.id || `avulso-${i}`} className={a.incluido ? "" : "opacity-60"}>
                           <TableCell className="font-medium">{a.categoria}</TableCell>
                           <TableCell className="text-muted-foreground text-sm">{a.descricao || "—"}</TableCell>
                           <TableCell className="text-right tabular font-medium">{fmtMoney(a.valor)}</TableCell>
                           <TableCell className="text-center text-xs text-muted-foreground">Avulso</TableCell>
+                          <TableCell className="text-center">
+                            <Switch
+                              checked={a.incluido}
+                              onCheckedChange={(v) => a.id && togglePontoEquilibrio.mutate({ ids: [a.id], incluir: v })}
+                              disabled={togglePontoEquilibrio.isPending || !a.id}
+                              title={a.incluido ? "Tirar do ponto de equilíbrio" : "Recolocar no ponto de equilíbrio"}
+                            />
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
