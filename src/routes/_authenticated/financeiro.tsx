@@ -182,6 +182,7 @@ function FinanceiroPage() {
   const [showVencimentosDetail, setShowVencimentosDetail] = useState(false);
   const [showOutrasDespesasDetail, setShowOutrasDespesasDetail] = useState(false);
   const [showTaxasDetail, setShowTaxasDetail] = useState(false);
+  const [showPontoEquilibrioDetail, setShowPontoEquilibrioDetail] = useState(false);
   const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     "RECEITA BRUTA": true,
@@ -517,7 +518,7 @@ function FinanceiroPage() {
     queryFn: async () => {
       const { data, error } = await (supabase as any)
         .from("finance_dre_entries")
-        .select("id, valor, recorrencia_grupo_id, recorrente, recorrencia_tipo, recorrencia_quantidade, pago, vencimento, competencia")
+        .select("id, valor, categoria, descricao, recorrencia_grupo_id, recorrente, recorrencia_tipo, recorrencia_quantidade, pago, vencimento, competencia")
         .eq("recorrente", true);
       if (error) {
         if (error.message?.includes("recorrente") || error.code === "42703") return [];
@@ -841,39 +842,58 @@ function FinanceiroPage() {
   // Não diminui quando parcela é paga, só quando quitada/removida (grupo pendente continua contando)
   const pontoDeEquilibrio = useMemo(() => {
     const folha = totalSalarios; // fixa mensal, não diminui com pagamento parcial
+    const folhaItens = (collaborators as any[]).map((c: any) => ({
+      nome: c.nome ?? "—",
+      cargo: c.cargo ?? null,
+      salario: Number(c.salario) || 0,
+    }));
     // Manual recorrentes distintos (cada grupo conta uma vez)
-    const grupos = new Map<string, number>();
-    let avulsos = 0;
-    for (const e of (manualRecorrentesAll as any[])) {
-      const gid = (e as any).recorrencia_grupo_id as string | null;
-      const val = Number((e as any).valor) || 0;
-      if (gid) {
-        if (!grupos.has(gid)) grupos.set(gid, val);
-      } else {
-        avulsos += val;
-      }
-    }
-    let manualRecorrenteTotal = avulsos;
-    for (const v of grupos.values()) manualRecorrenteTotal += v;
-    // Fallback: se ainda 0, usa manualVencimentos recorrentes (pendentes) para não ficar 0 enquanto carrega
-    if (manualRecorrenteTotal === 0 && manualVencimentos.length) {
-      const tmpGrupos = new Map<string, number>();
-      let tmpAv = 0;
-      for (const e of manualVencimentos) {
-        if (!(e as any).recorrente) continue;
+    const montarRecorrentes = (list: any[]) => {
+      const grupos = new Map<string, { valor: number; categoria: string; descricao: string; tipo: string | null; quantidade: number | null }>();
+      const avulsos: { categoria: string; descricao: string; valor: number }[] = [];
+      for (const e of list) {
         const gid = (e as any).recorrencia_grupo_id as string | null;
         const val = Number((e as any).valor) || 0;
+        const categoria = String((e as any).categoria ?? "—");
+        const descricao = String((e as any).descricao ?? "");
         if (gid) {
-          if (!tmpGrupos.has(gid)) tmpGrupos.set(gid, val);
-        } else tmpAv += val;
+          if (!grupos.has(gid)) grupos.set(gid, { valor: val, categoria, descricao, tipo: (e as any).recorrencia_tipo ?? null, quantidade: (e as any).recorrencia_quantidade ?? null });
+        } else {
+          avulsos.push({ categoria, descricao, valor: val });
+        }
       }
-      for (const v of tmpGrupos.values()) tmpAv += v;
-      if (tmpAv > 0) manualRecorrenteTotal = tmpAv;
+      return { grupos, avulsos };
+    };
+    let rec = montarRecorrentes(manualRecorrentesAll as any[]);
+    const somaRec = (r: { grupos: Map<string, { valor: number }>; avulsos: { valor: number }[] }) =>
+      [...r.grupos.values()].reduce((s, g) => s + g.valor, 0) + r.avulsos.reduce((s, a) => s + a.valor, 0);
+    let recorrenteTotal = somaRec(rec);
+    let usouFallback = false;
+    // Fallback: se ainda 0, usa manualVencimentos recorrentes (pendentes) para não ficar 0 enquanto carrega
+    if (recorrenteTotal === 0 && manualVencimentos.length) {
+      const fb = montarRecorrentes((manualVencimentos as any[]).filter((e: any) => (e as any).recorrente));
+      const somaFb = somaRec(fb);
+      if (somaFb > 0) {
+        rec = fb;
+        recorrenteTotal = somaFb;
+        usouFallback = true;
+      }
     }
     // Insumos: usa total do período (todos recebidos) como proxy mensal recorrente, estável mesmo após quitar
     const insumosRecorrente = insumosTotal;
-    return folha + manualRecorrenteTotal + insumosRecorrente;
-  }, [totalSalarios, manualRecorrentesAll, manualVencimentos, insumosTotal]);
+    const total = folha + recorrenteTotal + insumosRecorrente;
+    return {
+      total,
+      folha,
+      folhaItens,
+      recorrenteTotal,
+      recorrenteGrupos: [...rec.grupos.entries()].map(([gid, g]) => ({ gid, ...g })),
+      recorrenteAvulsos: rec.avulsos,
+      usouFallback,
+      insumos: insumosRecorrente,
+      insumosQtd: receivedPurchaseOrders.length,
+    };
+  }, [totalSalarios, collaborators, manualRecorrentesAll, manualVencimentos, insumosTotal, receivedPurchaseOrders]);
 
   // Separa iFood vs Anota direto (iFood passa pelo Anota AI mas tem salesChannel/from com 'ifood')
   const ifoodOrders = useMemo(() => anotaOrders.filter(isIfoodOrder), [anotaOrders, isIfoodOrder]);
@@ -1539,9 +1559,10 @@ if (!unlocked) return null;
           />
           <InsightCard
             title="Ponto de Equilíbrio"
-            value={fmtMoney(pontoDeEquilibrio)}
-            description="Folha + insumos + recorrentes (não diminui com pagamento parcial, só quando quitada)"
+            value={fmtMoney(pontoDeEquilibrio.total)}
+            description="Folha + insumos + recorrentes — clique para ver o detalhamento"
             tone="info"
+            onClick={() => setShowPontoEquilibrioDetail(true)}
           />
           <InsightCard
             title="Ticket Médio Estimado"
@@ -2426,6 +2447,113 @@ if (!unlocked) return null;
         </DialogContent>
       </Dialog>
 
+      {/* Ponto de Equilíbrio Detail Dialog */}
+      <Dialog open={showPontoEquilibrioDetail} onOpenChange={setShowPontoEquilibrioDetail}>
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Ponto de Equilíbrio — O que está incluído</DialogTitle>
+            <p className="text-sm text-muted-foreground">Folha mensal + despesas recorrentes + insumos do período • Total {fmtMoney(pontoDeEquilibrio.total)} • Não diminui com pagamento parcial, só quando a despesa é quitada/removida</p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-6 pr-1 -mr-1">
+            <div>
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><Users className="size-4" /> Folha dos colaboradores — {fmtMoney(pontoDeEquilibrio.folha)}/mês</h4>
+              <p className="text-xs text-muted-foreground mb-2">Salários mensais dos colaboradores ativos (valor fixo, independente de pagamentos realizados).</p>
+              {pontoDeEquilibrio.folhaItens.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Nenhum colaborador ativo com salário.</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-muted/50">
+                        <TableHead>Colaborador</TableHead>
+                        <TableHead>Cargo</TableHead>
+                        <TableHead className="text-right">Salário/mês</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pontoDeEquilibrio.folhaItens.map((c, i) => (
+                        <TableRow key={`${c.nome}-${i}`}>
+                          <TableCell className="font-medium">{c.nome}</TableCell>
+                          <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
+                          <TableCell className="text-right tabular font-medium">{fmtMoney(c.salario)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><RefreshCw className="size-4" /> Despesas recorrentes — {fmtMoney(pontoDeEquilibrio.recorrenteTotal)}/mês</h4>
+              <p className="text-xs text-muted-foreground mb-2">Lançamentos manuais recorrentes (cada grupo conta uma única vez, mesmo com várias parcelas futuras){pontoDeEquilibrio.usouFallback ? " • Exibindo pendentes (carregamento parcial)" : ""}.</p>
+              {(pontoDeEquilibrio.recorrenteGrupos.length === 0 && pontoDeEquilibrio.recorrenteAvulsos.length === 0) ? (
+                <p className="text-xs text-muted-foreground">Nenhuma despesa recorrente cadastrada.</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-muted/50">
+                        <TableHead>Categoria</TableHead>
+                        <TableHead>Descrição</TableHead>
+                        <TableHead className="text-right">Valor/mês</TableHead>
+                        <TableHead className="text-center">Parcelas</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pontoDeEquilibrio.recorrenteGrupos.map((g) => {
+                        const stat = grupoProgressMap.get(g.gid);
+                        const progresso = stat ? `${stat.pagos}/${stat.total} pagas` : (g.tipo === "determinada" && g.quantidade ? `${g.quantidade}x` : g.tipo === "indefinida" ? "Indefinida" : "—");
+                        return (
+                          <TableRow key={g.gid}>
+                            <TableCell className="font-medium">{g.categoria}</TableCell>
+                            <TableCell className="text-muted-foreground text-sm">{g.descricao || "—"}</TableCell>
+                            <TableCell className="text-right tabular font-medium">{fmtMoney(g.valor)}</TableCell>
+                            <TableCell className="text-center text-xs text-muted-foreground">{progresso}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                      {pontoDeEquilibrio.recorrenteAvulsos.map((a, i) => (
+                        <TableRow key={`avulso-${i}`}>
+                          <TableCell className="font-medium">{a.categoria}</TableCell>
+                          <TableCell className="text-muted-foreground text-sm">{a.descricao || "—"}</TableCell>
+                          <TableCell className="text-right tabular font-medium">{fmtMoney(a.valor)}</TableCell>
+                          <TableCell className="text-center text-xs text-muted-foreground">Avulso</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><ShoppingCart className="size-4" /> Insumos — {fmtMoney(pontoDeEquilibrio.insumos)}</h4>
+              <p className="text-xs text-muted-foreground mb-2">Total de insumos recebidos no período selecionado ({pontoDeEquilibrio.insumosQtd} ordem(ns)), usado como proxy do custo mensal recorrente de insumos. Estável mesmo após quitar as compras.</p>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 bg-muted/50 rounded-lg">
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Folha/mês</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(pontoDeEquilibrio.folha)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Recorrentes/mês</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(pontoDeEquilibrio.recorrenteTotal)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Insumos</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(pontoDeEquilibrio.insumos)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Ponto de equilíbrio</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(pontoDeEquilibrio.total)}</p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="shrink-0 pt-2">
+            <Button variant="outline" onClick={() => setShowPontoEquilibrioDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Receita Bruta Breakdown Dialog */}
       <Dialog open={showReceitaDetail} onOpenChange={setShowReceitaDetail}>
         <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
@@ -2500,7 +2628,7 @@ if (!unlocked) return null;
   );
 }
 
-function InsightCard({ title, value, description, tone }: { title: string; value: string; description: string; tone: "success" | "warning" | "danger" | "info" }) {
+function InsightCard({ title, value, description, tone, onClick }: { title: string; value: string; description: string; tone: "success" | "warning" | "danger" | "info"; onClick?: () => void }) {
   const tones = {
     success: "bg-green-500/10 border-green-500/20 text-green-600 dark:text-green-400",
     warning: "bg-yellow-500/10 border-yellow-500/20 text-yellow-600 dark:text-yellow-400",
@@ -2508,7 +2636,10 @@ function InsightCard({ title, value, description, tone }: { title: string; value
     info: "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400",
   };
   return (
-    <div className={`rounded-xl border p-4 ${tones[tone]}`}>
+    <div
+      className={`rounded-xl border p-4 ${tones[tone]}${onClick ? " cursor-pointer transition-colors hover:border-blue-500/50 hover:shadow-sm" : ""}`}
+      onClick={onClick}
+    >
       <p className="text-xs font-medium uppercase tracking-wide opacity-70">{title}</p>
       <p className="mt-1 font-display text-2xl font-bold">{value}</p>
       <p className="mt-1 text-xs opacity-70">{description}</p>
