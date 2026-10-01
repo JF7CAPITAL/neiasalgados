@@ -738,14 +738,14 @@ function FinanceiroPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("anota_orders")
-        .select("id, total, check_status, pedido_em, imported_at, payload")
+        .select("id, total, check_status, pedido_em, imported_at, payload, numero, motoboy_id, external_order_id")
         .in("check_status", [1, 2, 3]) // em produção, pronto, finalizado
         .gte("imported_at", periodoInicio)
         // imported_at é timestamptz: sem o horário final, pedidos do último dia após 00:00 seriam excluídos
         .lte("imported_at", periodoFim + "T23:59:59")
         .order("imported_at", { ascending: false });
       if (error) throw error;
-      return (data ?? []) as { id: string; total: number; check_status: number; pedido_em: string | null; imported_at: string; payload: any }[];
+      return (data ?? []) as { id: string; total: number; check_status: number; pedido_em: string | null; imported_at: string; payload: any; numero: string | null; motoboy_id: string | null; external_order_id: string }[];
     },
     enabled: unlocked,
   });
@@ -1076,6 +1076,8 @@ function FinanceiroPage() {
     const outras = extractOtherFees(o.payload);
     return {
       id: o.id,
+      numero: o.numero ?? o.external_order_id?.slice(-6) ?? o.id.slice(0, 8),
+      motoboyId: o.motoboy_id ?? null,
       imported_at: o.imported_at,
       total: Number(o.total) || 0,
       taxaEntrega,
@@ -1084,6 +1086,14 @@ function FinanceiroPage() {
       totalTaxas: taxaEntrega + outras.total,
     };
   }), [anotaOrders]);
+  // Nome do motoboy vinculado a cada pedido (para as tabelas de taxas)
+  const motoboyNomePorId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of (collaborators as any[])) {
+      if (c?.id && c?.nome) map.set(String(c.id), String(c.nome));
+    }
+    return map;
+  }, [collaborators]);
   const taxasEntregaTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.taxaEntrega, 0), [taxasPorPedido]);
   const outrasTaxasTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.outrasTaxas, 0), [taxasPorPedido]);
   const taxasTotalGeral = useMemo(() => taxasEntregaTotal + outrasTaxasTotal, [taxasEntregaTotal, outrasTaxasTotal]);
@@ -1980,6 +1990,7 @@ if (!unlocked) return null;
                   <TableHeader>
                     <TableRow className="bg-muted/50">
                       <TableHead>Pedido</TableHead>
+                      <TableHead>Motoboy</TableHead>
                       <TableHead>Data</TableHead>
                       <TableHead className="text-right">Taxa de entrega</TableHead>
                       <TableHead className="text-right">Outras taxas</TableHead>
@@ -1990,7 +2001,8 @@ if (!unlocked) return null;
                   <TableBody>
                     {taxasPorPedido.filter(t => t.totalTaxas > 0).map((t) => (
                       <TableRow key={t.id}>
-                        <TableCell className="tabular font-medium">#{t.id.slice(0, 8)}</TableCell>
+                        <TableCell className="tabular font-medium">#{t.numero}</TableCell>
+                        <TableCell>{t.motoboyId && motoboyNomePorId.get(t.motoboyId) ? <Badge variant="outline" className="text-xs border-info/30 text-info">{motoboyNomePorId.get(t.motoboyId)}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
                         <TableCell className="text-muted-foreground">{fmtDate(t.imported_at)}</TableCell>
                         <TableCell className="text-right tabular font-medium">{t.taxaEntrega > 0 ? fmtMoney(t.taxaEntrega) : "—"}</TableCell>
                         <TableCell className="text-right tabular font-medium">{t.outrasTaxas > 0 ? fmtMoney(t.outrasTaxas) : "—"}</TableCell>
@@ -2639,6 +2651,7 @@ if (!unlocked) return null;
                   <TableHeader>
                     <TableRow className="bg-muted/50">
                       <TableHead>Pedido</TableHead>
+                      <TableHead>Motoboy</TableHead>
                       <TableHead>Data</TableHead>
                       <TableHead className="text-right">Taxa de entrega</TableHead>
                       <TableHead className="text-right">Outras taxas</TableHead>
@@ -2649,7 +2662,8 @@ if (!unlocked) return null;
                   <TableBody>
                     {taxasPorPedido.filter(t => t.totalTaxas > 0).map((t) => (
                       <TableRow key={t.id}>
-                        <TableCell className="tabular font-medium">#{t.id.slice(0, 8)}</TableCell>
+                        <TableCell className="tabular font-medium">#{t.numero}</TableCell>
+                        <TableCell>{t.motoboyId && motoboyNomePorId.get(t.motoboyId) ? <Badge variant="outline" className="text-xs border-info/30 text-info">{motoboyNomePorId.get(t.motoboyId)}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
                         <TableCell className="text-muted-foreground">{fmtDate(t.imported_at)}</TableCell>
                         <TableCell className="text-right tabular font-medium">{t.taxaEntrega > 0 ? fmtMoney(t.taxaEntrega) : "—"}</TableCell>
                         <TableCell className="text-right tabular font-medium">{t.outrasTaxas > 0 ? fmtMoney(t.outrasTaxas) : "—"}</TableCell>

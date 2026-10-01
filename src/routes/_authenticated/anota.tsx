@@ -1714,6 +1714,17 @@ function AnotaPage() {
                   <span className="text-muted-foreground">Total:</span>{" "}
                   <span className="font-medium">{fmtMoney(selectedOrder.total)}</span>
                 </div>
+                <div className="col-span-2">
+                  <span className="text-muted-foreground">Motoboy vinculado:</span>{" "}
+                  {(() => {
+                    const nome = collaborators.find((c) => c.id === selectedDetail?.motoboy_id)?.nome;
+                    return nome ? (
+                      <Badge variant="outline" className="border-info/30 text-info">{nome}</Badge>
+                    ) : (
+                      <span className="font-medium text-muted-foreground">— Nenhum —</span>
+                    );
+                  })()}
+                </div>
               </div>
               <div className="border-t pt-3">
                 <h4 className="mb-2 text-sm font-medium">Itens do pedido</h4>
