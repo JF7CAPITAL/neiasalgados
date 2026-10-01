@@ -423,7 +423,7 @@ function FinanceiroPage() {
             .eq("status", "concluida")
             .is("deleted_at", null)
             .gte("created_at", periodoInicio)
-            .lte("created_at", periodoFim)
+            .lte("created_at", periodoFim + "T23:59:59")
             .order("created_at", { ascending: false });
           if (err2) throw err2;
           return (fallback ?? []) as any;
@@ -645,7 +645,8 @@ function FinanceiroPage() {
         .select("id, total, check_status, pedido_em, imported_at, payload")
         .in("check_status", [1, 2, 3]) // em produção, pronto, finalizado
         .gte("imported_at", periodoInicio)
-        .lte("imported_at", periodoFim)
+        // imported_at é timestamptz: sem o horário final, pedidos do último dia após 00:00 seriam excluídos
+        .lte("imported_at", periodoFim + "T23:59:59")
         .order("imported_at", { ascending: false });
       if (error) throw error;
       return (data ?? []) as { id: string; total: number; check_status: number; pedido_em: string | null; imported_at: string; payload: any }[];
