@@ -1253,7 +1253,7 @@ function FinanceiroPage() {
         editable: false,
       });
     }
-    // Taxas dos pedidos (entrega + extras) entram no DRE como custo variável do período
+    // Taxas dos pedidos (entrega + extras) entram no DRE como custo variável do período, sempre com status "pago"
     if (taxasEntregaTotal > 0) {
       rows.push({
         secao: "TAXAS DE ENTREGA",
@@ -1263,7 +1263,7 @@ function FinanceiroPage() {
         fonte: "auto",
         vencimento: null,
         data_pagamento: null,
-        pago: null,
+        pago: true,
         editable: false,
       });
     }
@@ -1276,21 +1276,33 @@ function FinanceiroPage() {
         fonte: "auto",
         vencimento: null,
         data_pagamento: null,
-        pago: null,
+        pago: true,
         editable: false,
       });
     }
-    // Folha dos motoboys: exibe os PAGAMENTOS REALIZADOS (motoboys em geral não
-    // têm salário fixo cadastrado, então o cálculo por competência zerava).
-    // Se a linha automática "Folha de Pagamento" contiver parte dos motoboys
-    // (quando há salário cadastrado), ela é separada para não contar em duplicidade.
+    // Folha da equipe: mostra APENAS o que já foi pago (pagamentos realizados),
+    // com status "pago" — regime de caixa para a folha no DRE.
+    const folhaRow = rows.find(r => r.secao === "DESPESAS OPERACIONAIS" && r.fonte === "auto");
+    if (folhaRow) {
+      folhaRow.valor = totalPagamentos;
+      folhaRow.categoria = "Folha da equipe (pago)";
+      folhaRow.descricao = `${staffCollabs.length} colaborador(es) • pagamentos realizados (acumulado)`;
+      folhaRow.pago = true;
+    } else if (totalPagamentos > 0) {
+      rows.push({
+        secao: "DESPESAS OPERACIONAIS",
+        categoria: "Folha da equipe (pago)",
+        descricao: `${staffCollabs.length} colaborador(es) • pagamentos realizados (acumulado)`,
+        valor: totalPagamentos,
+        fonte: "auto",
+        vencimento: null,
+        data_pagamento: null,
+        pago: true,
+        editable: false,
+      });
+    }
+    // Folha dos motoboys: mesma lógica — apenas pagamentos realizados, status "pago".
     if (motoboysPagamentos > 0) {
-      const folhaRow = rows.find(r => r.secao === "DESPESAS OPERACIONAIS" && r.fonte === "auto");
-      if (folhaRow && folhaRow.valor > 0 && folhaAcumuladaMotoboys > 0) {
-        const parteMotoboys = Math.min(folhaAcumuladaMotoboys, folhaRow.valor);
-        folhaRow.valor = Math.max(0, folhaRow.valor - parteMotoboys);
-        folhaRow.descricao = `${folhaRow.descricao ?? ""} (equipe, sem motoboys)`.trim();
-      }
       rows.push({
         secao: "FOLHA DOS MOTOBOYS",
         categoria: "Pagamentos aos motoboys",
@@ -1299,12 +1311,12 @@ function FinanceiroPage() {
         fonte: "auto",
         vencimento: null,
         data_pagamento: null,
-        pago: null,
+        pago: true,
         editable: false,
       });
     }
     return rows;
-  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, folhaAcumuladaMotoboys, motoboyCollabs, motoboysPagamentos]);
+  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, motoboyCollabs, motoboysPagamentos, totalPagamentos, staffCollabs]);
 
   // Calculate KPIs - DRE Completo: inclui pagos + "Há pagar" (forecast) dentro do período filtrado.
   // Taxas dos pedidos abatem o lucro bruto (custo variável); folha dos motoboys
@@ -1338,7 +1350,7 @@ function FinanceiroPage() {
       { chave: "Despesas com Insumos", valor: kpis.despesasInsumos, pct: pct(kpis.despesasInsumos), dica: "Ordens de compra quitadas no período. Compare com CMV para ver descasamento caixa x competência." },
       { chave: "Taxas de Entrega", valor: kpis.taxasEntrega, pct: pct(kpis.taxasEntrega), dica: "Taxas de entrega dos pedidos no período. Repasse parcial no preço ou taxa do cliente protege a margem." },
       { chave: "Outras Taxas", valor: kpis.outrasTaxas, pct: pct(kpis.outrasTaxas), dica: "Taxas extras (embalagem, serviço...). Mapeie por tipo na aba Vencimentos." },
-      { chave: "Despesas Operacionais (equipe)", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Folha da equipe (sem motoboys) + operação. Idealmente < 30-35% da receita em food service." },
+      { chave: "Despesas Operacionais (equipe)", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Pagamentos realizados à equipe (sem motoboys) + operação. Idealmente < 30-35% da receita em food service." },
       { chave: "Folha dos Motoboys", valor: kpis.folhaMotoboys, pct: pct(kpis.folhaMotoboys), dica: "Pagamentos realizados aos motoboys (acumulado). Avalie entregas próprias vs terceirizadas." },
       { chave: "Outras Despesas (Adm + Fin + Outros)", valor: kpis.outrasDespesas, pct: pct(kpis.outrasDespesas), dica: "Aluguel, energia, juros, taxas. Juros altos aqui corroem a margem rápido." },
     ];
@@ -2005,7 +2017,7 @@ function FinanceiroPage() {
                       ) : (
                         r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Há pagar</Badge>
                       )
-                    ) : r.secao === "DESPESAS COM INSUMOS" ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : <span className="text-xs text-muted-foreground">—</span>}
+                    ) : r.pago === true ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : <span className="text-xs text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className='text-center'>
                     <Badge variant={r.fonte === 'auto' ? 'default' : 'outline'} className='text-xs'>
@@ -2200,7 +2212,7 @@ if (!unlocked) return null;
           <InsightCard
             title="Custo Fixo / Receita"
             value={`${kpis.receita > 0 ? ((kpis.despesasOp / kpis.receita) * 100).toFixed(1) : 0}%`}
-            description="Folha estimada sobre faturamento"
+            description="Pagamentos de folha sobre faturamento"
             tone={kpis.despesasOp / (kpis.receita || 1) > 0.4 ? "warning" : "success"}
           />
           <InsightCard
