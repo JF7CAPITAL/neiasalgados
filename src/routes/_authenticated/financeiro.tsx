@@ -315,7 +315,7 @@ function FinanceiroPage() {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders"], ["finance-dre", "finance-access", "collaborators", "purchase-orders", "anota-orders"]);
+  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders", "activity_logs"], ["finance-dre", "finance-access", "finance-pagamentos", "collaborators", "purchase-orders", "anota-orders"]);
 
   // Fetch orders count for ticket médio
   const { data: ordersCount = 0 } = useQuery({
@@ -482,6 +482,26 @@ function FinanceiroPage() {
         throw error;
       }
       return (data ?? []) as DreEntry[];
+    },
+    enabled: unlocked,
+  });
+
+  // Pagamentos de folha registrados no período (via activity_logs, que carrega
+  // data/hora de cada pagamento). O campo `pagamento` do colaborador é acumulado
+  // geral — aqui somamos apenas o exercício selecionado.
+  const { data: pagamentosPeriodo = [] } = useQuery({
+    queryKey: ["finance-pagamentos-periodo", periodoInicio, periodoFim],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("activity_logs")
+        .select("registro_id, detalhes, created_at")
+        .eq("modulo", "financeiro")
+        .eq("acao", "registrou pagamento colaborador")
+        .gte("created_at", periodoInicio)
+        .lte("created_at", periodoFim + "T23:59:59")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []) as { registro_id: string | null; detalhes: any; created_at: string }[];
     },
     enabled: unlocked,
   });
@@ -1131,6 +1151,17 @@ function FinanceiroPage() {
   // Motoboys (is_motoboy) têm folha separada; a folha principal cobre os demais colaboradores.
   const staffCollabs = useMemo(() => collaborators.filter((c: any) => !(c as any).is_motoboy), [collaborators]);
   const motoboyCollabs = useMemo(() => collaborators.filter((c: any) => !!(c as any).is_motoboy), [collaborators]);
+  // Pagamentos de folha somados apenas dentro do período selecionado (equipe x motoboys).
+  // IDs desconhecidos (ex.: colaborador excluído) contam na equipe.
+  const motoboyIdsSet = useMemo(() => new Set(motoboyCollabs.map((c: any) => String(c.id))), [motoboyCollabs]);
+  const folhaPagaPeriodoEquipe = useMemo(() => pagamentosPeriodo
+    .filter(p => !motoboyIdsSet.has(String(p.registro_id ?? "")))
+    .reduce((s, p) => s + (Number((p.detalhes as any)?.valor) || 0), 0),
+  [pagamentosPeriodo, motoboyIdsSet]);
+  const folhaPagaPeriodoMotoboys = useMemo(() => pagamentosPeriodo
+    .filter(p => motoboyIdsSet.has(String(p.registro_id ?? "")))
+    .reduce((s, p) => s + (Number((p.detalhes as any)?.valor) || 0), 0),
+  [pagamentosPeriodo, motoboyIdsSet]);
   const folhaTotal = useMemo(() => somaPagamentos(staffCollabs), [staffCollabs]);
   const totalPagamentos = folhaTotal;
   const totalSalarios = useMemo(() => somaSalarios(staffCollabs), [staffCollabs]);
@@ -1280,20 +1311,20 @@ function FinanceiroPage() {
         editable: false,
       });
     }
-    // Folha da equipe: mostra APENAS o que já foi pago (pagamentos realizados),
-    // com status "pago" — regime de caixa para a folha no DRE.
+    // Folha da equipe: mostra APENAS o que foi pago DENTRO do período selecionado
+    // (somado dos registros de pagamento), com status "pago".
     const folhaRow = rows.find(r => r.secao === "DESPESAS OPERACIONAIS" && r.fonte === "auto");
     if (folhaRow) {
-      folhaRow.valor = totalPagamentos;
+      folhaRow.valor = folhaPagaPeriodoEquipe;
       folhaRow.categoria = "Folha da equipe (pago)";
-      folhaRow.descricao = `${staffCollabs.length} colaborador(es) • pagamentos realizados (acumulado)`;
+      folhaRow.descricao = `${staffCollabs.length} colaborador(es) • pagos de ${fmtDate(periodoInicio)} a ${fmtDate(periodoFim)}`;
       folhaRow.pago = true;
-    } else if (totalPagamentos > 0) {
+    } else if (folhaPagaPeriodoEquipe > 0) {
       rows.push({
         secao: "DESPESAS OPERACIONAIS",
         categoria: "Folha da equipe (pago)",
-        descricao: `${staffCollabs.length} colaborador(es) • pagamentos realizados (acumulado)`,
-        valor: totalPagamentos,
+        descricao: `${staffCollabs.length} colaborador(es) • pagos de ${fmtDate(periodoInicio)} a ${fmtDate(periodoFim)}`,
+        valor: folhaPagaPeriodoEquipe,
         fonte: "auto",
         vencimento: null,
         data_pagamento: null,
@@ -1301,13 +1332,13 @@ function FinanceiroPage() {
         editable: false,
       });
     }
-    // Folha dos motoboys: mesma lógica — apenas pagamentos realizados, status "pago".
-    if (motoboysPagamentos > 0) {
+    // Folha dos motoboys: mesma lógica — apenas pagamentos do período, status "pago".
+    if (folhaPagaPeriodoMotoboys > 0) {
       rows.push({
         secao: "FOLHA DOS MOTOBOYS",
         categoria: "Pagamentos aos motoboys",
-        descricao: `${motoboyCollabs.length} motoboy(s) • pagamentos realizados (acumulado)`,
-        valor: motoboysPagamentos,
+        descricao: `${motoboyCollabs.length} motoboy(s) • pagos de ${fmtDate(periodoInicio)} a ${fmtDate(periodoFim)}`,
+        valor: folhaPagaPeriodoMotoboys,
         fonte: "auto",
         vencimento: null,
         data_pagamento: null,
@@ -1316,7 +1347,7 @@ function FinanceiroPage() {
       });
     }
     return rows;
-  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, motoboyCollabs, motoboysPagamentos, totalPagamentos, staffCollabs]);
+  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, motoboyCollabs, folhaPagaPeriodoEquipe, folhaPagaPeriodoMotoboys, staffCollabs, periodoInicio, periodoFim]);
 
   // Calculate KPIs - DRE Completo: inclui pagos + "Há pagar" (forecast) dentro do período filtrado.
   // Taxas dos pedidos abatem o lucro bruto (custo variável); folha dos motoboys
@@ -1350,8 +1381,8 @@ function FinanceiroPage() {
       { chave: "Despesas com Insumos", valor: kpis.despesasInsumos, pct: pct(kpis.despesasInsumos), dica: "Ordens de compra quitadas no período. Compare com CMV para ver descasamento caixa x competência." },
       { chave: "Taxas de Entrega", valor: kpis.taxasEntrega, pct: pct(kpis.taxasEntrega), dica: "Taxas de entrega dos pedidos no período. Repasse parcial no preço ou taxa do cliente protege a margem." },
       { chave: "Outras Taxas", valor: kpis.outrasTaxas, pct: pct(kpis.outrasTaxas), dica: "Taxas extras (embalagem, serviço...). Mapeie por tipo na aba Vencimentos." },
-      { chave: "Despesas Operacionais (equipe)", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Pagamentos realizados à equipe (sem motoboys) + operação. Idealmente < 30-35% da receita em food service." },
-      { chave: "Folha dos Motoboys", valor: kpis.folhaMotoboys, pct: pct(kpis.folhaMotoboys), dica: "Pagamentos realizados aos motoboys (acumulado). Avalie entregas próprias vs terceirizadas." },
+      { chave: "Despesas Operacionais (equipe)", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Pagamentos à equipe dentro do período (sem motoboys) + operação. Idealmente < 30-35% da receita em food service." },
+      { chave: "Folha dos Motoboys", valor: kpis.folhaMotoboys, pct: pct(kpis.folhaMotoboys), dica: "Pagamentos aos motoboys dentro do período. Avalie entregas próprias vs terceirizadas." },
       { chave: "Outras Despesas (Adm + Fin + Outros)", valor: kpis.outrasDespesas, pct: pct(kpis.outrasDespesas), dica: "Aluguel, energia, juros, taxas. Juros altos aqui corroem a margem rápido." },
     ];
     const totalConsumido = itens.reduce((s, i) => s + i.valor, 0);
@@ -1741,6 +1772,7 @@ function FinanceiroPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["collaborators-salaries"] });
       qc.invalidateQueries({ queryKey: ["collaborators"] });
+      qc.invalidateQueries({ queryKey: ["finance-pagamentos-periodo"] });
       toast.success("Pagamento registrado!");
       setAdiantarPagamento({});
     },
@@ -2179,15 +2211,15 @@ if (!unlocked) return null;
           value={fmtMoney(folhaSaldoExibido)}
           icon={Users}
           tone={folhaSaldoExibido > 0 ? "warning" : "success"}
-          hint={`Saldo devedor · Pagamentos realizados: ${fmtMoney(totalPagamentos)} · Salários/mês: ${fmtMoney(totalSalarios)} · Projeção período (${folhaMeses} ${folhaMeses === 1 ? "mês" : "meses"}): ${fmtMoney(folhaAcumulada)}`}
+          hint={`Saldo devedor · Pagos no período: ${fmtMoney(folhaPagaPeriodoEquipe)} · Acumulado: ${fmtMoney(totalPagamentos)} · Salários/mês: ${fmtMoney(totalSalarios)} — clique para detalhes`}
           onClick={() => setShowFolhaDetail(true)}
         />
         <KpiCard
           label="Folha dos motoboys"
-          value={fmtMoney(motoboysPagamentos)}
+          value={fmtMoney(folhaPagaPeriodoMotoboys)}
           icon={Bike}
-          tone={motoboysPagamentos > 0 ? "warning" : "success"}
-          hint={motoboyCollabs.length > 0 ? `Pagamentos realizados (acumulado) · ${motoboyCollabs.length} motoboy(s) · Salários/mês: ${fmtMoney(motoboysSalarios)} · Saldo devedor: ${fmtMoney(motoboysSaldoExibido)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
+          tone={folhaPagaPeriodoMotoboys > 0 ? "warning" : "success"}
+          hint={motoboyCollabs.length > 0 ? `Pagos no período · ${motoboyCollabs.length} motoboy(s) · Acumulado: ${fmtMoney(motoboysPagamentos)} · Saldo devedor: ${fmtMoney(motoboysSaldoExibido)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
           onClick={() => setShowMotoboysDetail(true)}
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
