@@ -244,6 +244,21 @@ function FinanceiroPage() {
     return d.toISOString().split("T")[0];
   });
   const [periodoFim, setPeriodoFim] = useState(() => new Date().toISOString().split("T")[0]);
+  // Inputs de data com debounce: cada tecla no calendário disparava ~10 refetches
+  // e travava o navegador; o período efetivo (queries) só atualiza após a pausa.
+  const [periodoInicioInput, setPeriodoInicioInput] = useState(periodoInicio);
+  const [periodoFimInput, setPeriodoFimInput] = useState(periodoFim);
+  const dataValida = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(new Date(v + "T12:00:00").getTime());
+  useEffect(() => {
+    if (!periodoInicioInput || periodoInicioInput === periodoInicio || !dataValida(periodoInicioInput)) return;
+    const t = setTimeout(() => setPeriodoInicio(periodoInicioInput), 600);
+    return () => clearTimeout(t);
+  }, [periodoInicioInput, periodoInicio]);
+  useEffect(() => {
+    if (!periodoFimInput || periodoFimInput === periodoFim || !dataValida(periodoFimInput)) return;
+    const t = setTimeout(() => setPeriodoFim(periodoFimInput), 600);
+    return () => clearTimeout(t);
+  }, [periodoFimInput, periodoFim]);
   const [passwordModal, setPasswordModal] = useState(true);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -284,8 +299,12 @@ function FinanceiroPage() {
     "RECEITA BRUTA": true,
     "CUSTO DIRETO (CMV)": true,
     "CUSTO VARIAVEL": true,
+    "DESPESAS COM INSUMOS": true,
+    "TAXAS DE ENTREGA": true,
+    "OUTRAS TAXAS": true,
     "LUCRO BRUTO": true,
     "DESPESAS OPERACIONAIS": true,
+    "FOLHA DOS MOTOBOYS": true,
     "DESPESA ADMINISTRATIVA": true,
     "DESPESA FINANCEIRA": true,
     "OUTROS": true,
@@ -480,18 +499,6 @@ function FinanceiroPage() {
     },
     enabled: unlocked,
   });
-
-  // Mapeia tipo DRE para seção exibida no DRE (precisa coincidir com seções do backend)
-  const TIPO_PARA_SECAO: Record<string, string> = {
-    receita: "RECEITA BRUTA",
-    custo_direto: "CUSTO DIRETO (CMV)",
-    custo_variavel: "CUSTO VARIAVEL",
-    despesa_operacional: "DESPESAS OPERACIONAIS",
-    despesa_administrativa: "DESPESA ADMINISTRATIVA",
-    despesa_financeira: "DESPESA FINANCEIRA",
-    outros: "OUTROS",
-  };
-
 
   // Fetch collaborators with salaries for Folha dos Colaboradores / Motoboys
   // NOTA: status é filtrado de forma case-insensitive no cliente (normalizado
@@ -980,6 +987,24 @@ function FinanceiroPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  // Volta um lançamento pago para "há pagar" (usado ao clicar no selo no DRE)
+  const markUnpaidMut = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await (supabase as any).from("finance_dre_entries").update({ pago: false, data_pagamento: null } as any).eq("id", id);
+      if (error) throw error;
+      await logActivity("financeiro", "marcou lançamento como há pagar", id);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries-all"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
+      toast.success("Lançamento marcado como há pagar!");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   // Liga/desliga a participação de lançamento(s) recorrente(s) no Ponto de Equilíbrio
   const togglePontoEquilibrio = useMutation({
     mutationFn: async ({ ids, incluir }: { ids: string[]; incluir: boolean }) => {
@@ -1188,12 +1213,18 @@ function FinanceiroPage() {
   // Combine auto and manual entries - DRE Completo agora mostra também lançamentos futuros pendentes ("Há pagar") com data correta do vencimento
   // Despesas com insumos entra como seção própria no DRE (somente pagos)
   const allDreRows = useMemo(() => {
-    const rows: DreRow[] = [...autoDre.map(r => ({ ...r, vencimento: null, data_pagamento: null, pago: null })) as DreRow[]];
-    // Lançamentos manuais: entram tanto pagos quanto pendentes (futuros) para visualização completa no DRE
+    // Exclui as linhas totalizadoras do RPC (LUCRO BRUTO / RESULTADO LÍQUIDO com a
+    // fórmula antiga do banco): os totalizadores exibidos vêm do `kpis` (frontend),
+    // mesma fonte dos cards — assim DRE e cards nunca divergem.
+    const rows: DreRow[] = [...autoDre
+      .filter(r => r.secao !== "LUCRO BRUTO" && r.secao !== "RESULTADO LÍQUIDO")
+      .map(r => ({ ...r, vencimento: null, data_pagamento: null, pago: null })) as DreRow[]];
+    // Lançamentos manuais: TODOS entram em OUTRAS DESPESAS (seção OUTROS), pagos e
+    // pendentes ("Há pagar" quando o vencimento ainda não chegou) do período filtrado.
     for (const e of manualEntries) {
       const pago = (e as any).pago;
       rows.push({
-        secao: TIPO_PARA_SECAO[e.tipo] ?? e.tipo.toUpperCase().replace("_", " "),
+        secao: "OUTROS",
         categoria: e.categoria,
         descricao: e.descricao ?? "",
         valor: Number(e.valor),
@@ -1252,13 +1283,17 @@ function FinanceiroPage() {
     // Folha dos motoboys: a linha automática "Folha de Pagamento" (DESPESAS
     // OPERACIONAIS) já inclui TODOS os colaboradores (equipe + motoboys).
     // Separa a parte dos motoboys em seção própria para dar visibilidade,
-    // sem contar em duplicidade no resultado.
+    // sem contar em duplicidade no resultado. A linha é exibida sempre que
+    // houver custo de motoboys no período, mesmo sem a linha automática.
     if (folhaAcumuladaMotoboys > 0) {
       const folhaRow = rows.find(r => r.secao === "DESPESAS OPERACIONAIS" && r.fonte === "auto");
-      const parteMotoboys = folhaRow ? Math.min(folhaAcumuladaMotoboys, folhaRow.valor) : 0;
-      if (folhaRow && parteMotoboys > 0) {
+      let parteMotoboys = folhaAcumuladaMotoboys;
+      if (folhaRow && folhaRow.valor > 0) {
+        parteMotoboys = Math.min(folhaAcumuladaMotoboys, folhaRow.valor);
         folhaRow.valor = Math.max(0, folhaRow.valor - parteMotoboys);
         folhaRow.descricao = `${folhaRow.descricao ?? ""} (equipe, sem motoboys)`.trim();
+      }
+      if (parteMotoboys > 0) {
         rows.push({
           secao: "FOLHA DOS MOTOBOYS",
           categoria: "Salários dos motoboys",
@@ -1872,6 +1907,11 @@ function FinanceiroPage() {
 
   
       {/* renderDreSections function - must be inside component to access openSections/toggleSection/fmtMoney */}
+      const NEGATIVE_DRE_SECTIONS = new Set([
+        'CUSTO DIRETO (CMV)', 'CUSTO VARIAVEL', 'DESPESAS COM INSUMOS',
+        'TAXAS DE ENTREGA', 'OUTRAS TAXAS', 'DESPESAS OPERACIONAIS',
+        'FOLHA DOS MOTOBOYS', 'DESPESA ADMINISTRATIVA', 'DESPESA FINANCEIRA', 'OUTROS',
+      ]);
       const renderDreSections = (rows: DreRow[], kpis: any) => {
         const sections = [
           { key: 'RECEITA BRUTA', title: 'RECEITA BRUTA', icon: TrendingUp, tone: 'success' },
@@ -1895,6 +1935,10 @@ function FinanceiroPage() {
           sectionRows.sort((a, b) => (a.vencimento || "").localeCompare(b.vencimento || ""));
           const total = sectionRows.reduce((s: number, r: DreRow) => s + r.valor, 0);
           const isTotalRow = ['LUCRO BRUTO', 'RESULTADO LÍQUIDO'].includes(section.key);
+          // Totalizadores vêm do `kpis` (mesma fonte dos cards) — nunca divergem do painel.
+          const displayTotal = section.key === 'LUCRO BRUTO' ? kpis.lucroBruto : section.key === 'RESULTADO LÍQUIDO' ? kpis.resultado : total;
+          // Tudo que é custo/despesa exibe como negativo; só receita e resultados usam sinal natural.
+          const fmtDreValor = (v: number) => (NEGATIVE_DRE_SECTIONS.has(section.key) && v > 0 ? `-${fmtMoney(v)}` : fmtMoney(v));
           const isOpen = openSections[section.key] ?? true;
 
           if (sectionRows.length === 0 && !isTotalRow) return null;
@@ -1911,7 +1955,7 @@ function FinanceiroPage() {
               </TableCell>
               <TableCell />
               <TableCell />
-              <TableCell className='text-right font-display text-lg font-semibold tabular'>{fmtMoney(total)}</TableCell>
+              <TableCell className='text-right font-display text-lg font-semibold tabular'>{fmtDreValor(displayTotal)}</TableCell>
               <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.vencimento).length ? `${sectionRows.filter((r: DreRow) => r.fonte === 'manual' && r.pago === false).length} Há pagar` : "—"}</TableCell>
               <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.pago === true).length} pago / {sectionRows.filter((r: DreRow) => r.pago === false).length} Há pagar</TableCell>
               <TableCell className='text-center text-xs text-muted-foreground'>{sectionRows.filter((r: DreRow) => r.fonte === 'auto').length} auto / {sectionRows.filter((r: DreRow) => r.fonte === 'manual').length} manual</TableCell>
@@ -1949,11 +1993,22 @@ function FinanceiroPage() {
                     {progressoBadge && <div className="text-xs text-muted-foreground">{progressoBadge}</div>}
                   </TableCell>
                   <TableCell className='text-muted-foreground text-sm'>{r.descricao || '—'}</TableCell>
-                  <TableCell className='text-right tabular font-medium'>{fmtMoney(r.valor)}</TableCell>
+                  <TableCell className='text-right tabular font-medium'>{fmtDreValor(r.valor)}</TableCell>
                   <TableCell className={`text-center text-xs tabular ${r.fonte === 'manual' && r.pago ? "text-success font-medium" : isVencido ? "text-destructive font-medium" : isHaPagar ? "text-warning font-medium" : "text-muted-foreground"}`}>{dataPagamentoDisplay}</TableCell>
                   <TableCell className='text-center'>
                     {r.fonte === 'manual' ? (
-                      r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Há pagar</Badge>
+                      r.editable && r.id ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); if (r.pago) markUnpaidMut.mutate(r.id!); else payManualVencimento.mutate(r.id!); }}
+                          disabled={markUnpaidMut.isPending || payManualVencimento.isPending}
+                          title="Clique para alternar entre pago e há pagar"
+                          className="cursor-pointer disabled:opacity-50"
+                        >
+                          {r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Há pagar</Badge>}
+                        </button>
+                      ) : (
+                        r.pago ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : isVencido ? <Badge variant="destructive" className="text-xs">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning text-xs">Há pagar</Badge>
+                      )
                     ) : r.secao === "DESPESAS COM INSUMOS" ? <Badge variant="default" className="bg-success text-success-foreground text-xs">Pago</Badge> : <span className="text-xs text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className='text-center'>
@@ -1979,7 +2034,7 @@ function FinanceiroPage() {
               rowsToRender.push(
                 <TableRow key={section.key + '-total'} className='bg-muted/50 font-bold'>
                   <TableCell colSpan={3} className='text-right'>Total {section.title}</TableCell>
-                  <TableCell className='text-right font-display text-lg'>{fmtMoney(total)}</TableCell>
+                  <TableCell className='text-right font-display text-lg'>{fmtDreValor(displayTotal)}</TableCell>
                   <TableCell colSpan={4} />
                 </TableRow>
               );
@@ -2017,11 +2072,21 @@ if (!unlocked) return null;
       <div className="flex flex-wrap items-end gap-4 rounded-xl border border-border bg-card p-4">
         <div className="space-y-1.5">
           <Label className="text-xs">Período inicial</Label>
-          <Input type="date" value={periodoInicio} onChange={(e) => setPeriodoInicio(e.target.value)} />
+          <Input
+            type="date"
+            value={periodoInicioInput}
+            onChange={(e) => setPeriodoInicioInput(e.target.value)}
+            onBlur={() => { if (dataValida(periodoInicioInput)) setPeriodoInicio(periodoInicioInput); else setPeriodoInicioInput(periodoInicio); }}
+          />
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">Período final</Label>
-          <Input type="date" value={periodoFim} onChange={(e) => setPeriodoFim(e.target.value)} />
+          <Input
+            type="date"
+            value={periodoFimInput}
+            onChange={(e) => setPeriodoFimInput(e.target.value)}
+            onBlur={() => { if (dataValida(periodoFimInput)) setPeriodoFim(periodoFimInput); else setPeriodoFimInput(periodoFim); }}
+          />
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <DollarSign className="size-4" />
@@ -2111,10 +2176,10 @@ if (!unlocked) return null;
         />
         <KpiCard
           label="Folha dos motoboys"
-          value={fmtMoney(motoboysSaldoExibido)}
+          value={fmtMoney(folhaAcumuladaMotoboys)}
           icon={Bike}
           tone={motoboysSaldoExibido > 0 ? "warning" : "success"}
-          hint={motoboyCollabs.length > 0 ? `${motoboyCollabs.length} motoboy(s) · Pagamentos realizados: ${fmtMoney(motoboysPagamentos)} · Salários/mês: ${fmtMoney(motoboysSalarios)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
+          hint={motoboyCollabs.length > 0 ? `Custo do período (competência) · ${motoboyCollabs.length} motoboy(s) · Salários/mês: ${fmtMoney(motoboysSalarios)} · Pagos: ${fmtMoney(motoboysPagamentos)} · Saldo devedor: ${fmtMoney(motoboysSaldoExibido)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
           onClick={() => setShowMotoboysDetail(true)}
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
