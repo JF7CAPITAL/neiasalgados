@@ -1937,7 +1937,7 @@ function FinanceiroPage() {
           const fmtDreValor = (v: number) => (NEGATIVE_DRE_SECTIONS.has(section.key) && v > 0 ? `-${fmtMoney(v)}` : fmtMoney(v));
           const isOpen = openSections[section.key] ?? true;
 
-          if (sectionRows.length === 0 && !isTotalRow) return null;
+          // Todas as categorias/seções são sempre exibidas, mesmo sem lançamentos (total R$ 0,00).
 
           const rowsToRender: React.ReactNode[] = [
             <TableRow
