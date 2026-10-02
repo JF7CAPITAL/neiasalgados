@@ -1280,35 +1280,31 @@ function FinanceiroPage() {
         editable: false,
       });
     }
-    // Folha dos motoboys: a linha automática "Folha de Pagamento" (DESPESAS
-    // OPERACIONAIS) já inclui TODOS os colaboradores (equipe + motoboys).
-    // Separa a parte dos motoboys em seção própria para dar visibilidade,
-    // sem contar em duplicidade no resultado. A linha é exibida sempre que
-    // houver custo de motoboys no período, mesmo sem a linha automática.
-    if (folhaAcumuladaMotoboys > 0) {
+    // Folha dos motoboys: exibe os PAGAMENTOS REALIZADOS (motoboys em geral não
+    // têm salário fixo cadastrado, então o cálculo por competência zerava).
+    // Se a linha automática "Folha de Pagamento" contiver parte dos motoboys
+    // (quando há salário cadastrado), ela é separada para não contar em duplicidade.
+    if (motoboysPagamentos > 0) {
       const folhaRow = rows.find(r => r.secao === "DESPESAS OPERACIONAIS" && r.fonte === "auto");
-      let parteMotoboys = folhaAcumuladaMotoboys;
-      if (folhaRow && folhaRow.valor > 0) {
-        parteMotoboys = Math.min(folhaAcumuladaMotoboys, folhaRow.valor);
+      if (folhaRow && folhaRow.valor > 0 && folhaAcumuladaMotoboys > 0) {
+        const parteMotoboys = Math.min(folhaAcumuladaMotoboys, folhaRow.valor);
         folhaRow.valor = Math.max(0, folhaRow.valor - parteMotoboys);
         folhaRow.descricao = `${folhaRow.descricao ?? ""} (equipe, sem motoboys)`.trim();
       }
-      if (parteMotoboys > 0) {
-        rows.push({
-          secao: "FOLHA DOS MOTOBOYS",
-          categoria: "Salários dos motoboys",
-          descricao: `${motoboyCollabs.length} motoboy(s) • salários do período (competência)`,
-          valor: parteMotoboys,
-          fonte: "auto",
-          vencimento: null,
-          data_pagamento: null,
-          pago: null,
-          editable: false,
-        });
-      }
+      rows.push({
+        secao: "FOLHA DOS MOTOBOYS",
+        categoria: "Pagamentos aos motoboys",
+        descricao: `${motoboyCollabs.length} motoboy(s) • pagamentos realizados (acumulado)`,
+        valor: motoboysPagamentos,
+        fonte: "auto",
+        vencimento: null,
+        data_pagamento: null,
+        pago: null,
+        editable: false,
+      });
     }
     return rows;
-  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, folhaAcumuladaMotoboys, motoboyCollabs]);
+  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, folhaAcumuladaMotoboys, motoboyCollabs, motoboysPagamentos]);
 
   // Calculate KPIs - DRE Completo: inclui pagos + "Há pagar" (forecast) dentro do período filtrado.
   // Taxas dos pedidos abatem o lucro bruto (custo variável); folha dos motoboys
@@ -1343,7 +1339,7 @@ function FinanceiroPage() {
       { chave: "Taxas de Entrega", valor: kpis.taxasEntrega, pct: pct(kpis.taxasEntrega), dica: "Taxas de entrega dos pedidos no período. Repasse parcial no preço ou taxa do cliente protege a margem." },
       { chave: "Outras Taxas", valor: kpis.outrasTaxas, pct: pct(kpis.outrasTaxas), dica: "Taxas extras (embalagem, serviço...). Mapeie por tipo na aba Vencimentos." },
       { chave: "Despesas Operacionais (equipe)", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Folha da equipe (sem motoboys) + operação. Idealmente < 30-35% da receita em food service." },
-      { chave: "Folha dos Motoboys", valor: kpis.folhaMotoboys, pct: pct(kpis.folhaMotoboys), dica: "Salários dos motoboys no período (competência). Avalie entregas próprias vs terceirizadas." },
+      { chave: "Folha dos Motoboys", valor: kpis.folhaMotoboys, pct: pct(kpis.folhaMotoboys), dica: "Pagamentos realizados aos motoboys (acumulado). Avalie entregas próprias vs terceirizadas." },
       { chave: "Outras Despesas (Adm + Fin + Outros)", valor: kpis.outrasDespesas, pct: pct(kpis.outrasDespesas), dica: "Aluguel, energia, juros, taxas. Juros altos aqui corroem a margem rápido." },
     ];
     const totalConsumido = itens.reduce((s, i) => s + i.valor, 0);
@@ -2176,10 +2172,10 @@ if (!unlocked) return null;
         />
         <KpiCard
           label="Folha dos motoboys"
-          value={fmtMoney(folhaAcumuladaMotoboys)}
+          value={fmtMoney(motoboysPagamentos)}
           icon={Bike}
-          tone={motoboysSaldoExibido > 0 ? "warning" : "success"}
-          hint={motoboyCollabs.length > 0 ? `Custo do período (competência) · ${motoboyCollabs.length} motoboy(s) · Salários/mês: ${fmtMoney(motoboysSalarios)} · Pagos: ${fmtMoney(motoboysPagamentos)} · Saldo devedor: ${fmtMoney(motoboysSaldoExibido)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
+          tone={motoboysPagamentos > 0 ? "warning" : "success"}
+          hint={motoboyCollabs.length > 0 ? `Pagamentos realizados (acumulado) · ${motoboyCollabs.length} motoboy(s) · Salários/mês: ${fmtMoney(motoboysSalarios)} · Saldo devedor: ${fmtMoney(motoboysSaldoExibido)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
           onClick={() => setShowMotoboysDetail(true)}
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
