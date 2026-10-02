@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -223,6 +223,19 @@ function calcFolhaAcumulada(list: any[], periodoInicio: string, periodoFim: stri
   }, 0);
 }
 
+type ManualGroup = {
+  key: string;
+  gid: string | null;
+  entries: DreEntry[];
+  rep: DreEntry;
+  total: number;
+  pagos: number;
+  pendentes: number;
+  vencidos: number;
+  proximoVenc: string | null;
+  valorMensal: number;
+};
+
 function FinanceiroPage() {
   const qc = useQueryClient();
   const [periodoInicio, setPeriodoInicio] = useState(() => {
@@ -243,6 +256,8 @@ function FinanceiroPage() {
   const [editingEntry, setEditingEntry] = useState<DreEntry | null>(null);
   const [newEntryOpen, setNewEntryOpen] = useState(false);
   const [toDelete, setToDelete] = useState<DreEntry | null>(null);
+  const [groupToDelete, setGroupToDelete] = useState<ManualGroup | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [exportLoading, setExportLoading] = useState(false);
   const [showFolhaDetail, setShowFolhaDetail] = useState(false);
   const [showInsumosDetail, setShowInsumosDetail] = useState(false);
@@ -852,6 +867,65 @@ function FinanceiroPage() {
     return map;
   }, [manualVencimentos]);
 
+  // Agrupa as parcelas recorrentes em 1 linha por lançamento criado (aba Lançamentos Manuais).
+  // Cada grupo mostra o demonstrativo do custo/despesa; as parcelas ficam expansíveis.
+  const manualGrupos = useMemo((): ManualGroup[] => {
+    const hoje = new Date().toISOString().split("T")[0];
+    const porGrupo = new Map<string, DreEntry[]>();
+    for (const e of manualEntriesAll) {
+      const gid = (e as any).recorrencia_grupo_id as string | null;
+      if (!gid) continue;
+      if (!porGrupo.has(gid)) porGrupo.set(gid, []);
+      porGrupo.get(gid)!.push(e);
+    }
+    const statusParcela = (p: DreEntry) => {
+      const v = (((p as any).vencimento || p.competencia || "") as string);
+      // Corrige legado onde futuros foram gravados como pago=true
+      const pagoEfetivo = (p as any).pago === true && (!v || v <= hoje);
+      const vencido = !pagoEfetivo && !!v && v < hoje;
+      return { v, pagoEfetivo, vencido };
+    };
+    const items: ManualGroup[] = [];
+    const vistos = new Set<string>();
+    for (const e of manualEntriesAll) {
+      const gid = (e as any).recorrencia_grupo_id as string | null;
+      if (!gid) {
+        const st = statusParcela(e);
+        items.push({
+          key: `single-${e.id}`, gid: null, entries: [e], rep: e,
+          total: 1, pagos: st.pagoEfetivo ? 1 : 0,
+          pendentes: st.pagoEfetivo ? 0 : 1, vencidos: st.vencido ? 1 : 0,
+          proximoVenc: (((e as any).vencimento || e.competencia || null) as string | null),
+          valorMensal: Number(e.valor) || 0,
+        });
+        continue;
+      }
+      if (vistos.has(gid)) continue;
+      vistos.add(gid);
+      const entries = [...(porGrupo.get(gid) ?? [])].sort((a, b) =>
+        (((a as any).vencimento || a.competencia || "") as string).localeCompare((((b as any).vencimento || b.competencia || "") as string)));
+      let pagos = 0, vencidos = 0;
+      let proximo: string | null = null;
+      for (const p of entries) {
+        const st = statusParcela(p);
+        if (st.pagoEfetivo) pagos++;
+        else {
+          if (st.vencido) vencidos++;
+          if (st.v && (!proximo || st.v < proximo)) proximo = st.v;
+        }
+      }
+      const rep = entries[entries.length - 1] ?? entries[0];
+      items.push({
+        key: `grupo-${gid}`, gid, entries, rep,
+        total: entries.length, pagos,
+        pendentes: entries.length - pagos, vencidos,
+        proximoVenc: proximo ?? ((((rep as any)?.vencimento || (rep as any)?.competencia || null) as string | null)),
+        valorMensal: Number(rep?.valor) || 0,
+      });
+    }
+    return items;
+  }, [manualEntriesAll]);
+
 
 
   const payVencimentoFinanceiro = useMutation({
@@ -1074,6 +1148,43 @@ function FinanceiroPage() {
   }, 0), [receivedPurchaseOrders]);
   const anotaTotal = useMemo(() => anotaOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaOrders]);
 
+  // Taxas de entrega + outras taxas por pedido (período selecionado, mesma base do anotaOrders).
+  // Declarado aqui (antes do DRE) pois os totais alimentam as seções do DRE Completo.
+  const taxasPorPedido = useMemo(() => anotaOrders.map(o => {
+    const taxaEntrega = extractDeliveryFee(o.payload);
+    const outras = extractOtherFees(o.payload);
+    return {
+      id: o.id,
+      numero: o.numero ?? o.external_order_id?.slice(-6) ?? o.id.slice(0, 8),
+      motoboyId: o.motoboy_id ?? null,
+      imported_at: o.imported_at,
+      total: Number(o.total) || 0,
+      taxaEntrega,
+      outrasTaxas: outras.total,
+      outrasItens: outras.itens,
+      totalTaxas: taxaEntrega + outras.total,
+    };
+  }), [anotaOrders]);
+  const taxasEntregaTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.taxaEntrega, 0), [taxasPorPedido]);
+  const outrasTaxasTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.outrasTaxas, 0), [taxasPorPedido]);
+  const taxasTotalGeral = useMemo(() => taxasEntregaTotal + outrasTaxasTotal, [taxasEntregaTotal, outrasTaxasTotal]);
+  const pedidosComTaxaEntrega = useMemo(() => taxasPorPedido.filter(t => t.taxaEntrega > 0).length, [taxasPorPedido]);
+  const pedidosComOutrasTaxas = useMemo(() => taxasPorPedido.filter(t => t.outrasTaxas > 0).length, [taxasPorPedido]);
+  const outrasTaxasPorNome = useMemo(() => {
+    const map = new Map<string, { total: number; qtd: number }>();
+    for (const t of taxasPorPedido) {
+      for (const item of t.outrasItens) {
+        const cur = map.get(item.nome) ?? { total: 0, qtd: 0 };
+        cur.total += item.valor;
+        cur.qtd += 1;
+        map.set(item.nome, cur);
+      }
+    }
+    return [...map.entries()]
+      .map(([nome, v]) => ({ nome, ...v }))
+      .sort((a, b) => b.total - a.total);
+  }, [taxasPorPedido]);
+
   // Combine auto and manual entries - DRE Completo agora mostra também lançamentos futuros pendentes ("Há pagar") com data correta do vencimento
   // Despesas com insumos entra como seção própria no DRE (somente pagos)
   const allDreRows = useMemo(() => {
@@ -1111,24 +1222,79 @@ function FinanceiroPage() {
         editable: false,
       });
     }
+    // Taxas dos pedidos (entrega + extras) entram no DRE como custo variável do período
+    if (taxasEntregaTotal > 0) {
+      rows.push({
+        secao: "TAXAS DE ENTREGA",
+        categoria: "Taxas de entrega dos pedidos",
+        descricao: `${pedidosComTaxaEntrega} pedido(s) com taxa no período`,
+        valor: taxasEntregaTotal,
+        fonte: "auto",
+        vencimento: null,
+        data_pagamento: null,
+        pago: null,
+        editable: false,
+      });
+    }
+    if (outrasTaxasTotal > 0) {
+      rows.push({
+        secao: "OUTRAS TAXAS",
+        categoria: "Taxas extras dos pedidos",
+        descricao: `${pedidosComOutrasTaxas} pedido(s) com taxas extras no período`,
+        valor: outrasTaxasTotal,
+        fonte: "auto",
+        vencimento: null,
+        data_pagamento: null,
+        pago: null,
+        editable: false,
+      });
+    }
+    // Folha dos motoboys: a linha automática "Folha de Pagamento" (DESPESAS
+    // OPERACIONAIS) já inclui TODOS os colaboradores (equipe + motoboys).
+    // Separa a parte dos motoboys em seção própria para dar visibilidade,
+    // sem contar em duplicidade no resultado.
+    if (folhaAcumuladaMotoboys > 0) {
+      const folhaRow = rows.find(r => r.secao === "DESPESAS OPERACIONAIS" && r.fonte === "auto");
+      const parteMotoboys = folhaRow ? Math.min(folhaAcumuladaMotoboys, folhaRow.valor) : 0;
+      if (folhaRow && parteMotoboys > 0) {
+        folhaRow.valor = Math.max(0, folhaRow.valor - parteMotoboys);
+        folhaRow.descricao = `${folhaRow.descricao ?? ""} (equipe, sem motoboys)`.trim();
+        rows.push({
+          secao: "FOLHA DOS MOTOBOYS",
+          categoria: "Salários dos motoboys",
+          descricao: `${motoboyCollabs.length} motoboy(s) • salários do período (competência)`,
+          valor: parteMotoboys,
+          fonte: "auto",
+          vencimento: null,
+          data_pagamento: null,
+          pago: null,
+          editable: false,
+        });
+      }
+    }
     return rows;
-  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders]);
+  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, folhaAcumuladaMotoboys, motoboyCollabs]);
 
-  // Calculate KPIs - DRE Completo: inclui pagos + "Há pagar" (forecast) dentro do período filtrado
+  // Calculate KPIs - DRE Completo: inclui pagos + "Há pagar" (forecast) dentro do período filtrado.
+  // Taxas dos pedidos abatem o lucro bruto (custo variável); folha dos motoboys
+  // abate após o lucro bruto (operacional), junto das demais despesas.
   const kpis = useMemo(() => {
     const receita = allDreRows.filter(r => r.secao === "RECEITA BRUTA").reduce((s, r) => s + r.valor, 0);
     const custoDireto = allDreRows.filter(r => r.secao === "CUSTO DIRETO (CMV)").reduce((s, r) => s + r.valor, 0);
     const custoVariavel = allDreRows.filter(r => r.secao === "CUSTO VARIAVEL").reduce((s, r) => s + r.valor, 0);
     const despesasInsumos = allDreRows.filter(r => r.secao === "DESPESAS COM INSUMOS").reduce((s, r) => s + r.valor, 0);
-    const lucroBruto = receita - custoDireto - custoVariavel - despesasInsumos;
+    const taxasEntrega = allDreRows.filter(r => r.secao === "TAXAS DE ENTREGA").reduce((s, r) => s + r.valor, 0);
+    const outrasTaxas = allDreRows.filter(r => r.secao === "OUTRAS TAXAS").reduce((s, r) => s + r.valor, 0);
+    const lucroBruto = receita - custoDireto - custoVariavel - despesasInsumos - taxasEntrega - outrasTaxas;
     const despesasOp = allDreRows.filter(r => r.secao === "DESPESAS OPERACIONAIS").reduce((s, r) => s + r.valor, 0);
+    const folhaMotoboys = allDreRows.filter(r => r.secao === "FOLHA DOS MOTOBOYS").reduce((s, r) => s + r.valor, 0);
     const outrasDespesas = allDreRows
       .filter(r => ["DESPESA ADMINISTRATIVA", "DESPESA FINANCEIRA", "OUTROS"].includes(r.secao))
       .reduce((s, r) => s + r.valor, 0);
-    const resultado = lucroBruto - despesasOp - outrasDespesas;
+    const resultado = lucroBruto - despesasOp - folhaMotoboys - outrasDespesas;
     const margem = receita > 0 ? ((resultado / receita) * 100) : 0;
 
-    return { receita, custoDireto, custoVariavel, despesasInsumos, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
+    return { receita, custoDireto, custoVariavel, despesasInsumos, taxasEntrega, outrasTaxas, lucroBruto, despesasOp, folhaMotoboys, outrasDespesas, resultado, margem };
   }, [allDreRows]);
 
   // Descritivo do que consome a margem líquida vs faturamento bruto (percentuais + estratégia)
@@ -1137,9 +1303,12 @@ function FinanceiroPage() {
     const pct = (v: number) => (r > 0 ? (v / r) * 100 : 0);
     const itens = [
       { chave: "Custo Direto (CMV)", valor: kpis.custoDireto, pct: pct(kpis.custoDireto), dica: "Insumos/CMV sobre a receita. Se > 35%, revise fichas técnicas, desperdício e preço de compra." },
-      { chave: "Custo Variável", valor: kpis.custoVariavel, pct: pct(kpis.custoVariavel), dica: "Taxas, embalagens e variáveis por pedido. Amarre ao ticket médio." },
+      { chave: "Custo Variável", valor: kpis.custoVariavel, pct: pct(kpis.custoVariavel), dica: "Embalagens e variáveis por pedido. Amarre ao ticket médio." },
       { chave: "Despesas com Insumos", valor: kpis.despesasInsumos, pct: pct(kpis.despesasInsumos), dica: "Ordens de compra quitadas no período. Compare com CMV para ver descasamento caixa x competência." },
-      { chave: "Despesas Operacionais", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Folha + operação. Idealmente < 30-35% da receita em food service." },
+      { chave: "Taxas de Entrega", valor: kpis.taxasEntrega, pct: pct(kpis.taxasEntrega), dica: "Taxas de entrega dos pedidos no período. Repasse parcial no preço ou taxa do cliente protege a margem." },
+      { chave: "Outras Taxas", valor: kpis.outrasTaxas, pct: pct(kpis.outrasTaxas), dica: "Taxas extras (embalagem, serviço...). Mapeie por tipo na aba Vencimentos." },
+      { chave: "Despesas Operacionais (equipe)", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Folha da equipe (sem motoboys) + operação. Idealmente < 30-35% da receita em food service." },
+      { chave: "Folha dos Motoboys", valor: kpis.folhaMotoboys, pct: pct(kpis.folhaMotoboys), dica: "Salários dos motoboys no período (competência). Avalie entregas próprias vs terceirizadas." },
       { chave: "Outras Despesas (Adm + Fin + Outros)", valor: kpis.outrasDespesas, pct: pct(kpis.outrasDespesas), dica: "Aluguel, energia, juros, taxas. Juros altos aqui corroem a margem rápido." },
     ];
     const totalConsumido = itens.reduce((s, i) => s + i.valor, 0);
@@ -1295,22 +1464,6 @@ function FinanceiroPage() {
   // Mantido para compatibilidade (legado 30%)
   const ifoodFuture = ifoodTotal;
 
-  // Taxas de entrega + outras taxas por pedido (período selecionado, mesma base do anotaOrders)
-  const taxasPorPedido = useMemo(() => anotaOrders.map(o => {
-    const taxaEntrega = extractDeliveryFee(o.payload);
-    const outras = extractOtherFees(o.payload);
-    return {
-      id: o.id,
-      numero: o.numero ?? o.external_order_id?.slice(-6) ?? o.id.slice(0, 8),
-      motoboyId: o.motoboy_id ?? null,
-      imported_at: o.imported_at,
-      total: Number(o.total) || 0,
-      taxaEntrega,
-      outrasTaxas: outras.total,
-      outrasItens: outras.itens,
-      totalTaxas: taxaEntrega + outras.total,
-    };
-  }), [anotaOrders]);
   // Nome do motoboy vinculado a cada pedido (para as tabelas de taxas)
   const motoboyNomePorId = useMemo(() => {
     const map = new Map<string, string>();
@@ -1319,25 +1472,6 @@ function FinanceiroPage() {
     }
     return map;
   }, [collaborators]);
-  const taxasEntregaTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.taxaEntrega, 0), [taxasPorPedido]);
-  const outrasTaxasTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.outrasTaxas, 0), [taxasPorPedido]);
-  const taxasTotalGeral = useMemo(() => taxasEntregaTotal + outrasTaxasTotal, [taxasEntregaTotal, outrasTaxasTotal]);
-  const pedidosComTaxaEntrega = useMemo(() => taxasPorPedido.filter(t => t.taxaEntrega > 0).length, [taxasPorPedido]);
-  const pedidosComOutrasTaxas = useMemo(() => taxasPorPedido.filter(t => t.outrasTaxas > 0).length, [taxasPorPedido]);
-  const outrasTaxasPorNome = useMemo(() => {
-    const map = new Map<string, { total: number; qtd: number }>();
-    for (const t of taxasPorPedido) {
-      for (const item of t.outrasItens) {
-        const cur = map.get(item.nome) ?? { total: 0, qtd: 0 };
-        cur.total += item.valor;
-        cur.qtd += 1;
-        map.set(item.nome, cur);
-      }
-    }
-    return [...map.entries()]
-      .map(([nome, v]) => ({ nome, ...v }))
-      .sort((a, b) => b.total - a.total);
-  }, [taxasPorPedido]);
   // Insumos a pagar = compras a prazo pendentes (parcela de vencimentos ligada a estoque)
   const insumosAPagarTotal = useMemo(() =>
     vencimentosPendentes.reduce((s: number, r: any) =>
@@ -1515,6 +1649,25 @@ function FinanceiroPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  // Exclui um lançamento recorrente inteiro (todas as parcelas do grupo)
+  const deleteGroupMut = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const { error } = await (supabase as any).from("finance_dre_entries").delete().in("id", ids);
+      if (error) throw error;
+      await logActivity("financeiro", "excluiu lançamento recorrente (grupo)", ids[0] ?? null, { parcelas: ids.length });
+    },
+    onSuccess: (_d, ids) => {
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries-all"] });
+      qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
+      qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
+      toast.success(`Lançamento excluído (${ids.length} parcela(s))!`);
+      setGroupToDelete(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const adiantarPagamentoMutate = useMutation({
     mutationFn: async ({ collaboratorId, valor }: { collaboratorId: string; valor: number }) => {
       const collab = collaborators.find((c: any) => c.id === collaboratorId);
@@ -1573,8 +1726,11 @@ function FinanceiroPage() {
         { secao: "", categoria: "", descricao: "", valor: "", fonte: "" },
         { secao: "TOTAL", categoria: "Receita Bruta", descricao: "", valor: fmtMoney(kpis.receita), fonte: "" },
         { secao: "TOTAL", categoria: "Custo Direto (CMV)", descricao: "", valor: fmtMoney(kpis.custoDireto), fonte: "" },
+        { secao: "TOTAL", categoria: "Taxas de Entrega", descricao: "", valor: fmtMoney(kpis.taxasEntrega), fonte: "" },
+        { secao: "TOTAL", categoria: "Outras Taxas", descricao: "", valor: fmtMoney(kpis.outrasTaxas), fonte: "" },
         { secao: "TOTAL", categoria: "Lucro Bruto", descricao: "", valor: fmtMoney(kpis.lucroBruto), fonte: "" },
         { secao: "TOTAL", categoria: "Despesas Operacionais", descricao: "", valor: fmtMoney(kpis.despesasOp), fonte: "" },
+        { secao: "TOTAL", categoria: "Folha dos Motoboys", descricao: "", valor: fmtMoney(kpis.folhaMotoboys), fonte: "" },
         { secao: "TOTAL", categoria: "Outras Despesas", descricao: "", valor: fmtMoney(kpis.outrasDespesas), fonte: "" },
         { secao: "TOTAL", categoria: "Resultado Líquido", descricao: "", valor: fmtMoney(kpis.resultado), fonte: "" },
       ];
@@ -1589,8 +1745,11 @@ function FinanceiroPage() {
           ], rows: [
             { categoria: "Receita Bruta", valor: fmtMoney(kpis.receita) },
             { categoria: "Custo Direto (CMV)", valor: fmtMoney(kpis.custoDireto) },
+            { categoria: "Taxas de Entrega", valor: fmtMoney(kpis.taxasEntrega) },
+            { categoria: "Outras Taxas", valor: fmtMoney(kpis.outrasTaxas) },
             { categoria: "Lucro Bruto", valor: fmtMoney(kpis.lucroBruto) },
             { categoria: "Despesas Operacionais", valor: fmtMoney(kpis.despesasOp) },
+            { categoria: "Folha dos Motoboys", valor: fmtMoney(kpis.folhaMotoboys) },
             { categoria: "Outras Despesas", valor: fmtMoney(kpis.outrasDespesas) },
             { categoria: "Resultado Líquido", valor: fmtMoney(kpis.resultado) },
             { categoria: "Margem Líquida", valor: `${kpis.margem.toFixed(1)}%` },
@@ -1719,8 +1878,11 @@ function FinanceiroPage() {
           { key: 'CUSTO DIRETO (CMV)', title: 'CUSTO DIRETO (CMV)', icon: Package, tone: 'warning' },
           { key: 'CUSTO VARIAVEL', title: 'CUSTO VARIÁVEL', icon: TrendingDown, tone: 'warning' },
           { key: 'DESPESAS COM INSUMOS', title: 'DESPESAS COM INSUMOS', icon: ShoppingCart, tone: 'warning' },
+          { key: 'TAXAS DE ENTREGA', title: 'TAXAS DE ENTREGA', icon: Truck, tone: 'warning' },
+          { key: 'OUTRAS TAXAS', title: 'OUTRAS TAXAS', icon: ReceiptText, tone: 'warning' },
           { key: 'LUCRO BRUTO', title: 'LUCRO BRUTO', icon: PiggyBank, tone: 'info' },
           { key: 'DESPESAS OPERACIONAIS', title: 'DESPESAS OPERACIONAIS', icon: Users, tone: 'danger' },
+          { key: 'FOLHA DOS MOTOBOYS', title: 'FOLHA DOS MOTOBOYS', icon: Bike, tone: 'danger' },
           { key: 'DESPESA ADMINISTRATIVA', title: 'DESPESAS ADMINISTRATIVAS', icon: Calculator, tone: 'danger' },
           { key: 'DESPESA FINANCEIRA', title: 'DESPESAS FINANCEIRAS', icon: DollarSign, tone: 'danger' },
           { key: 'OUTROS', title: 'OUTRAS DESPESAS', icon: AlertTriangle, tone: 'danger' },
@@ -1938,7 +2100,7 @@ if (!unlocked) return null;
       <div className="grid grid-cols-2 gap-4">
         <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint={`Anota direto: ${fmtMoney(anotaDirectTotal)} | iFood: ${fmtMoney(ifoodTotal)}`} onClick={() => setShowReceitaDetail(true)} />
         <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentesTotal > 0 ? "warning" : "success"} hint={`${vencimentosPendentesTotal} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""} • ${vencimentosPendentes.length} compras + ${manualVencimentos.length} lançamentos`} onClick={() => setShowVencimentosDetail(true)} />
-        <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita - CMV (CMV zerado temporariamente)" />
+        <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita − CMV − variáveis − insumos − taxas de entrega/outras" />
         <KpiCard
           label="Folha dos colaboradores"
           value={fmtMoney(folhaSaldoExibido)}
@@ -2124,7 +2286,10 @@ if (!unlocked) return null;
           </div>
 
           <div className="flex justify-between items-center">
-            <h3 className="font-semibold">Todos os lançamentos criados ({manualEntriesAll.length})</h3>
+            <div>
+              <h3 className="font-semibold">Todos os lançamentos ({manualGrupos.length})</h3>
+              <p className="text-xs text-muted-foreground">{manualEntriesAll.length} parcela(s) no total • recorrentes aparecem em 1 linha — expanda para ver e gerenciar as parcelas</p>
+            </div>
             <Button variant="outline" size="sm" onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); setNewEntryOpen(true); }}>
               <Plus className="mr-1.5 size-4" /> Novo lançamento
             </Button>
@@ -2153,73 +2318,111 @@ if (!unlocked) return null;
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {manualEntriesAll.map((e) => {
-                    const tipo = (e as any).recorrencia_tipo as string | null;
-                    const qtd = (e as any).recorrencia_quantidade as number | null;
-                    const gid = (e as any).recorrencia_grupo_id as string | null;
-                    let label: string = "Não";
-                    let parcelaProgress: string | null = null;
-                    let parcelaIdxBadge: string | null = null;
-                    if (!e.recorrente) {
-                      label = "Não";
-                    } else if (tipo === 'determinada' && qtd) {
-                      if (gid && grupoProgressMap.has(gid)) {
-                        const stat = grupoProgressMap.get(gid)!;
-                        const idx = parcelIndexMap.get(e.id) ?? 0;
-                        parcelaProgress = `${stat.pagos}/${stat.total} pagas`;
-                        parcelaIdxBadge = idx ? `${idx}/${stat.total}x` : `${qtd}x`;
-                        label = `Determinada (${parcelaIdxBadge})`;
-                      } else {
-                        label = `Determinada (${qtd}x)`;
-                      }
-                    } else if (tipo === 'indefinida') {
-                      label = 'Indefinida';
-                    } else {
-                      label = 'Sim';
+                  {manualGrupos.map((g) => {
+                    // Lançamento avulso (sem recorrência): 1 linha, como antes
+                    if (g.gid === null) {
+                      const e = g.rep;
+                      const pago = (e as any).pago;
+                      const venc = (e as any).vencimento || e.competencia;
+                      const isVencido = venc && !pago && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                      const isHaPagar = !pago && !isVencido;
+                      return (
+                      <TableRow key={g.key} className={(isVencido ? "bg-destructive/5 " : "") + (isHaPagar ? "bg-warning/5 " : "")}>
+                        <TableCell>
+                          <Badge variant="outline" className="capitalize">{e.tipo.replace("_", " ")}</Badge>
+                        </TableCell>
+                        <TableCell className="font-medium">
+                          <div>{e.categoria}</div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
+                        <TableCell className={isVencido ? "text-destructive font-medium" : isHaPagar ? "text-warning font-medium" : "text-muted-foreground"}>{venc ? fmtDate(venc) : "—"}</TableCell>
+                        <TableCell className="text-center">
+                          {pago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="outline" className="text-xs">Não</Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {!pago && venc && <Button variant="ghost" size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending} title="Quitar"><CreditCard className="size-4" /></Button>}
+                          <Button variant="ghost" size="icon" onClick={() => { setEditingEntry(e); setNewEntryOpen(true); }} title="Editar"><Pencil className="size-4" /></Button>
+                          <Button variant="ghost" size="icon" onClick={() => setToDelete(e)} title="Excluir"><Trash2 className="size-4 text-destructive" /></Button>
+                        </TableCell>
+                      </TableRow>
+                      );
                     }
-                    const vencOriginal = (e as any).vencimento || e.competencia;
-                    const pago = (e as any).pago;
-                    // Mostra sempre a data exata do lançamento (vencimento real da parcela), não o próximo do grupo
-                    const venc = vencOriginal;
-                    const isVencido = venc && !pago && new Date(venc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
-                    const isHaPagar = !pago && !isVencido;
+                    // Lançamento recorrente: 1 linha demonstrativa + parcelas expansíveis
+                    const rep = g.rep;
+                    const gtipo = (rep as any).recorrencia_tipo as string | null;
+                    const gqtd = (rep as any).recorrencia_quantidade as number | null;
+                    const glabel = gtipo === 'determinada' ? `Determinada (${gqtd ?? g.total}x)` : gtipo === 'indefinida' ? 'Indefinida' : 'Sim';
+                    const expanded = !!expandedGroups[g.key];
+                    const gPago = g.pendentes === 0;
+                    const gVencido = !gPago && g.vencidos > 0;
                     return (
-                    <TableRow key={e.id} className={(isVencido ? "bg-destructive/5 " : "") + (isHaPagar ? "bg-warning/5 " : "")}>
-                      <TableCell>
-                        <Badge variant="outline" className="capitalize">{e.tipo.replace("_", " ")}</Badge>
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        <div>{e.categoria}</div>
-                        {parcelaProgress && <div className="text-xs text-muted-foreground">{parcelaProgress}</div>}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{e.descricao || "—"}</TableCell>
-                      <TableCell className="text-right tabular font-medium">{fmtMoney(e.valor)}</TableCell>
-                      <TableCell className={isVencido ? "text-destructive font-medium" : isHaPagar ? "text-warning font-medium" : "text-muted-foreground"}>{venc ? fmtDate(venc) : "—"}</TableCell>
-                      <TableCell className="text-center">
-                        {pago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : isVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Badge variant={e.recorrente ? "secondary" : "outline"} className="text-xs" title={parcelaProgress ?? undefined}>
-                          {label}
-                        </Badge>
-                        {e.recorrente && (
+                    <Fragment key={g.key}>
+                      <TableRow className={"bg-muted/20 " + (gVencido ? "bg-destructive/5 " : !gPago ? "bg-warning/5 " : "")}>
+                        <TableCell>
+                          <Badge variant="outline" className="capitalize">{rep.tipo.replace("_", " ")}</Badge>
+                        </TableCell>
+                        <TableCell className="font-medium">
+                          <div>{rep.categoria}</div>
+                          <div className="text-xs text-muted-foreground">{g.pagos}/{g.total} pagas</div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{rep.descricao || "—"}</TableCell>
+                        <TableCell className="text-right tabular font-medium">{fmtMoney(g.valorMensal)}<span className="text-xs text-muted-foreground font-normal">/mês</span></TableCell>
+                        <TableCell className={gVencido ? "text-destructive font-medium" : !gPago ? "text-warning font-medium" : "text-muted-foreground"}>{g.proximoVenc ? fmtDate(g.proximoVenc) : "—"}</TableCell>
+                        <TableCell className="text-center">
+                          {gPago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : gVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="secondary" className="text-xs" title={`${g.pagos}/${g.total} pagas`}>
+                            {glabel}
+                          </Badge>
                           <div className="mt-1">
-                            {(e as any).inclui_ponto_equilibrio !== false ? (
+                            {(rep as any).inclui_ponto_equilibrio !== false ? (
                               <Badge variant="outline" className="text-xs border-info/30 text-info" title="Integra o Ponto de Equilíbrio">No ponto</Badge>
                             ) : (
                               <Badge variant="outline" className="text-xs text-muted-foreground" title="Fora do Ponto de Equilíbrio">Fora do ponto</Badge>
                             )}
                           </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {!pago && venc && <Button variant="ghost" size="sm" onClick={() => payManualVencimento.mutate(e.id)} disabled={payManualVencimento.isPending} title="Quitar"><CreditCard className="size-4" /></Button>}
-                        <Button variant="ghost" size="icon" onClick={() => { setEditingEntry(e); setNewEntryOpen(true); }}><Pencil className="size-4" /></Button>
-                        <Button variant="ghost" size="icon" onClick={() => setToDelete(e)}><Trash2 className="size-4 text-destructive" /></Button>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="icon" onClick={() => setExpandedGroups(prev => ({ ...prev, [g.key]: !prev[g.key] }))} title={expanded ? "Ocultar parcelas" : "Ver parcelas"}>
+                            <ChevronDown className={'size-4 transition-transform ' + (expanded ? 'rotate-180' : '')} />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => setGroupToDelete(g)} title={`Excluir lançamento (${g.total} parcelas)`}><Trash2 className="size-4 text-destructive" /></Button>
+                        </TableCell>
+                      </TableRow>
+                      {expanded && g.entries.map((p, pIdx) => {
+                        const pvenc = (p as any).vencimento || p.competencia;
+                        const ppago = (p as any).pago;
+                        const pVencido = pvenc && !ppago && new Date(pvenc + "T12:00:00") < new Date(new Date().toISOString().split("T")[0] + "T12:00:00");
+                        const pHaPagar = !ppago && !pVencido;
+                        return (
+                        <TableRow key={p.id} className="bg-muted/10">
+                          <TableCell className="pl-8">
+                            <Badge variant="outline" className="text-xs">Parcela {pIdx + 1}/{g.total}</Badge>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm">{p.categoria}</TableCell>
+                          <TableCell className="text-muted-foreground text-sm">{p.descricao || "—"}</TableCell>
+                          <TableCell className="text-right tabular">{fmtMoney(p.valor)}</TableCell>
+                          <TableCell className={pVencido ? "text-destructive font-medium" : pHaPagar ? "text-warning font-medium" : "text-muted-foreground"}>{pvenc ? fmtDate(pvenc) : "—"}</TableCell>
+                          <TableCell className="text-center">
+                            {ppago ? <Badge variant="default" className="bg-success text-success-foreground">Pago</Badge> : pVencido ? <Badge variant="destructive">Vencido</Badge> : <Badge variant="outline" className="border-warning/30 text-warning">Há pagar</Badge>}
+                          </TableCell>
+                          <TableCell className="text-center text-xs text-muted-foreground">—</TableCell>
+                          <TableCell className="text-right">
+                            {!ppago && pvenc && <Button variant="ghost" size="sm" onClick={() => payManualVencimento.mutate(p.id)} disabled={payManualVencimento.isPending} title="Quitar parcela"><CreditCard className="size-4" /></Button>}
+                            <Button variant="ghost" size="icon" onClick={() => { setEditingEntry(p); setNewEntryOpen(true); }} title="Editar parcela"><Pencil className="size-4" /></Button>
+                            <Button variant="ghost" size="icon" onClick={() => setToDelete(p)} title="Excluir parcela"><Trash2 className="size-4 text-destructive" /></Button>
+                          </TableCell>
+                        </TableRow>
+                        );
+                      })}
+                    </Fragment>
+                    );
+                  })}
                 </TableBody>
                 </Table>
             </div>
@@ -2528,6 +2731,22 @@ if (!unlocked) return null;
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={() => toDelete && deleteEntry.mutate(toDelete.id)}>Remover</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete recorrente inteiro (todas as parcelas do grupo) */}
+      <AlertDialog open={!!groupToDelete} onOpenChange={(o) => !o && setGroupToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir lançamento "{groupToDelete?.rep.categoria}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Todas as {groupToDelete?.total} parcela(s) ({groupToDelete?.pagos} paga(s), {groupToDelete ? groupToDelete.total - groupToDelete.pagos : 0} pendente(s)) serão excluídas permanentemente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => groupToDelete && deleteGroupMut.mutate(groupToDelete.entries.map(e => e.id))}>Excluir tudo</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
