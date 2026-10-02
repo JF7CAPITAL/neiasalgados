@@ -248,7 +248,6 @@ function FinanceiroPage() {
   const [showInsumosDetail, setShowInsumosDetail] = useState(false);
   const [showReceitaDetail, setShowReceitaDetail] = useState(false);
   const [showVencimentosDetail, setShowVencimentosDetail] = useState(false);
-  const [showOutrasDespesasDetail, setShowOutrasDespesasDetail] = useState(false);
   const [showTaxasDetail, setShowTaxasDetail] = useState(false);
   const [showMotoboysDetail, setShowMotoboysDetail] = useState(false);
   const [showPontoEquilibrioDetail, setShowPontoEquilibrioDetail] = useState(false);
@@ -412,6 +411,35 @@ function FinanceiroPage() {
             .select("*")
             .gte("competencia", periodoInicio)
             .lte("competencia", periodoFim)
+            .order("competencia", { ascending: false })
+            .order("tipo");
+          if (err2) throw err2;
+          return (fallback ?? []) as DreEntry[];
+        }
+        throw error;
+      }
+      return (data ?? []) as DreEntry[];
+    },
+    enabled: unlocked,
+  });
+
+  // Todos os lançamentos manuais já criados (SEM filtro de período) — alimenta a
+  // lista da aba "Lançamentos Manuais", que deve exibir o histórico completo.
+  // O DRE continua usando `manualEntries` (filtrado pelo período selecionado).
+  const { data: manualEntriesAll = [], refetch: refetchEntriesAll } = useQuery({
+    queryKey: ["finance-dre-entries-all"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("finance_dre_entries")
+        .select("*")
+        .order("vencimento", { ascending: false })
+        .order("tipo");
+      if (error) {
+        // Fallback para competencia se coluna vencimento ainda não existir
+        if (error.message?.includes("vencimento") || (error as any)?.code === "42703") {
+          const { data: fallback, error: err2 } = await supabase
+            .from("finance_dre_entries")
+            .select("*")
             .order("competencia", { ascending: false })
             .order("tipo");
           if (err2) throw err2;
@@ -870,6 +898,7 @@ function FinanceiroPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries-all"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
       qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
       toast.success("Lançamento quitado!");
@@ -887,6 +916,7 @@ function FinanceiroPage() {
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries-all"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
       qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
       toast.success(vars.incluir ? "Lançamento incluído no ponto de equilíbrio!" : "Lançamento fora do ponto de equilíbrio!");
@@ -1456,6 +1486,7 @@ function FinanceiroPage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries-all"] });
       qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
       qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
@@ -1474,6 +1505,7 @@ function FinanceiroPage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["finance-dre-entries"] });
+      qc.invalidateQueries({ queryKey: ["finance-dre-entries-all"] });
       qc.invalidateQueries({ queryKey: ["finance-manual-vencimentos"] });
       qc.invalidateQueries({ queryKey: ["finance-dre-auto"] });
       qc.invalidateQueries({ queryKey: ["finance-recorrentes-all"] });
@@ -1745,7 +1777,7 @@ function FinanceiroPage() {
                 progressoBadge = `${stat.pagos}/${stat.total} pagas`;
               }
               rowsToRender.push(
-                <TableRow key={r.id ?? i} className={(r.fonte === 'manual' ? 'bg-amber-50/30 ' : '') + (isVencido ? 'bg-destructive/5' : '') + (isHaPagar ? ' bg-warning/5' : '')}>
+                <TableRow key={`${section.key}::${r.id ?? `auto-${i}`}`} className={(r.fonte === 'manual' ? 'bg-amber-50/30 ' : '') + (isVencido ? 'bg-destructive/5' : '') + (isHaPagar ? ' bg-warning/5' : '')}>
                   <TableCell className='text-xs text-muted-foreground'>{r.secao}</TableCell>
                   <TableCell className='font-medium'>
                     <div className="flex items-center gap-1.5">
@@ -1771,7 +1803,7 @@ function FinanceiroPage() {
                     {r.editable && r.id && (
                       <>
                         {r.pago === false && <Button variant='ghost' size="icon" onClick={(e) => { e.stopPropagation(); payManualVencimento.mutate(r.id!); }} title="Quitar"><CreditCard className="size-4" /></Button>}
-                        <Button variant='ghost' size='icon' onClick={(e) => { e.stopPropagation(); setEditingEntry(manualEntries.find(m => m.id === r.id) || null); setNewEntryOpen(true); }}>
+                        <Button variant='ghost' size='icon' onClick={(e) => { e.stopPropagation(); setEditingEntry(manualEntriesAll.find(m => m.id === r.id) || manualEntries.find(m => m.id === r.id) || null); setNewEntryOpen(true); }}>
                           <Pencil className='size-4' />
                         </Button>
                       </>
@@ -1926,7 +1958,6 @@ if (!unlocked) return null;
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
         <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa no período — clique para detalhes`} onClick={() => setShowTaxasDetail(true)} />
         <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : "Taxas extras dos pedidos no período — clique para detalhes"} onClick={() => setShowTaxasDetail(true)} />
-        <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais pagos no período — clique para detalhes" onClick={() => setShowOutrasDespesasDetail(true)} />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita — clique para ver o que consome a margem" onClick={() => setShowMargemDetail(true)} />
       </div>
@@ -2093,13 +2124,13 @@ if (!unlocked) return null;
           </div>
 
           <div className="flex justify-between items-center">
-            <h3 className="font-semibold">Todos os lançamentos criados ({manualEntries.length})</h3>
+            <h3 className="font-semibold">Todos os lançamentos criados ({manualEntriesAll.length})</h3>
             <Button variant="outline" size="sm" onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); setNewEntryOpen(true); }}>
               <Plus className="mr-1.5 size-4" /> Novo lançamento
             </Button>
           </div>
 
-          {manualEntries.length === 0 ? (
+          {manualEntriesAll.length === 0 ? (
             <EmptyState
               icon={FileSpreadsheet}
               title="Nenhum lançamento manual"
@@ -2122,7 +2153,7 @@ if (!unlocked) return null;
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {manualEntries.map((e) => {
+                  {manualEntriesAll.map((e) => {
                     const tipo = (e as any).recorrencia_tipo as string | null;
                     const qtd = (e as any).recorrencia_quantidade as number | null;
                     const gid = (e as any).recorrencia_grupo_id as string | null;
@@ -3060,65 +3091,6 @@ if (!unlocked) return null;
           </div>
           <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowVencimentosDetail(false)}>Fechar</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Outras Despesas Detail Dialog */}
-      <Dialog open={showOutrasDespesasDetail} onOpenChange={setShowOutrasDespesasDetail}>
-        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
-          <DialogHeader className="shrink-0">
-            <DialogTitle>Outras Despesas — Detalhamento</DialogTitle>
-            <p className="text-sm text-muted-foreground">Lançamentos manuais pagos classificados como despesa administrativa, financeira e outros • {allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).length} itens • Total {fmtMoney(kpis.outrasDespesas)} no período</p>
-          </DialogHeader>
-          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
-            {allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).length === 0 ? (
-              <div className="py-12 text-center">
-                <Calculator className="mx-auto size-10 text-muted-foreground/40" />
-                <p className="mt-3 text-sm font-medium">Nenhuma outra despesa no período</p>
-                <p className="mt-1 text-xs text-muted-foreground">Lançamentos pagos com vencimento neste período aparecem aqui e no DRE.</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto rounded-xl border border-border">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-muted/50">
-                      <TableHead>Seção</TableHead>
-                      <TableHead>Categoria</TableHead>
-                      <TableHead>Descrição</TableHead>
-                      <TableHead className="text-right">Valor</TableHead>
-                      <TableHead className="text-center">Data do pagamento</TableHead>
-                      <TableHead className="text-center">Fonte</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).map((r, i) => (
-                      <TableRow key={r.id ?? i}>
-                        <TableCell className="text-xs text-muted-foreground">{r.secao}</TableCell>
-                        <TableCell className="font-medium">{r.categoria}</TableCell>
-                        <TableCell className="text-muted-foreground text-sm">{r.descricao || "—"}</TableCell>
-                        <TableCell className="text-right tabular font-medium">{fmtMoney(r.valor)}</TableCell>
-                        <TableCell className="text-center text-xs tabular text-muted-foreground">{r.data_pagamento ? fmtDate(r.data_pagamento) : r.vencimento ? fmtDate(r.vencimento) : "—"}</TableCell>
-                        <TableCell className="text-center"><Badge variant={r.fonte === 'auto' ? 'default' : 'outline'} className="text-xs">{r.fonte === 'auto' ? 'Automático' : 'Manual'}</Badge></TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
-              <div className="text-center">
-                <p className="text-xs text-muted-foreground">Itens</p>
-                <p className="font-display text-xl font-semibold">{allDreRows.filter(r => ["DESPESA ADMINISTRATIVA","DESPESA FINANCEIRA","OUTROS"].includes(r.secao)).length}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-muted-foreground">Total pago</p>
-                <p className="font-display text-xl font-semibold">{fmtMoney(kpis.outrasDespesas)}</p>
-              </div>
-            </div>
-          </div>
-          <DialogFooter className="shrink-0 pt-2">
-            <Button variant="outline" onClick={() => setShowOutrasDespesasDetail(false)}>Fechar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
