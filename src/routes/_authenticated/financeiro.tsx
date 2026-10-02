@@ -6,7 +6,7 @@ import {
   Plus, Pencil, Trash2, Lock, Unlock, Eye, EyeOff, Loader2, AlertTriangle,
   ChevronDown, ChevronUp, Save, X, RefreshCw, DollarSign, Users, Package,
   CreditCard, ShoppingCart, ArrowUpRight, ArrowDownRight, List, CalendarDays,
-  Truck, ReceiptText, Bike
+  Truck, ReceiptText, Bike, Landmark, ArrowUpCircle, ArrowDownCircle
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -70,6 +70,37 @@ type DreRow = {
   recorrencia_tipo?: 'indefinida' | 'determinada' | null;
   recorrencia_quantidade?: number | null;
 };
+
+type FinanceAccount = {
+  id: string;
+  nome: string;
+  saldo: number;
+  cor?: string | null;
+  created_at?: string;
+};
+
+const ACCOUNTS_LS_KEY = "neia_finance_accounts_v1";
+const SHOW_BALANCES_LS_KEY = "neia_finance_show_balances_v1";
+
+function loadAccountsLS(): FinanceAccount[] {
+  try {
+    const raw = localStorage.getItem(ACCOUNTS_LS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((a: any) => a && typeof a.nome === "string").map((a: any) => ({
+      id: String(a.id ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`),
+      nome: String(a.nome),
+      saldo: Number(a.saldo) || 0,
+      cor: a.cor ?? null,
+      created_at: a.created_at ?? new Date().toISOString(),
+    }));
+  } catch { return []; }
+}
+
+function persistAccountsLS(list: FinanceAccount[]) {
+  try { localStorage.setItem(ACCOUNTS_LS_KEY, JSON.stringify(list)); } catch { /* ignore */ }
+}
 
 const DRE_TIPOS = [
   { value: "receita", label: "Receita" },
@@ -221,7 +252,20 @@ function FinanceiroPage() {
   const [showTaxasDetail, setShowTaxasDetail] = useState(false);
   const [showMotoboysDetail, setShowMotoboysDetail] = useState(false);
   const [showPontoEquilibrioDetail, setShowPontoEquilibrioDetail] = useState(false);
+  const [showMargemDetail, setShowMargemDetail] = useState(false);
   const [adiantarPagamento, setAdiantarPagamento] = useState<Record<string, number>>({});
+  // --- Contas (múltiplas: Bradesco, Itaú, Santander...) com olho p/ ocultar saldo ---
+  const [showBalances, setShowBalances] = useState(() => {
+    try { return localStorage.getItem(SHOW_BALANCES_LS_KEY) !== "0"; } catch { return true; }
+  });
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<FinanceAccount | null>(null);
+  const [accountForm, setAccountForm] = useState({ nome: "", saldo: 0 });
+  const [adjustDialog, setAdjustDialog] = useState<{ account: FinanceAccount; tipo: "entrada" | "saida" } | null>(null);
+  const [adjustValor, setAdjustValor] = useState<number>(0);
+  const [accountToDelete, setAccountToDelete] = useState<FinanceAccount | null>(null);
+  // --- Novo lançamento manual inline (form visível acima da lista) ---
+  const [inlineEntry, setInlineEntry] = useState({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, recorrente: false, recorrencia_tipo: "nao" as string, recorrencia_quantidade: 3 });
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     "RECEITA BRUTA": true,
     "CUSTO DIRETO (CMV)": true,
@@ -550,6 +594,139 @@ function FinanceiroPage() {
     },
     enabled: unlocked,
   });
+
+  // --- Contas financeiras (Supabase finance_accounts com fallback localStorage) ---
+  const { data: accounts = [], refetch: refetchAccounts } = useQuery({
+    queryKey: ["finance-accounts"],
+    queryFn: async (): Promise<FinanceAccount[]> => {
+      try {
+        const { data, error } = await (supabase as any)
+          .from("finance_accounts")
+          .select("id, nome, saldo, cor, created_at")
+          .order("created_at", { ascending: true });
+        if (error) throw error;
+        const list = ((data ?? []) as any[]).map((a: any) => ({
+          id: String(a.id),
+          nome: String(a.nome),
+          saldo: Number(a.saldo) || 0,
+          cor: a.cor ?? null,
+          created_at: a.created_at ?? undefined,
+        }));
+        persistAccountsLS(list);
+        return list;
+      } catch (e: any) {
+        const msg = e?.message || "";
+        if (e?.code === "42P01" || e?.code === "42703" || e?.code === "PGRST205" || /finance_accounts|does not exist|Could not find/i.test(msg)) {
+          console.warn("[finance-accounts] tabela ausente, usando armazenamento local. Aplique a migration 20261009000000_finance_accounts.sql:", msg);
+          return loadAccountsLS();
+        }
+        throw e;
+      }
+    },
+    enabled: unlocked,
+  });
+
+  const toggleShowBalances = () => {
+    setShowBalances((v) => {
+      try { localStorage.setItem(SHOW_BALANCES_LS_KEY, v ? "0" : "1"); } catch { /* ignore */ }
+      return !v;
+    });
+  };
+
+  const saveAccountMut = useMutation({
+    mutationFn: async ({ nome, saldo, id }: { nome: string; saldo: number; id?: string }) => {
+      const cleanNome = nome.trim();
+      if (!cleanNome) throw new Error("Dê um nome para a conta (ex.: Bradesco)");
+      try {
+        if (id) {
+          const { error } = await (supabase as any).from("finance_accounts").update({ nome: cleanNome, saldo: Number(saldo) || 0 }).eq("id", id);
+          if (error) throw error;
+        } else {
+          const { error } = await (supabase as any).from("finance_accounts").insert({ nome: cleanNome, saldo: Number(saldo) || 0 });
+          if (error) throw error;
+        }
+        await logActivity("financeiro", id ? "editou conta financeira" : "criou conta financeira", id ?? null, { nome: cleanNome });
+      } catch (e: any) {
+        const msg = e?.message || "";
+        if (e?.code === "42P01" || e?.code === "42703" || e?.code === "PGRST205" || /finance_accounts|does not exist|Could not find/i.test(msg)) {
+          // Fallback local
+          const current = loadAccountsLS();
+          if (id) {
+            const next = current.map((a) => (a.id === id ? { ...a, nome: cleanNome, saldo: Number(saldo) || 0 } : a));
+            persistAccountsLS(next);
+          } else {
+            const nid = (typeof crypto !== "undefined" && "randomUUID" in crypto) ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            persistAccountsLS([...current, { id: nid, nome: cleanNome, saldo: Number(saldo) || 0, created_at: new Date().toISOString() }]);
+          }
+          return;
+        }
+        throw e;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance-accounts"] });
+      refetchAccounts();
+      setAccountDialogOpen(false);
+      setEditingAccount(null);
+      setAccountForm({ nome: "", saldo: 0 });
+      toast.success("Conta salva!");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const adjustAccountMut = useMutation({
+    mutationFn: async ({ id, delta }: { id: string; delta: number }) => {
+      const target = accounts.find((a) => a.id === id);
+      const novoSaldo = (Number(target?.saldo) || 0) + delta;
+      try {
+        const { error } = await (supabase as any).from("finance_accounts").update({ saldo: novoSaldo }).eq("id", id);
+        if (error) throw error;
+        await logActivity("financeiro", delta >= 0 ? "adicionou saldo à conta" : "retirou saldo da conta", id, { delta, novoSaldo });
+      } catch (e: any) {
+        const msg = e?.message || "";
+        if (e?.code === "42P01" || e?.code === "42703" || e?.code === "PGRST205" || /finance_accounts|does not exist|Could not find/i.test(msg)) {
+          const current = loadAccountsLS();
+          persistAccountsLS(current.map((a) => (a.id === id ? { ...a, saldo: (Number(a.saldo) || 0) + delta } : a)));
+          return;
+        }
+        throw e;
+      }
+    },
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["finance-accounts"] });
+      refetchAccounts();
+      setAdjustDialog(null);
+      setAdjustValor(0);
+      toast.success(vars.delta >= 0 ? "Saldo adicionado!" : "Saldo retirado!");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const deleteAccountMut = useMutation({
+    mutationFn: async (id: string) => {
+      try {
+        const { error } = await (supabase as any).from("finance_accounts").delete().eq("id", id);
+        if (error) throw error;
+        await logActivity("financeiro", "excluiu conta financeira", id, {});
+      } catch (e: any) {
+        const msg = e?.message || "";
+        if (e?.code === "42P01" || e?.code === "42703" || e?.code === "PGRST205" || /finance_accounts|does not exist|Could not find/i.test(msg)) {
+          persistAccountsLS(loadAccountsLS().filter((a) => a.id !== id));
+          return;
+        }
+        throw e;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["finance-accounts"] });
+      refetchAccounts();
+      setAccountToDelete(null);
+      toast.success("Conta excluída!");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const totalContas = useMemo(() => accounts.reduce((s, a) => s + (Number(a.saldo) || 0), 0), [accounts]);
 
   const vencimentosTotal = useMemo(() => {
     const totalCompras = vencimentosPendentes.reduce((s: number, r: any) => s + (Number(r.valor_total) || Number(r.quantidade_recebida || r.quantidade_necessaria) * Number(r.preco_recebido || r.preco_medio) || 0), 0);
@@ -923,6 +1100,24 @@ function FinanceiroPage() {
 
     return { receita, custoDireto, custoVariavel, despesasInsumos, lucroBruto, despesasOp, outrasDespesas, resultado, margem };
   }, [allDreRows]);
+
+  // Descritivo do que consome a margem líquida vs faturamento bruto (percentuais + estratégia)
+  const margemBreakdown = useMemo(() => {
+    const r = kpis.receita;
+    const pct = (v: number) => (r > 0 ? (v / r) * 100 : 0);
+    const itens = [
+      { chave: "Custo Direto (CMV)", valor: kpis.custoDireto, pct: pct(kpis.custoDireto), dica: "Insumos/CMV sobre a receita. Se > 35%, revise fichas técnicas, desperdício e preço de compra." },
+      { chave: "Custo Variável", valor: kpis.custoVariavel, pct: pct(kpis.custoVariavel), dica: "Taxas, embalagens e variáveis por pedido. Amarre ao ticket médio." },
+      { chave: "Despesas com Insumos", valor: kpis.despesasInsumos, pct: pct(kpis.despesasInsumos), dica: "Ordens de compra quitadas no período. Compare com CMV para ver descasamento caixa x competência." },
+      { chave: "Despesas Operacionais", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Folha + operação. Idealmente < 30-35% da receita em food service." },
+      { chave: "Outras Despesas (Adm + Fin + Outros)", valor: kpis.outrasDespesas, pct: pct(kpis.outrasDespesas), dica: "Aluguel, energia, juros, taxas. Juros altos aqui corroem a margem rápido." },
+    ];
+    const totalConsumido = itens.reduce((s, i) => s + i.valor, 0);
+    const ordenados = [...itens].sort((a, b) => b.valor - a.valor);
+    const maiorVilao = ordenados[0];
+    const margemContrib = r > 0 ? (kpis.lucroBruto / r) * 100 : 0;
+    return { itens, ordenados, totalConsumido, pctTotal: pct(totalConsumido), maiorVilao, margemContrib };
+  }, [kpis]);
 
   // Ponto de equilíbrio: soma de todas as despesas/custos recorrentes + folha + insumos
   // Não diminui quando parcela é paga, só quando quitada/removida (grupo pendente continua contando)
@@ -1640,6 +1835,73 @@ if (!unlocked) return null;
         </div>
       </div>
 
+      {/* Contas financeiras */}
+      <div className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold flex items-center gap-2">
+              <Landmark className="size-4 text-primary" /> Minhas Contas
+              <Badge variant="outline" className="text-xs">{accounts.length} conta(s)</Badge>
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Crie várias contas (Bradesco, Itaú, Santander, Caixa...), organize por nome e controle o saldo de cada uma.
+              {" "}Total geral: <span className="font-semibold text-foreground">{showBalances ? fmtMoney(totalContas) : "••••••"}</span>
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={toggleShowBalances} title={showBalances ? "Ocultar saldos" : "Mostrar saldos"}>
+              {showBalances ? <EyeOff className="mr-1.5 size-4" /> : <Eye className="mr-1.5 size-4" />}
+              {showBalances ? "Ocultar" : "Mostrar"}
+            </Button>
+            <Button size="sm" onClick={() => { setEditingAccount(null); setAccountForm({ nome: "", saldo: 0 }); setAccountDialogOpen(true); }}>
+              <Plus className="mr-1.5 size-4" /> Criar conta
+            </Button>
+          </div>
+        </div>
+        {accounts.length === 0 ? (
+          <div className="mt-4 rounded-xl border border-dashed border-border bg-card/50 px-6 py-8 text-center">
+            <Landmark className="mx-auto size-8 text-muted-foreground/40" />
+            <p className="mt-2 text-sm font-medium">Nenhuma conta criada</p>
+            <p className="mt-1 text-xs text-muted-foreground">Ex.: Bradesco, Itaú, Santander, Caixa, Carteira... Depois adicione ou retire saldo quando quiser.</p>
+            <Button className="mt-3" size="sm" onClick={() => { setEditingAccount(null); setAccountForm({ nome: "", saldo: 0 }); setAccountDialogOpen(true); }}>
+              <Plus className="mr-1.5 size-4" /> Criar primeira conta
+            </Button>
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {accounts.map((a) => (
+              <div key={a.id} className="rounded-xl border border-border bg-muted/20 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold">{a.nome}</p>
+                    <p className="mt-1 font-display text-2xl font-bold tabular">
+                      {showBalances ? fmtMoney(a.saldo) : "••••••"}
+                    </p>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={toggleShowBalances} title={showBalances ? "Ocultar saldos" : "Mostrar saldos"}>
+                    {showBalances ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </Button>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                  <Button variant="outline" size="sm" onClick={() => { setAdjustDialog({ account: a, tipo: "entrada" }); setAdjustValor(0); }} title="Adicionar saldo">
+                    <ArrowUpCircle className="mr-1 size-4" /> Adicionar
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => { setAdjustDialog({ account: a, tipo: "saida" }); setAdjustValor(0); }} title="Retirar saldo">
+                    <ArrowDownCircle className="mr-1 size-4" /> Retirar
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => { setEditingAccount(a); setAccountForm({ nome: a.nome, saldo: Number(a.saldo) || 0 }); setAccountDialogOpen(true); }} title="Editar conta / saldo">
+                    <Pencil className="size-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => setAccountToDelete(a)} title="Excluir conta">
+                    <Trash2 className="size-4 text-destructive" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4">
         <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint={`Anota direto: ${fmtMoney(anotaDirectTotal)} | iFood: ${fmtMoney(ifoodTotal)}`} onClick={() => setShowReceitaDetail(true)} />
@@ -1666,7 +1928,7 @@ if (!unlocked) return null;
         <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : "Taxas extras dos pedidos no período — clique para detalhes"} onClick={() => setShowTaxasDetail(true)} />
         <KpiCard label="Outras Despesas" value={fmtMoney(kpis.outrasDespesas)} icon={Calculator} tone="danger" hint="Lançamentos manuais pagos no período — clique para detalhes" onClick={() => setShowOutrasDespesasDetail(true)} />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
-        <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita" />
+        <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita — clique para ver o que consome a margem" onClick={() => setShowMargemDetail(true)} />
       </div>
 
       {/* Insights */}
@@ -1743,10 +2005,96 @@ if (!unlocked) return null;
           )}
         </TabsContent>
 
-        <TabsContent value="lancamentos" className="pt-4">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-semibold">Lançamentos Manuais do Contador</h3>
-            <Button onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); setNewEntryOpen(true); }}>
+        <TabsContent value="lancamentos" className="space-y-4 pt-4">
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="font-semibold">Novo lançamento manual</h3>
+                <p className="text-xs text-muted-foreground">Preencha abaixo e clique em salvar. Todos os lançamentos criados aparecem na lista logo abaixo, com opções de editar e excluir.</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); setNewEntryOpen(true); }}>
+                <Plus className="mr-1.5 size-4" /> Abertura avançada
+              </Button>
+            </div>
+            <form
+              className="mt-3 grid gap-3 md:grid-cols-6"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!inlineEntry.categoria.trim()) { toast.error("Informe a categoria"); return; }
+                if (!(Number(inlineEntry.valor) > 0)) { toast.error("Informe um valor maior que zero"); return; }
+                const hoje = new Date().toISOString().split("T")[0];
+                const isFut = inlineEntry.vencimento > hoje;
+                saveEntry.mutate({
+                  tipo: inlineEntry.tipo as DreEntry["tipo"],
+                  categoria: inlineEntry.categoria.trim(),
+                  descricao: inlineEntry.descricao.trim() || null,
+                  valor: Number(inlineEntry.valor) || 0,
+                  vencimento: inlineEntry.vencimento,
+                  competencia: inlineEntry.vencimento.slice(0, 7) + "-01",
+                  pago: isFut ? false : inlineEntry.pago,
+                  recorrente: inlineEntry.recorrente,
+                  recorrencia_tipo: inlineEntry.recorrente ? (inlineEntry.recorrencia_tipo === "determinada" ? "determinada" : "indefinida") : null,
+                  recorrencia_quantidade: inlineEntry.recorrente && inlineEntry.recorrencia_tipo === "determinada" ? inlineEntry.recorrencia_quantidade : null,
+                  inclui_ponto_equilibrio: true,
+                } as any, {
+                  onSuccess: () => setInlineEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, recorrente: false, recorrencia_tipo: "nao", recorrencia_quantidade: 3 }),
+                });
+              }}
+            >
+              <div className="space-y-1.5 md:col-span-1">
+                <Label className="text-xs">Tipo</Label>
+                <Select value={inlineEntry.tipo} onValueChange={(v) => setInlineEntry((p) => ({ ...p, tipo: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {DRE_TIPOS.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5 md:col-span-1">
+                <Label className="text-xs">Categoria *</Label>
+                <Input value={inlineEntry.categoria} onChange={(e) => setInlineEntry((p) => ({ ...p, categoria: e.target.value }))} placeholder="Ex.: Aluguel" />
+              </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <Label className="text-xs">Descrição</Label>
+                <Input value={inlineEntry.descricao} onChange={(e) => setInlineEntry((p) => ({ ...p, descricao: e.target.value }))} placeholder="Detalhes..." />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Valor (R$) *</Label>
+                <Input type="number" step="0.01" min={0} value={inlineEntry.valor || ""} onChange={(e) => setInlineEntry((p) => ({ ...p, valor: Number(e.target.value) || 0 }))} placeholder="0,00" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Vencimento *</Label>
+                <Input type="date" value={inlineEntry.vencimento} onChange={(e) => setInlineEntry((p) => ({ ...p, vencimento: e.target.value }))} />
+              </div>
+              <div className="flex items-center gap-2 md:col-span-3">
+                <Switch checked={inlineEntry.pago} onCheckedChange={(v) => setInlineEntry((p) => ({ ...p, pago: v }))} />
+                <span className="text-xs text-muted-foreground">Já foi pago? {inlineEntry.pago ? "Sim" : "Não (Há pagar)"}</span>
+              </div>
+              <div className="flex items-center gap-2 md:col-span-2">
+                <Switch checked={inlineEntry.recorrente} onCheckedChange={(v) => setInlineEntry((p) => ({ ...p, recorrente: v, recorrencia_tipo: v ? "indefinida" : "nao" }))} />
+                <span className="text-xs text-muted-foreground">Recorrente mensal?</span>
+                {inlineEntry.recorrente && (
+                  <Select value={inlineEntry.recorrencia_tipo} onValueChange={(v) => setInlineEntry((p) => ({ ...p, recorrencia_tipo: v }))}>
+                    <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="indefinida">Indefinida</SelectItem>
+                      <SelectItem value="determinada">Determinada</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+              <div className="md:col-span-1 md:text-right">
+                <Button type="submit" disabled={saveEntry.isPending} className="w-full md:w-auto">
+                  {saveEntry.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
+                  <Save className="mr-1.5 size-4" /> Salvar
+                </Button>
+              </div>
+            </form>
+          </div>
+
+          <div className="flex justify-between items-center">
+            <h3 className="font-semibold">Todos os lançamentos criados ({manualEntries.length})</h3>
+            <Button variant="outline" size="sm" onClick={() => { setEditingEntry({ tipo: "despesa_operacional", categoria: "", descricao: "", valor: 0, vencimento: VENCIMENTO_DEFAULT, pago: true, competencia: COMPETENCIA_DEFAULT, recorrente: false, recorrencia_tipo: null, recorrencia_quantidade: null, inclui_ponto_equilibrio: true } as any); setNewEntryOpen(true); }}>
               <Plus className="mr-1.5 size-4" /> Novo lançamento
             </Button>
           </div>
@@ -2152,6 +2500,172 @@ if (!unlocked) return null;
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Criar / Editar conta */}
+      <Dialog open={accountDialogOpen} onOpenChange={(o) => { if (!o) { setAccountDialogOpen(false); setEditingAccount(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{editingAccount ? "Editar conta" : "Criar conta"}</DialogTitle>
+            <p className="text-sm text-muted-foreground">Nomeie como quiser: Bradesco, Itaú, Santander, Caixa, Carteira...</p>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveAccountMut.mutate({ nome: accountForm.nome, saldo: Number(accountForm.saldo) || 0, id: editingAccount?.id });
+            }}
+          >
+            <div className="space-y-1.5">
+              <Label className="text-xs">Nome da conta *</Label>
+              <Input value={accountForm.nome} onChange={(e) => setAccountForm((p) => ({ ...p, nome: e.target.value }))} placeholder="Ex.: Bradesco, Itaú, Santander..." autoFocus />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Saldo inicial / atual (R$)</Label>
+              <Input type="number" step="0.01" value={accountForm.saldo || ""} onChange={(e) => setAccountForm((p) => ({ ...p, saldo: Number(e.target.value) || 0 }))} placeholder="0,00" />
+              <p className="text-xs text-muted-foreground">Você pode editar o saldo aqui a qualquer momento, ou usar Adicionar / Retirar no cartão da conta.</p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" type="button" onClick={() => { setAccountDialogOpen(false); setEditingAccount(null); }}>Cancelar</Button>
+              <Button type="submit" disabled={saveAccountMut.isPending || !accountForm.nome.trim()}>
+                {saveAccountMut.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
+                {editingAccount ? "Salvar alterações" : "Criar conta"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Adicionar / Retirar saldo */}
+      <Dialog open={!!adjustDialog} onOpenChange={(o) => { if (!o) { setAdjustDialog(null); setAdjustValor(0); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{adjustDialog?.tipo === "entrada" ? "Adicionar saldo" : "Retirar saldo"} — {adjustDialog?.account.nome}</DialogTitle>
+            <p className="text-sm text-muted-foreground">Saldo atual: {adjustDialog ? fmtMoney(adjustDialog.account.saldo) : "—"}</p>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!adjustDialog || !(adjustValor > 0)) { toast.error("Informe um valor maior que zero"); return; }
+              const delta = adjustDialog.tipo === "entrada" ? Math.abs(adjustValor) : -Math.abs(adjustValor);
+              adjustAccountMut.mutate({ id: adjustDialog.account.id, delta });
+            }}
+          >
+            <div className="space-y-1.5">
+              <Label className="text-xs">Valor (R$) *</Label>
+              <Input type="number" step="0.01" min={0} value={adjustValor || ""} onChange={(e) => setAdjustValor(Number(e.target.value) || 0)} placeholder="0,00" autoFocus />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" type="button" onClick={() => { setAdjustDialog(null); setAdjustValor(0); }}>Cancelar</Button>
+              <Button type="submit" disabled={adjustAccountMut.isPending || !(adjustValor > 0)}>
+                {adjustAccountMut.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
+                Confirmar
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Excluir conta */}
+      <AlertDialog open={!!accountToDelete} onOpenChange={(o) => !o && setAccountToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir conta "{accountToDelete?.nome}"?</AlertDialogTitle>
+            <AlertDialogDescription>Saldo de {accountToDelete ? fmtMoney(accountToDelete.saldo) : "—"} será removido da soma. Esta ação não pode ser desfeita.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => accountToDelete && deleteAccountMut.mutate(accountToDelete.id)}>Excluir</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Margem Líquida — descritivo do que consome a margem */}
+      <Dialog open={showMargemDetail} onOpenChange={setShowMargemDetail}>
+        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Margem Líquida — o que está consumindo o faturamento</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Faturamento bruto (100%): <span className="font-semibold text-foreground">{fmtMoney(kpis.receita)}</span>
+              {" "}• Resultado líquido: <span className="font-semibold text-foreground">{fmtMoney(kpis.resultado)} ({kpis.margem.toFixed(1)}%)</span>
+              {" "}• Período {fmtDate(periodoInicio)} a {fmtDate(periodoFim)}
+            </p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            <div className="overflow-x-auto rounded-xl border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead>Grupo de custo/despesa</TableHead>
+                    <TableHead className="text-right">Valor</TableHead>
+                    <TableHead className="text-right">% da receita</TableHead>
+                    <TableHead className="min-w-[220px]">Participação</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {margemBreakdown.ordenados.map((i) => (
+                    <TableRow key={i.chave}>
+                      <TableCell className="font-medium">{i.chave}</TableCell>
+                      <TableCell className="text-right tabular">{fmtMoney(i.valor)}</TableCell>
+                      <TableCell className="text-right tabular font-semibold">{i.pct.toFixed(1)}%</TableCell>
+                      <TableCell>
+                        <div className="h-2 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="h-full rounded-full bg-primary"
+                            style={{ width: `${Math.min(100, Math.max(0, i.pct))}%` }}
+                          />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  <TableRow className="bg-muted/50 font-bold">
+                    <TableCell>Total consumido</TableCell>
+                    <TableCell className="text-right tabular">{fmtMoney(margemBreakdown.totalConsumido)}</TableCell>
+                    <TableCell className="text-right tabular">{margemBreakdown.pctTotal.toFixed(1)}%</TableCell>
+                    <TableCell />
+                  </TableRow>
+                  <TableRow className="bg-success/10 font-bold">
+                    <TableCell>Sobra (margem líquida)</TableCell>
+                    <TableCell className="text-right tabular">{fmtMoney(kpis.resultado)}</TableCell>
+                    <TableCell className="text-right tabular">{kpis.margem.toFixed(1)}%</TableCell>
+                    <TableCell />
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-border p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Margem de contribuição</p>
+                <p className="mt-1 font-display text-2xl font-bold">{margemBreakdown.margemContrib.toFixed(1)}%</p>
+                <p className="mt-1 text-xs text-muted-foreground">Lucro bruto / receita. Mostra quanto sobra após custos diretos + variáveis + insumos.</p>
+              </div>
+              <div className="rounded-xl border border-border p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Maior vilão</p>
+                <p className="mt-1 font-semibold">{margemBreakdown.maiorVilao ? `${margemBreakdown.maiorVilao.chave}` : "—"}</p>
+                <p className="mt-1 font-display text-2xl font-bold">{margemBreakdown.maiorVilao ? `${margemBreakdown.maiorVilao.pct.toFixed(1)}%` : "—"}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{margemBreakdown.maiorVilao ? fmtMoney(margemBreakdown.maiorVilao.valor) : ""} da receita</p>
+              </div>
+              <div className="rounded-xl border border-border p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Leitura estratégica</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {kpis.margem >= 15 ? "Margem saudável (≥15%). Proteja CMV e renegocie insumos em alta para manter." : kpis.margem >= 5 ? "Margem apertada (5-15%). Ataque o maior vilão acima e revise preço/ticket médio." : kpis.receita <= 0 ? "Sem receita no período — ajuste o filtro para analisar." : "Margem crítica (<5% ou negativa). Corte outras despesas, renegocie fixos e reprecifique urgentes."}
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-4">
+              <p className="text-sm font-semibold">Dicas por grupo</p>
+              {margemBreakdown.itens.map((i) => (
+                <p key={i.chave} className="text-xs text-muted-foreground">
+                  <span className="font-semibold text-foreground">{i.chave} ({i.pct.toFixed(1)}%):</span> {i.dica}
+                </p>
+              ))}
+            </div>
+          </div>
+          <DialogFooter className="shrink-0 pt-2">
+            <Button variant="outline" onClick={() => setShowMargemDetail(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Folha dos Colaboradores Detail Dialog */}
       <Dialog open={showFolhaDetail} onOpenChange={setShowFolhaDetail}>
