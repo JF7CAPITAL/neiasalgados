@@ -205,6 +205,19 @@ function somaSaldoDerivado(list: any[]): number {
     return s + Math.max(0, (Number(c.salario) || 0) - (Number(c.pagamento) || 0));
   }, 0);
 }
+// Recalcula o saldo devedor ao alterar o pagamento acumulado para um novo valor
+// (usado ao registrar e ao estornar/excluir pagamentos). Mantém a lógica de
+// acúmulo: base = saldoAtual - shortfall anterior; excedente abate o saldo.
+function recalcSaldoFolha(salario: number, pagamentoAtual: number, saldoAtual: number, novoPagamento: number): number {
+  const oldShortfall = Math.max(0, salario - pagamentoAtual);
+  const newShortfall = Math.max(0, salario - novoPagamento);
+  const baseAcumulada = Math.max(0, saldoAtual - oldShortfall);
+  if (novoPagamento > salario) {
+    const excedente = novoPagamento - salario;
+    return Math.max(0, saldoAtual - excedente);
+  }
+  return baseAcumulada + newShortfall;
+}
 // Folha acumulada no período (X a Y) para uma lista: espelha a regra do
 // backend (calc_folha_pagamento): meses corridos inclusive entre as
 // competências, contando cada colaborador a partir do mês de admissão.
@@ -320,12 +333,15 @@ function FinanceiroPage() {
     return d.toISOString().split("T")[0];
   });
   const [extFim, setExtFim] = useState(() => new Date().toISOString().split("T")[0]);
+  // --- Extrato de pagamentos da folha (equipe ou motoboys) ---
+  const [pagExtGrupo, setPagExtGrupo] = useState<"equipe" | "motoboys" | null>(null);
+  const [pagToDelete, setPagToDelete] = useState<{ id: string; collaboratorId: string | null; nome: string; valor: number; data: string } | null>(null);
 
   const toggleSection = (key: string) => {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders", "activity_logs"], ["finance-dre", "finance-access", "finance-pagamentos", "collaborators", "purchase-orders", "anota-orders", "anota-orders-receita", "finance-extrato"]);
+  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders", "activity_logs"], ["finance-dre", "finance-access", "finance-pagamentos", "finance-pagamentos-todos", "collaborators", "purchase-orders", "anota-orders", "anota-orders-receita", "finance-extrato"]);
 
   // Fetch orders count for ticket médio
   const { data: ordersCount = 0 } = useQuery({
@@ -504,14 +520,31 @@ function FinanceiroPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("activity_logs")
-        .select("registro_id, detalhes, created_at")
+        .select("id, registro_id, acao, detalhes, created_at")
         .eq("modulo", "financeiro")
-        .eq("acao", "registrou pagamento colaborador")
+        .in("acao", ["registrou pagamento colaborador", "estornou pagamento colaborador"])
         .gte("created_at", periodoInicio)
         .lte("created_at", periodoFim + "T23:59:59")
         .order("created_at", { ascending: true });
       if (error) throw error;
-      return (data ?? []) as { registro_id: string | null; detalhes: any; created_at: string }[];
+      return (data ?? []) as { id: string; registro_id: string | null; acao: string; detalhes: any; created_at: string }[];
+    },
+    enabled: unlocked,
+  });
+
+  // Todos os pagamentos de folha já registrados (SEM filtro de período) —
+  // alimenta o extrato de pagamentos (estornos excluem o lançamento original).
+  const { data: pagamentosTodos = [] } = useQuery({
+    queryKey: ["finance-pagamentos-todos"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("activity_logs")
+        .select("id, registro_id, acao, detalhes, created_at")
+        .eq("modulo", "financeiro")
+        .in("acao", ["registrou pagamento colaborador", "estornou pagamento colaborador"])
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as { id: string; registro_id: string | null; acao: string; detalhes: any; created_at: string }[];
     },
     enabled: unlocked,
   });
@@ -1267,14 +1300,50 @@ function FinanceiroPage() {
   // Pagamentos de folha somados apenas dentro do período selecionado (equipe x motoboys).
   // IDs desconhecidos (ex.: colaborador excluído) contam na equipe.
   const motoboyIdsSet = useMemo(() => new Set(motoboyCollabs.map((c: any) => String(c.id))), [motoboyCollabs]);
-  const folhaPagaPeriodoEquipe = useMemo(() => pagamentosPeriodo
+  // Pagamentos válidos = registros menos os estornados (exclusão vira estorno,
+  // pois activity_logs não permite DELETE — a trilha de auditoria é preservada).
+  const estornadosPeriodo = useMemo(() => new Set(
+    pagamentosPeriodo.filter(p => p.acao === "estornou pagamento colaborador").map(p => String((p.detalhes as any)?.estorna_log_id ?? "")),
+  ), [pagamentosPeriodo]);
+  const pagamentosValidosPeriodo = useMemo(() => pagamentosPeriodo.filter(
+    p => p.acao === "registrou pagamento colaborador" && !estornadosPeriodo.has(String(p.id)),
+  ), [pagamentosPeriodo, estornadosPeriodo]);
+  const folhaPagaPeriodoEquipe = useMemo(() => pagamentosValidosPeriodo
     .filter(p => !motoboyIdsSet.has(String(p.registro_id ?? "")))
     .reduce((s, p) => s + (Number((p.detalhes as any)?.valor) || 0), 0),
-  [pagamentosPeriodo, motoboyIdsSet]);
-  const folhaPagaPeriodoMotoboys = useMemo(() => pagamentosPeriodo
+  [pagamentosValidosPeriodo, motoboyIdsSet]);
+  const folhaPagaPeriodoMotoboys = useMemo(() => pagamentosValidosPeriodo
     .filter(p => motoboyIdsSet.has(String(p.registro_id ?? "")))
     .reduce((s, p) => s + (Number((p.detalhes as any)?.valor) || 0), 0),
-  [pagamentosPeriodo, motoboyIdsSet]);
+  [pagamentosValidosPeriodo, motoboyIdsSet]);
+  // Extrato de pagamentos do grupo aberto (equipe ou motoboys): lista individual
+  // com data, colaborador e valor — estornados ficam de fora.
+  const collabNomePorId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of (collaborators as any[])) {
+      if (c?.id) map.set(String(c.id), String(c.nome ?? "—"));
+    }
+    return map;
+  }, [collaborators]);
+  const pagExtratoLista = useMemo(() => {
+    if (!pagExtGrupo) return [];
+    const estornados = new Set(
+      pagamentosTodos.filter(p => p.acao === "estornou pagamento colaborador").map(p => String((p.detalhes as any)?.estorna_log_id ?? "")),
+    );
+    return pagamentosTodos
+      .filter(p => p.acao === "registrou pagamento colaborador" && !estornados.has(String(p.id)))
+      .filter(p => pagExtGrupo === "motoboys"
+        ? motoboyIdsSet.has(String(p.registro_id ?? ""))
+        : !motoboyIdsSet.has(String(p.registro_id ?? "")))
+      .map(p => ({
+        id: p.id,
+        collaboratorId: p.registro_id,
+        nome: collabNomePorId.get(String(p.registro_id ?? "")) ?? "Colaborador removido",
+        valor: Number((p.detalhes as any)?.valor) || 0,
+        data: p.created_at,
+      }));
+  }, [pagamentosTodos, pagExtGrupo, motoboyIdsSet, collabNomePorId]);
+  const pagExtratoTotal = useMemo(() => pagExtratoLista.reduce((s, p) => s + p.valor, 0), [pagExtratoLista]);
   const folhaTotal = useMemo(() => somaPagamentos(staffCollabs), [staffCollabs]);
   const totalPagamentos = folhaTotal;
   const totalSalarios = useMemo(() => somaSalarios(staffCollabs), [staffCollabs]);
@@ -1854,17 +1923,8 @@ function FinanceiroPage() {
       const pagamentoAtual = Number(collab.pagamento) || 0;
       const saldoAtual = Number(collab.saldo_devedor) || 0;
       const novoPagamento = pagamentoAtual + valor;
-      // Recalcula saldo com lógica de acúmulo: base = saldoAtual - oldShortfall
-      const oldShortfall = Math.max(0, salario - pagamentoAtual);
-      const newShortfall = Math.max(0, salario - novoPagamento);
-      const baseAcumulada = Math.max(0, saldoAtual - oldShortfall);
-      let novoSaldo: number;
-      if (novoPagamento > salario) {
-        const excedente = novoPagamento - salario;
-        novoSaldo = Math.max(0, saldoAtual - excedente);
-      } else {
-        novoSaldo = baseAcumulada + newShortfall;
-      }
+      // Recalcula saldo com lógica de acúmulo (mesma regra do estorno)
+      const novoSaldo = recalcSaldoFolha(salario, pagamentoAtual, saldoAtual, novoPagamento);
       // Se pagamento cobre tudo e ainda há saldo, abate proporcionalmente
       const { error } = await supabase
         .from("collaborators")
@@ -1877,8 +1937,43 @@ function FinanceiroPage() {
       qc.invalidateQueries({ queryKey: ["collaborators-salaries"] });
       qc.invalidateQueries({ queryKey: ["collaborators"] });
       qc.invalidateQueries({ queryKey: ["finance-pagamentos-periodo"] });
+      qc.invalidateQueries({ queryKey: ["finance-pagamentos-todos"] });
       toast.success("Pagamento registrado!");
       setAdiantarPagamento({});
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  // Exclui um pagamento da folha: reverte o acumulado do colaborador e registra
+  // um estorno (activity_logs só permite SELECT + INSERT — nada é apagado,
+  // a auditoria é preservada e o lançamento some das listas e dos totais).
+  const estornarPagamentoMut = useMutation({
+    mutationFn: async ({ logId, collaboratorId, valor }: { logId: string; collaboratorId: string | null; valor: number }) => {
+      let novoPagamento: number | null = null;
+      let novoSaldo: number | null = null;
+      if (collaboratorId) {
+        const collab = collaborators.find((c: any) => String(c.id) === String(collaboratorId));
+        if (!collab) throw new Error("Colaborador não encontrado");
+        const salario = Number((collab as any).salario) || 0;
+        const pagamentoAtual = Number((collab as any).pagamento) || 0;
+        const saldoAtual = Number((collab as any).saldo_devedor) || 0;
+        novoPagamento = Math.max(0, pagamentoAtual - valor);
+        novoSaldo = recalcSaldoFolha(salario, pagamentoAtual, saldoAtual, novoPagamento);
+        const { error } = await supabase
+          .from("collaborators")
+          .update({ pagamento: novoPagamento, saldo_devedor: novoSaldo } as any)
+          .eq("id", collaboratorId);
+        if (error) throw error;
+      }
+      await logActivity("financeiro", "estornou pagamento colaborador", collaboratorId, { estorna_log_id: logId, valor, novoPagamento, novoSaldo });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["collaborators-salaries"] });
+      qc.invalidateQueries({ queryKey: ["collaborators"] });
+      qc.invalidateQueries({ queryKey: ["finance-pagamentos-periodo"] });
+      qc.invalidateQueries({ queryKey: ["finance-pagamentos-todos"] });
+      toast.success("Pagamento excluído e valores estornados!");
+      setPagToDelete(null);
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -2323,6 +2418,11 @@ if (!unlocked) return null;
           tone={folhaSaldoExibido > 0 ? "warning" : "success"}
           hint={`Saldo devedor · Pagos no período: ${fmtMoney(folhaPagaPeriodoEquipe)} · Acumulado: ${fmtMoney(totalPagamentos)} · Salários/mês: ${fmtMoney(totalSalarios)} — clique para detalhes`}
           onClick={() => setShowFolhaDetail(true)}
+          action={
+            <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); setPagExtGrupo("equipe"); }} title="Ver extrato de pagamentos">
+              <ReceiptText className="mr-1 size-4" /> Extrato
+            </Button>
+          }
         />
         <KpiCard
           label="Folha dos motoboys"
@@ -2331,6 +2431,11 @@ if (!unlocked) return null;
           tone={folhaPagaPeriodoMotoboys > 0 ? "warning" : "success"}
           hint={motoboyCollabs.length > 0 ? `Pagos no período · ${motoboyCollabs.length} motoboy(s) · Acumulado: ${fmtMoney(motoboysPagamentos)} · Saldo devedor: ${fmtMoney(motoboysSaldoExibido)} — clique para detalhes` : "Nenhum motoboy marcado — marque na página Colaboradores"}
           onClick={() => setShowMotoboysDetail(true)}
+          action={
+            <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); setPagExtGrupo("motoboys"); }} title="Ver extrato de pagamentos">
+              <ReceiptText className="mr-1 size-4" /> Extrato
+            </Button>
+          }
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
         <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa no período — clique para detalhes`} onClick={() => setShowTaxasDetail(true)} />
@@ -3413,6 +3518,87 @@ if (!unlocked) return null;
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Extrato de pagamentos da folha — lista individual com data + excluir */}
+      <Dialog open={!!pagExtGrupo} onOpenChange={(o) => { if (!o) setPagExtGrupo(null); }}>
+        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <ReceiptText className="size-4 text-primary" /> Extrato de pagamentos — {pagExtGrupo === "motoboys" ? "Motoboys" : "Equipe"}
+            </DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Todos os pagamentos registrados individualmente • Total: <span className="font-semibold text-foreground">{fmtMoney(pagExtratoTotal)}</span>
+              {` • ${pagExtratoLista.length} pagamento(s)`}
+            </p>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto pr-1 -mr-1">
+            {pagExtratoLista.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/50 px-6 py-8 text-center">
+                <ReceiptText className="mx-auto size-8 text-muted-foreground/40" />
+                <p className="mt-2 text-sm font-medium">Nenhum pagamento registrado</p>
+                <p className="mt-1 text-xs text-muted-foreground">Use "Registrar pagamento" no detalhamento da folha para lançar pagamentos.</p>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead className="min-w-[130px]">Data do pagamento</TableHead>
+                      <TableHead className="min-w-[200px]">Colaborador</TableHead>
+                      <TableHead className="min-w-[130px] text-right">Valor</TableHead>
+                      <TableHead className="min-w-[100px] text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pagExtratoLista.map((p) => (
+                      <TableRow key={p.id}>
+                        <TableCell className="text-muted-foreground whitespace-nowrap">{fmtDateTime(p.data)}</TableCell>
+                        <TableCell className="font-medium">{p.nome}</TableCell>
+                        <TableCell className="text-right tabular font-medium text-success">+{fmtMoney(p.valor)}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setPagToDelete({ id: p.id, collaboratorId: p.collaboratorId, nome: p.nome, valor: p.valor, data: p.data })}
+                            title="Excluir pagamento (estorna os valores)"
+                          >
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+          <DialogFooter className="shrink-0 pt-2">
+            <Button variant="outline" onClick={() => setPagExtGrupo(null)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmar exclusão de pagamento da folha */}
+      <AlertDialog open={!!pagToDelete} onOpenChange={(o) => !o && setPagToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir pagamento?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pagToDelete ? `${fmtMoney(pagToDelete.valor)} • ${pagToDelete.nome} • ${fmtDateTime(pagToDelete.data)}.` : ""}
+              {" "}Os valores serão estornados do acumulado do colaborador e o lançamento sairá das listas e totais (registro de auditoria preservado). Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => pagToDelete && estornarPagamentoMut.mutate({ logId: pagToDelete.id, collaboratorId: pagToDelete.collaboratorId, valor: pagToDelete.valor })}
+              disabled={estornarPagamentoMut.isPending}
+            >
+              {estornarPagamentoMut.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : null} Excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Despesas com Insumos Detail Dialog */}
       <Dialog open={showInsumosDetail} onOpenChange={setShowInsumosDetail}>
