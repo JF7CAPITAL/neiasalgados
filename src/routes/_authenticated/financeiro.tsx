@@ -292,6 +292,12 @@ function FinanceiroPage() {
   const [showReceitaDetail, setShowReceitaDetail] = useState(false);
   const [showVencimentosDetail, setShowVencimentosDetail] = useState(false);
   const [showTaxasDetail, setShowTaxasDetail] = useState(false);
+  // --- Filtros do detalhamento de taxas (dia | semana | mês | personalizado + motoboy) ---
+  const [taxTipo, setTaxTipo] = useState<"dia" | "semana" | "mes" | "personalizado">("mes");
+  const [taxData, setTaxData] = useState(() => new Date().toISOString().split("T")[0]);
+  const [taxInicio, setTaxInicio] = useState(() => new Date().toISOString().split("T")[0].slice(0, 7) + "-01");
+  const [taxFim, setTaxFim] = useState(() => new Date().toISOString().split("T")[0]);
+  const [taxMotoboy, setTaxMotoboy] = useState<string>("todos");
   const [showMotoboysDetail, setShowMotoboysDetail] = useState(false);
   const [showPontoEquilibrioDetail, setShowPontoEquilibrioDetail] = useState(false);
   const [showMargemDetail, setShowMargemDetail] = useState(false);
@@ -349,7 +355,7 @@ function FinanceiroPage() {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders", "activity_logs"], ["finance-dre", "finance-access", "finance-pagamentos", "finance-pagamentos-todos", "collaborators", "purchase-orders", "anota-orders", "anota-orders-receita", "finance-extrato"]);
+  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders", "activity_logs"], ["finance-dre", "finance-access", "finance-pagamentos", "finance-pagamentos-todos", "collaborators", "purchase-orders", "anota-orders", "anota-orders-receita", "anota-orders-taxas-dialog", "finance-extrato"]);
 
   // Fetch orders count for ticket médio
   const { data: ordersCount = 0 } = useQuery({
@@ -1761,6 +1767,123 @@ function FinanceiroPage() {
     }
     return map;
   }, [collaborators]);
+  // --- Detalhamento de taxas com busca própria (dia | semana | mês | personalizado) ---
+  // Independe do período do DRE: busca os pedidos do intervalo selecionado no dialog.
+  const taxRange = useMemo(() => {
+    const hoje = diaLocalISO(new Date());
+    let ini: string, fim: string, limitado = false;
+    if (taxTipo === "dia") {
+      ini = dataValida(taxData) ? taxData : hoje;
+      fim = ini;
+    } else if (taxTipo === "semana") {
+      const base = dataValida(taxData) ? taxData : hoje;
+      const dow = new Date(base + "T12:00:00").getDay();
+      ini = somaDiasISO(base, -((dow + 6) % 7));
+      fim = somaDiasISO(ini, 6);
+    } else if (taxTipo === "mes") {
+      const base = dataValida(taxData) ? taxData : hoje;
+      const y = Number(base.slice(0, 4));
+      const m = Number(base.slice(5, 7));
+      ini = `${base.slice(0, 7)}-01`;
+      fim = `${base.slice(0, 7)}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    } else {
+      const a = dataValida(taxInicio) ? taxInicio : hoje;
+      const b = dataValida(taxFim) ? taxFim : hoje;
+      ini = a <= b ? a : b;
+      fim = a <= b ? b : a;
+      if (somaDiasISO(ini, 62) <= fim) {
+        fim = somaDiasISO(ini, 61);
+        limitado = true;
+      }
+    }
+    return { ini, fim, limitado };
+  }, [taxTipo, taxData, taxInicio, taxFim, diaLocalISO, somaDiasISO, dataValida]);
+  const { data: taxOrders = [] } = useQuery({
+    queryKey: ["anota-orders-taxas-dialog", taxRange.ini, taxRange.fim],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("anota_orders")
+        .select("id, total, check_status, pedido_em, imported_at, payload, numero, motoboy_id, external_order_id")
+        .in("check_status", [1, 2, 3])
+        .gte("imported_at", `${taxRange.ini}T00:00:00`)
+        .lte("imported_at", `${taxRange.fim}T23:59:59`)
+        .order("imported_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as { id: string; total: number; check_status: number; pedido_em: string | null; imported_at: string; payload: any; numero: string | null; motoboy_id: string | null; external_order_id: string }[];
+    },
+    enabled: unlocked && showTaxasDetail,
+  });
+  const taxPorPedido = useMemo(() => taxOrders.map(o => {
+    const taxaEntrega = extractDeliveryFee(o.payload);
+    const outras = extractOtherFees(o.payload);
+    return {
+      id: o.id,
+      numero: o.numero ?? o.external_order_id?.slice(-6) ?? o.id.slice(0, 8),
+      motoboyId: o.motoboy_id ?? null,
+      imported_at: o.imported_at,
+      total: Number(o.total) || 0,
+      taxaEntrega,
+      outrasTaxas: outras.total,
+      outrasItens: outras.itens,
+      totalTaxas: taxaEntrega + outras.total,
+    };
+  }), [taxOrders]);
+  // Opções de motoboy presentes no intervalo (para o filtro por nome)
+  const taxMotoboysOpts = useMemo(() => {
+    const ids = new Map<string, string>();
+    for (const t of taxPorPedido) {
+      if (!t.motoboyId || ids.has(t.motoboyId)) continue;
+      ids.set(t.motoboyId, motoboyNomePorId.get(t.motoboyId) ?? `Motoboy ${t.motoboyId.slice(0, 8)}`);
+    }
+    return [...ids.entries()]
+      .map(([id, nome]) => ({ id, nome }))
+      .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  }, [taxPorPedido, motoboyNomePorId]);
+  // Pedidos do intervalo com o filtro de motoboy aplicado (lista detalhada)
+  const taxFiltrados = useMemo(() => taxPorPedido.filter(t =>
+    taxMotoboy === "todos" ? true : taxMotoboy === "sem" ? !t.motoboyId : t.motoboyId === taxMotoboy,
+  ), [taxPorPedido, taxMotoboy]);
+  // Total de taxa de entrega por motoboy no intervalo (ignora o filtro de nome p/ comparar)
+  const taxPorMotoboy = useMemo(() => {
+    const map = new Map<string, { id: string | null; nome: string; qtd: number; total: number }>();
+    for (const t of taxPorPedido) {
+      if (t.taxaEntrega <= 0) continue;
+      const key = t.motoboyId ?? "sem";
+      const cur = map.get(key) ?? {
+        id: t.motoboyId,
+        nome: t.motoboyId ? (motoboyNomePorId.get(t.motoboyId) ?? `Motoboy ${t.motoboyId.slice(0, 8)}`) : "Sem motoboy",
+        qtd: 0,
+        total: 0,
+      };
+      cur.qtd += 1;
+      cur.total += t.taxaEntrega;
+      map.set(key, cur);
+    }
+    return [...map.values()].sort((a, b) => b.total - a.total);
+  }, [taxPorPedido, motoboyNomePorId]);
+  const taxTotais = useMemo(() => taxFiltrados.reduce(
+    (s, t) => ({
+      entrega: s.entrega + t.taxaEntrega,
+      outras: s.outras + t.outrasTaxas,
+      geral: s.geral + t.totalTaxas,
+      pedidos: s.pedidos + (t.totalTaxas > 0 ? 1 : 0),
+    }),
+    { entrega: 0, outras: 0, geral: 0, pedidos: 0 },
+  ), [taxFiltrados]);
+  const taxOutrasPorNome = useMemo(() => {
+    const map = new Map<string, { total: number; qtd: number }>();
+    for (const t of taxFiltrados) {
+      for (const item of t.outrasItens) {
+        const cur = map.get(item.nome) ?? { total: 0, qtd: 0 };
+        cur.total += item.valor;
+        cur.qtd += 1;
+        map.set(item.nome, cur);
+      }
+    }
+    return [...map.entries()]
+      .map(([nome, v]) => ({ nome, ...v }))
+      .sort((a, b) => b.total - a.total);
+  }, [taxFiltrados]);
   // Insumos a pagar = compras a prazo pendentes (parcela de vencimentos ligada a estoque)
   const insumosAPagarTotal = useMemo(() =>
     vencimentosPendentes.reduce((s: number, r: any) =>
@@ -3900,10 +4023,84 @@ if (!unlocked) return null;
         <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
           <DialogHeader className="shrink-0">
             <DialogTitle>Taxas de Entrega e Outras Taxas — Detalhamento</DialogTitle>
-            <p className="text-sm text-muted-foreground">Taxas dos pedidos Anota AI no período {fmtDate(periodoInicio)} a {fmtDate(periodoFim)} • Entrega {fmtMoney(taxasEntregaTotal)} ({pedidosComTaxaEntrega} pedido(s)) • Outras {fmtMoney(outrasTaxasTotal)} ({pedidosComOutrasTaxas} pedido(s)) • Total {fmtMoney(taxasTotalGeral)}</p>
+            <p className="text-sm text-muted-foreground">
+              {taxTipo === "dia" && `Taxas de ${fmtDate(taxRange.ini)}`}
+              {taxTipo === "semana" && `Semana de ${fmtDate(taxRange.ini)} a ${fmtDate(taxRange.fim)}`}
+              {taxTipo === "mes" && `Mês de ${new Date(taxRange.ini + "T12:00:00").toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}`}
+              {taxTipo === "personalizado" && `De ${fmtDate(taxRange.ini)} a ${fmtDate(taxRange.fim)}`}
+              {` • Entrega ${fmtMoney(taxTotais.entrega)} • Outras ${fmtMoney(taxTotais.outras)} • Total ${fmtMoney(taxTotais.geral)}`}
+              {taxRange.limitado ? " • intervalo limitado a 62 dias" : ""}
+            </p>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
-            {outrasTaxasPorNome.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex rounded-lg border border-border p-1">
+                {([
+                  { v: "dia", label: "Dia" },
+                  { v: "semana", label: "Semana" },
+                  { v: "mes", label: "Mês" },
+                  { v: "personalizado", label: "Personalizado" },
+                ] as const).map((t) => (
+                  <button
+                    key={t.v}
+                    onClick={() => setTaxTipo(t.v)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${taxTipo === t.v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              {taxTipo === "personalizado" ? (
+                <>
+                  <Input type="date" value={taxInicio} onChange={(e) => setTaxInicio(e.target.value)} className="w-auto" title="Início" />
+                  <span className="text-xs text-muted-foreground">até</span>
+                  <Input type="date" value={taxFim} onChange={(e) => setTaxFim(e.target.value)} className="w-auto" title="Fim" />
+                </>
+              ) : taxTipo === "mes" ? (
+                <Input type="month" value={taxData.slice(0, 7)} onChange={(e) => { if (/^\d{4}-\d{2}$/.test(e.target.value)) setTaxData(`${e.target.value}-01`); }} className="w-auto" title="Mês" />
+              ) : (
+                <Input type="date" value={taxData} onChange={(e) => setTaxData(e.target.value)} className="w-auto" title={taxTipo === "dia" ? "Dia" : "Qualquer dia da semana"} />
+              )}
+              <Select value={taxMotoboy} onValueChange={setTaxMotoboy}>
+                <SelectTrigger className="w-48" title="Filtrar por motoboy"><SelectValue placeholder="Motoboy" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todos os motoboys</SelectItem>
+                  <SelectItem value="sem">Sem motoboy</SelectItem>
+                  {taxMotoboysOpts.map((m) => <SelectItem key={m.id} value={m.id}>{m.nome}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="min-w-[200px]">Motoboy</TableHead>
+                    <TableHead className="text-center">Pedidos com taxa</TableHead>
+                    <TableHead className="text-right">Total taxa de entrega</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {taxPorMotoboy.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center text-sm text-muted-foreground">Sem taxas de entrega no intervalo.</TableCell>
+                    </TableRow>
+                  ) : (
+                    taxPorMotoboy.map((m) => (
+                      <TableRow key={m.id ?? "sem"} className={taxMotoboy !== "todos" && (taxMotoboy === m.id || (taxMotoboy === "sem" && m.id === null)) ? "bg-primary/5" : ""}>
+                        <TableCell className="font-medium">
+                          <Badge variant="outline" className="text-xs border-info/30 text-info">{m.nome}</Badge>
+                        </TableCell>
+                        <TableCell className="text-center tabular">{m.qtd}</TableCell>
+                        <TableCell className="text-right tabular font-semibold">{fmtMoney(m.total)}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            {taxOutrasPorNome.length > 0 && (
               <div className="overflow-x-auto rounded-xl border border-border">
                 <Table>
                   <TableHeader>
@@ -3914,7 +4111,7 @@ if (!unlocked) return null;
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {outrasTaxasPorNome.map((t) => (
+                    {taxOutrasPorNome.map((t) => (
                       <TableRow key={t.nome}>
                         <TableCell className="font-medium">{t.nome}</TableCell>
                         <TableCell className="text-center tabular">{t.qtd}</TableCell>
@@ -3925,11 +4122,11 @@ if (!unlocked) return null;
                 </Table>
               </div>
             )}
-            {taxasPorPedido.filter(t => t.totalTaxas > 0).length === 0 ? (
+            {taxFiltrados.filter(t => t.totalTaxas > 0).length === 0 ? (
               <div className="py-12 text-center">
                 <ReceiptText className="mx-auto size-10 text-muted-foreground/40" />
-                <p className="mt-3 text-sm font-medium">Nenhuma taxa nos pedidos do período</p>
-                <p className="mt-1 text-xs text-muted-foreground">Pedidos com taxa de entrega ou taxas adicionais (ex.: embalagem, serviço) aparecerão aqui detalhados por pedido.</p>
+                <p className="mt-3 text-sm font-medium">Nenhuma taxa no intervalo selecionado</p>
+                <p className="mt-1 text-xs text-muted-foreground">Ajuste o período ou o filtro de motoboy. Pedidos com taxa de entrega ou taxas adicionais aparecerão aqui detalhados por pedido.</p>
               </div>
             ) : (
               <div className="overflow-x-auto rounded-xl border border-border">
@@ -3946,7 +4143,7 @@ if (!unlocked) return null;
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {taxasPorPedido.filter(t => t.totalTaxas > 0).map((t) => (
+                    {taxFiltrados.filter(t => t.totalTaxas > 0).map((t) => (
                       <TableRow key={t.id}>
                         <TableCell className="tabular font-medium">#{t.numero}</TableCell>
                         <TableCell>{t.motoboyId && motoboyNomePorId.get(t.motoboyId) ? <Badge variant="outline" className="text-xs border-info/30 text-info">{motoboyNomePorId.get(t.motoboyId)}</Badge> : <span className="text-xs text-muted-foreground">—</span>}</TableCell>
@@ -3964,15 +4161,15 @@ if (!unlocked) return null;
             <div className="grid grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg">
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Taxas de entrega</p>
-                <p className="font-display text-xl font-semibold">{fmtMoney(taxasEntregaTotal)}</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(taxTotais.entrega)}</p>
               </div>
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Outras taxas</p>
-                <p className="font-display text-xl font-semibold">{fmtMoney(outrasTaxasTotal)}</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(taxTotais.outras)}</p>
               </div>
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Total em taxas</p>
-                <p className="font-display text-xl font-semibold">{fmtMoney(taxasTotalGeral)}</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(taxTotais.geral)}</p>
               </div>
             </div>
           </div>
