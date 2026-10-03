@@ -336,6 +336,14 @@ function FinanceiroPage() {
   // --- Extrato de pagamentos da folha (equipe ou motoboys) ---
   const [pagExtGrupo, setPagExtGrupo] = useState<"equipe" | "motoboys" | null>(null);
   const [pagToDelete, setPagToDelete] = useState<{ id: string; collaboratorId: string | null; nome: string; valor: number; data: string } | null>(null);
+  const [pagExtTipo, setPagExtTipo] = useState<"dia" | "semana" | "mes" | "personalizado">("mes");
+  const [pagExtData, setPagExtData] = useState(() => new Date().toISOString().split("T")[0]);
+  const [pagExtInicio, setPagExtInicio] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 29);
+    return d.toISOString().split("T")[0];
+  });
+  const [pagExtFim, setPagExtFim] = useState(() => new Date().toISOString().split("T")[0]);
 
   const toggleSection = (key: string) => {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
@@ -1316,6 +1324,36 @@ function FinanceiroPage() {
     .filter(p => motoboyIdsSet.has(String(p.registro_id ?? "")))
     .reduce((s, p) => s + (Number((p.detalhes as any)?.valor) || 0), 0),
   [pagamentosValidosPeriodo, motoboyIdsSet]);
+  // Intervalo do extrato da folha (dia | semana seg-dom | mês | personalizado, máx. 62 dias)
+  const pagExtRange = useMemo(() => {
+    const hoje = diaLocalISO(new Date());
+    let ini: string, fim: string, limitado = false;
+    if (pagExtTipo === "dia") {
+      ini = dataValida(pagExtData) ? pagExtData : hoje;
+      fim = ini;
+    } else if (pagExtTipo === "semana") {
+      const base = dataValida(pagExtData) ? pagExtData : hoje;
+      const dow = new Date(base + "T12:00:00").getDay();
+      ini = somaDiasISO(base, -((dow + 6) % 7));
+      fim = somaDiasISO(ini, 6);
+    } else if (pagExtTipo === "mes") {
+      const base = dataValida(pagExtData) ? pagExtData : hoje;
+      const y = Number(base.slice(0, 4));
+      const m = Number(base.slice(5, 7));
+      ini = `${base.slice(0, 7)}-01`;
+      fim = `${base.slice(0, 7)}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    } else {
+      const a = dataValida(pagExtInicio) ? pagExtInicio : hoje;
+      const b = dataValida(pagExtFim) ? pagExtFim : hoje;
+      ini = a <= b ? a : b;
+      fim = a <= b ? b : a;
+      if (somaDiasISO(ini, 62) <= fim) {
+        fim = somaDiasISO(ini, 61);
+        limitado = true;
+      }
+    }
+    return { ini, fim, limitado };
+  }, [pagExtTipo, pagExtData, pagExtInicio, pagExtFim, diaLocalISO, somaDiasISO, dataValida]);
   // Extrato de pagamentos do grupo aberto (equipe ou motoboys): lista individual
   // com data, colaborador e valor — estornados ficam de fora.
   const collabNomePorId = useMemo(() => {
@@ -1332,6 +1370,10 @@ function FinanceiroPage() {
     );
     return pagamentosTodos
       .filter(p => p.acao === "registrou pagamento colaborador" && !estornados.has(String(p.id)))
+      .filter(p => {
+        const dia = diaLocalISO(new Date(p.created_at));
+        return dia >= pagExtRange.ini && dia <= pagExtRange.fim;
+      })
       .filter(p => pagExtGrupo === "motoboys"
         ? motoboyIdsSet.has(String(p.registro_id ?? ""))
         : !motoboyIdsSet.has(String(p.registro_id ?? "")))
@@ -1342,7 +1384,7 @@ function FinanceiroPage() {
         valor: Number((p.detalhes as any)?.valor) || 0,
         data: p.created_at,
       }));
-  }, [pagamentosTodos, pagExtGrupo, motoboyIdsSet, collabNomePorId]);
+  }, [pagamentosTodos, pagExtGrupo, pagExtRange, motoboyIdsSet, collabNomePorId, diaLocalISO]);
   const pagExtratoTotal = useMemo(() => pagExtratoLista.reduce((s, p) => s + p.valor, 0), [pagExtratoLista]);
   const folhaTotal = useMemo(() => somaPagamentos(staffCollabs), [staffCollabs]);
   const totalPagamentos = folhaTotal;
@@ -3527,10 +3569,46 @@ if (!unlocked) return null;
               <ReceiptText className="size-4 text-primary" /> Extrato de pagamentos — {pagExtGrupo === "motoboys" ? "Motoboys" : "Equipe"}
             </DialogTitle>
             <p className="text-sm text-muted-foreground">
-              Todos os pagamentos registrados individualmente • Total: <span className="font-semibold text-foreground">{fmtMoney(pagExtratoTotal)}</span>
+              Pagamentos registrados individualmente • Total no intervalo: <span className="font-semibold text-foreground">{fmtMoney(pagExtratoTotal)}</span>
               {` • ${pagExtratoLista.length} pagamento(s)`}
+              {pagExtRange.limitado ? " • intervalo limitado a 62 dias" : ""}
             </p>
           </DialogHeader>
+          <div className="flex flex-wrap items-center gap-2 px-1">
+            <div className="flex rounded-lg border border-border p-1">
+              {([
+                { v: "dia", label: "Dia" },
+                { v: "semana", label: "Semana" },
+                { v: "mes", label: "Mês" },
+                { v: "personalizado", label: "Personalizado" },
+              ] as const).map((t) => (
+                <button
+                  key={t.v}
+                  onClick={() => setPagExtTipo(t.v)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${pagExtTipo === t.v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {pagExtTipo === "personalizado" ? (
+              <>
+                <Input type="date" value={pagExtInicio} onChange={(e) => setPagExtInicio(e.target.value)} className="w-auto" title="Início" />
+                <span className="text-xs text-muted-foreground">até</span>
+                <Input type="date" value={pagExtFim} onChange={(e) => setPagExtFim(e.target.value)} className="w-auto" title="Fim" />
+              </>
+            ) : pagExtTipo === "mes" ? (
+              <Input type="month" value={pagExtData.slice(0, 7)} onChange={(e) => { if (/^\d{4}-\d{2}$/.test(e.target.value)) setPagExtData(`${e.target.value}-01`); }} className="w-auto" title="Mês" />
+            ) : (
+              <Input type="date" value={pagExtData} onChange={(e) => setPagExtData(e.target.value)} className="w-auto" title={pagExtTipo === "dia" ? "Dia" : "Qualquer dia da semana"} />
+            )}
+          </div>
+          <p className="px-1 text-xs text-muted-foreground">
+            {pagExtTipo === "dia" && `Pagamentos de ${fmtDate(pagExtRange.ini)}`}
+            {pagExtTipo === "semana" && `Semana de ${fmtDate(pagExtRange.ini)} a ${fmtDate(pagExtRange.fim)}`}
+            {pagExtTipo === "mes" && `Mês de ${new Date(pagExtRange.ini + "T12:00:00").toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}`}
+            {pagExtTipo === "personalizado" && `De ${fmtDate(pagExtRange.ini)} a ${fmtDate(pagExtRange.fim)}`}
+          </p>
           <div className="flex-1 overflow-y-auto pr-1 -mr-1">
             {pagExtratoLista.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border bg-card/50 px-6 py-8 text-center">

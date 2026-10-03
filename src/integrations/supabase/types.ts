@@ -12,6 +12,31 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "14.5"
   }
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
   public: {
     Tables: {
       activity_logs: {
@@ -242,6 +267,56 @@ export type Database = {
           },
         ]
       }
+      collaborator_documents: {
+        Row: {
+          arquivo_url: string
+          collaborator_id: string
+          created_at: string
+          created_by: string | null
+          id: string
+          mime_type: string | null
+          nome: string
+          observacoes: string | null
+          tamanho_bytes: number | null
+          tipo: string
+          updated_at: string
+        }
+        Insert: {
+          arquivo_url: string
+          collaborator_id: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          mime_type?: string | null
+          nome: string
+          observacoes?: string | null
+          tamanho_bytes?: number | null
+          tipo: string
+          updated_at?: string
+        }
+        Update: {
+          arquivo_url?: string
+          collaborator_id?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          mime_type?: string | null
+          nome?: string
+          observacoes?: string | null
+          tamanho_bytes?: number | null
+          tipo?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "collaborator_documents_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       collaborators: {
         Row: {
           banco_horas: number | null
@@ -258,6 +333,8 @@ export type Database = {
           foto_url: string | null
           horario: string | null
           id: string
+          inclui_ponto_equilibrio: boolean
+          is_motoboy: boolean
           nome: string
           observacoes: string | null
           pagamento: number | null
@@ -284,6 +361,8 @@ export type Database = {
           foto_url?: string | null
           horario?: string | null
           id?: string
+          inclui_ponto_equilibrio?: boolean
+          is_motoboy?: boolean
           nome: string
           observacoes?: string | null
           pagamento?: number | null
@@ -310,6 +389,8 @@ export type Database = {
           foto_url?: string | null
           horario?: string | null
           id?: string
+          inclui_ponto_equilibrio?: boolean
+          is_motoboy?: boolean
           nome?: string
           observacoes?: string | null
           pagamento?: number | null
@@ -322,56 +403,6 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
-      }
-      collaborator_documents: {
-        Row: {
-          id: string
-          collaborator_id: string
-          nome: string
-          tipo: string
-          arquivo_url: string
-          tamanho_bytes: number | null
-          mime_type: string | null
-          observacoes: string | null
-          created_at: string
-          updated_at: string
-          created_by: string | null
-        }
-        Insert: {
-          id?: string
-          collaborator_id: string
-          nome: string
-          tipo: string
-          arquivo_url: string
-          tamanho_bytes?: number | null
-          mime_type?: string | null
-          observacoes?: string | null
-          created_at?: string
-          updated_at?: string
-          created_by?: string | null
-        }
-        Update: {
-          id?: string
-          collaborator_id?: string
-          nome?: string
-          tipo?: string
-          arquivo_url?: string
-          tamanho_bytes?: number | null
-          mime_type?: string | null
-          observacoes?: string | null
-          created_at?: string
-          updated_at?: string
-          created_by?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "collaborator_documents_collaborator_id_fkey"
-            columns: ["collaborator_id"]
-            isOneToOne: false
-            referencedRelation: "collaborators"
-            referencedColumns: ["id"]
-          },
-        ]
       }
       filling_movements: {
         Row: {
@@ -507,6 +538,120 @@ export type Database = {
           quantidade_atual?: number
           unidade?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      finance_access: {
+        Row: {
+          created_at: string
+          id: string
+          password_hash: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          password_hash: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          password_hash?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
+      finance_accounts: {
+        Row: {
+          cor: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          nome: string
+          saldo: number
+          updated_at: string
+        }
+        Insert: {
+          cor?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          nome: string
+          saldo?: number
+          updated_at?: string
+        }
+        Update: {
+          cor?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          nome?: string
+          saldo?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      finance_dre_entries: {
+        Row: {
+          categoria: string
+          competencia: string
+          created_at: string
+          created_by: string | null
+          data_pagamento: string | null
+          descricao: string | null
+          id: string
+          inclui_ponto_equilibrio: boolean
+          pago: boolean
+          recorrencia_grupo_id: string | null
+          recorrencia_quantidade: number | null
+          recorrencia_tipo: string | null
+          recorrente: boolean
+          tipo: Database["public"]["Enums"]["dre_entry_type"]
+          updated_at: string
+          valor: number
+          vencimento: string | null
+        }
+        Insert: {
+          categoria: string
+          competencia?: string
+          created_at?: string
+          created_by?: string | null
+          data_pagamento?: string | null
+          descricao?: string | null
+          id?: string
+          inclui_ponto_equilibrio?: boolean
+          pago?: boolean
+          recorrencia_grupo_id?: string | null
+          recorrencia_quantidade?: number | null
+          recorrencia_tipo?: string | null
+          recorrente?: boolean
+          tipo: Database["public"]["Enums"]["dre_entry_type"]
+          updated_at?: string
+          valor?: number
+          vencimento?: string | null
+        }
+        Update: {
+          categoria?: string
+          competencia?: string
+          created_at?: string
+          created_by?: string | null
+          data_pagamento?: string | null
+          descricao?: string | null
+          id?: string
+          inclui_ponto_equilibrio?: boolean
+          pago?: boolean
+          recorrencia_grupo_id?: string | null
+          recorrencia_quantidade?: number | null
+          recorrencia_tipo?: string | null
+          recorrente?: boolean
+          tipo?: Database["public"]["Enums"]["dre_entry_type"]
+          updated_at?: string
+          valor?: number
+          vencimento?: string | null
         }
         Relationships: []
       }
@@ -1342,10 +1487,19 @@ export type Database = {
         Args: { p_order: string; p_user?: string }
         Returns: undefined
       }
-      cleanup_whatsapp_messages: {
-        Args: Record<PropertyKey, never>
-        Returns: undefined
+      calc_custo_insumos: {
+        Args: { p_fim?: string; p_inicio?: string }
+        Returns: number
       }
+      calc_folha_pagamento: {
+        Args: { p_fim?: string; p_inicio?: string }
+        Returns: number
+      }
+      calc_receita_bruta: {
+        Args: { p_fim?: string; p_inicio?: string }
+        Returns: number
+      }
+      cleanup_whatsapp_messages: { Args: never; Returns: undefined }
       complete_production_order: {
         Args: {
           p_obs?: string
@@ -1356,6 +1510,16 @@ export type Database = {
         }
         Returns: undefined
       }
+      get_dre_data: {
+        Args: { p_fim: string; p_inicio: string }
+        Returns: {
+          categoria: string
+          descricao: string
+          fonte: string
+          secao: string
+          valor: number
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -1363,19 +1527,36 @@ export type Database = {
         }
         Returns: boolean
       }
-      is_whatsapp_paused: {
-        Args: { p_phone: string }
-        Returns: boolean
-      }
-      receive_purchase_order: {
-        Args: {
-          p_order: string
-          p_preco?: number
-          p_quantidade: number
-          p_user?: string
-        }
+      is_whatsapp_paused: { Args: { p_phone: string }; Returns: boolean }
+      pay_dre_entry: {
+        Args: { p_entry: string; p_user?: string }
         Returns: undefined
       }
+      pay_purchase_order: {
+        Args: { p_order: string; p_user?: string }
+        Returns: undefined
+      }
+      receive_purchase_order:
+        | {
+            Args: {
+              p_order: string
+              p_pago?: boolean
+              p_preco?: number
+              p_quantidade: number
+              p_user?: string
+              p_vencimento?: string
+            }
+            Returns: undefined
+          }
+        | {
+            Args: {
+              p_order: string
+              p_preco?: number
+              p_quantidade: number
+              p_user?: string
+            }
+            Returns: undefined
+          }
       revert_anota_order_stock: {
         Args: { p_order: string; p_user?: string }
         Returns: undefined
@@ -1394,6 +1575,14 @@ export type Database = {
         | "financeiro"
         | "rh"
         | "operacional"
+      dre_entry_type:
+        | "receita"
+        | "custo_direto"
+        | "despesa_operacional"
+        | "despesa_administrativa"
+        | "despesa_financeira"
+        | "outros"
+        | "custo_variavel"
       massa_tipo: "frito" | "assado"
       movement_type: "entrada" | "saida" | "ajuste" | "perda" | "inventario"
       order_kind: "producao" | "recheio" | "compra"
@@ -1414,12 +1603,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1443,11 +1632,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1468,11 +1657,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1493,11 +1682,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1510,11 +1699,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1524,6 +1713,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {
       app_role: [
@@ -1534,6 +1726,15 @@ export const Constants = {
         "financeiro",
         "rh",
         "operacional",
+      ],
+      dre_entry_type: [
+        "receita",
+        "custo_direto",
+        "despesa_operacional",
+        "despesa_administrativa",
+        "despesa_financeira",
+        "outros",
+        "custo_variavel",
       ],
       massa_tipo: ["frito", "assado"],
       movement_type: ["entrada", "saida", "ajuste", "perda", "inventario"],
