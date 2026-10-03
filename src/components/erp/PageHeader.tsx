@@ -39,7 +39,6 @@ export function KpiCard({
   onClick,
   printIcon,
   action,
-  footer,
 }: {
   label: string;
   value: ReactNode;
@@ -49,7 +48,6 @@ export function KpiCard({
   onClick?: () => void;
   printIcon?: ReactNode;
   action?: ReactNode;
-  footer?: ReactNode;
 }) {
   const tones: Record<string, string> = {
     default: "text-primary bg-primary/15",
@@ -85,7 +83,6 @@ export function KpiCard({
       </div>
       <div className="mt-3 font-display text-3xl font-semibold tabular truncate">{value}</div>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
-      {footer && <div className="mt-3">{footer}</div>}
     </div>
   );
 }
