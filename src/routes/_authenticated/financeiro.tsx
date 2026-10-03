@@ -310,12 +310,21 @@ function FinanceiroPage() {
     "OUTROS": true,
     "RESULTADO LÍQUIDO": true,
   });
+  // --- Relatório Financeiro (entradas reais na conta dia a dia) ---
+  const [relTipo, setRelTipo] = useState<"dia" | "semana" | "mes" | "personalizado">("semana");
+  const [relData, setRelData] = useState(() => new Date().toISOString().split("T")[0]);
+  const [relInicio, setRelInicio] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return d.toISOString().split("T")[0];
+  });
+  const [relFim, setRelFim] = useState(() => new Date().toISOString().split("T")[0]);
 
   const toggleSection = (key: string) => {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders", "activity_logs"], ["finance-dre", "finance-access", "finance-pagamentos", "collaborators", "purchase-orders", "anota-orders"]);
+  useRealtime(["finance_dre_entries", "finance_access", "collaborators", "purchase_orders", "anota_orders", "activity_logs"], ["finance-dre", "finance-access", "finance-pagamentos", "collaborators", "purchase-orders", "anota-orders", "anota-orders-receita", "anota-orders-d1-hoje", "anota-orders-relatorio"]);
 
   // Fetch orders count for ticket médio
   const { data: ordersCount = 0 } = useQuery({
@@ -1086,6 +1095,165 @@ function FinanceiroPage() {
     return sc.includes('ifood') || from.includes('ifood') || type.includes('ifood');
   }, []);
 
+  // --- Anota AI D+1 a cair HOJE (independe do período filtrado) ---
+  // O Anota AI repassa em D+1: o que cai na conta hoje = vendas de ontem.
+  // Líquido = total − "outras taxas" do payload; pedidos iFood são desconsiderados.
+  // Data da venda = pedido_em ?? imported_at (dia local).
+  const diaLocalISO = useCallback((d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }, []);
+  const ontemISO = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return diaLocalISO(d);
+  }, [diaLocalISO]);
+  const { data: anotaD1HojeOrders = [] } = useQuery({
+    queryKey: ["anota-orders-d1-hoje", ontemISO],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("anota_orders")
+        .select("id, total, check_status, pedido_em, imported_at, payload")
+        .in("check_status", [1, 2, 3])
+        .gte("imported_at", `${ontemISO}T00:00:00`)
+        .lte("imported_at", `${ontemISO}T23:59:59`)
+        .order("imported_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as { id: string; total: number; check_status: number; pedido_em: string | null; imported_at: string; payload: any }[];
+    },
+    enabled: unlocked,
+  });
+  // Filtra pela data real da venda (pedido_em ?? imported_at) = ontem, só Anota direto
+  const d1Hoje = useMemo(() => {
+    const vendasOntem = anotaD1HojeOrders.filter((o) => {
+      if (isIfoodOrder(o)) return false;
+      const ref = (o as any).pedido_em ?? (o as any).imported_at;
+      if (!ref) return false;
+      return diaLocalISO(new Date(ref)) === ontemISO;
+    });
+    const bruto = vendasOntem.reduce((s, o) => s + (Number((o as any).total) || 0), 0);
+    const outrasTaxas = vendasOntem.reduce((s, o) => s + extractOtherFees((o as any).payload).total, 0);
+    return { qtd: vendasOntem.length, bruto, outrasTaxas, liquido: Math.max(0, bruto - outrasTaxas) };
+  }, [anotaD1HojeOrders, isIfoodOrder, diaLocalISO, ontemISO]);
+
+  // --- Relatório Financeiro: dia a dia do que entra na conta ---
+  // Anota AI direto cai em D+1 (líquido de "outras taxas", sem iFood);
+  // iFood paga o acumulado da semana na quarta-feira (vendas de D-7 a D-1).
+  const somaDiasISO = useCallback((iso: string, dias: number) => {
+    const d = new Date(iso + "T12:00:00");
+    d.setDate(d.getDate() + dias);
+    return diaLocalISO(d);
+  }, [diaLocalISO]);
+  // Intervalo visível conforme o filtro (dia | semana seg-dom | mês | personalizado, máx. 62 dias)
+  const relRange = useMemo(() => {
+    const hoje = diaLocalISO(new Date());
+    let ini: string, fim: string, limitado = false;
+    if (relTipo === "dia") {
+      ini = dataValida(relData) ? relData : hoje;
+      fim = ini;
+    } else if (relTipo === "semana") {
+      const base = dataValida(relData) ? relData : hoje;
+      const dow = new Date(base + "T12:00:00").getDay();
+      ini = somaDiasISO(base, -((dow + 6) % 7));
+      fim = somaDiasISO(ini, 6);
+    } else if (relTipo === "mes") {
+      const base = dataValida(relData) ? relData : hoje;
+      const y = Number(base.slice(0, 4));
+      const m = Number(base.slice(5, 7));
+      ini = `${base.slice(0, 7)}-01`;
+      fim = `${base.slice(0, 7)}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    } else {
+      const a = dataValida(relInicio) ? relInicio : hoje;
+      const b = dataValida(relFim) ? relFim : hoje;
+      ini = a <= b ? a : b;
+      fim = a <= b ? b : a;
+      if (somaDiasISO(ini, 62) <= fim) {
+        fim = somaDiasISO(ini, 61);
+        limitado = true;
+      }
+    }
+    return { ini, fim, limitado };
+  }, [relTipo, relData, relInicio, relFim, diaLocalISO, somaDiasISO, dataValida]);
+  // Janela de busca: 8 dias antes (acumulado iFood da 1ª quarta + D-1 do Anota) até o fim
+  const relFetchIni = useMemo(() => somaDiasISO(relRange.ini, -8), [relRange, somaDiasISO]);
+  const { data: relOrders = [] } = useQuery({
+    queryKey: ["anota-orders-relatorio", relFetchIni, relRange.fim],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("anota_orders")
+        .select("id, total, check_status, pedido_em, imported_at, payload")
+        .in("check_status", [1, 2, 3])
+        .gte("imported_at", `${relFetchIni}T00:00:00`)
+        .lte("imported_at", `${relRange.fim}T23:59:59`)
+        .order("imported_at", { ascending: true });
+      if (error) throw error;
+      return (data ?? []) as { id: string; total: number; check_status: number; pedido_em: string | null; imported_at: string; payload: any }[];
+    },
+    enabled: unlocked,
+  });
+  type RelDia = { data: string; anotaQtd: number; anota: number; ifoodQtd: number; ifood: number; total: number; previsto: boolean; isQuarta: boolean };
+  const relDias = useMemo((): RelDia[] => {
+    const hoje = diaLocalISO(new Date());
+    const anotaPorDia = new Map<string, { total: number; taxas: number; qtd: number }>();
+    const ifoodPorDia = new Map<string, { total: number; qtd: number }>();
+    for (const o of relOrders) {
+      const ref = (o as any).pedido_em ?? (o as any).imported_at;
+      if (!ref) continue;
+      const diaVenda = diaLocalISO(new Date(ref));
+      if (diaVenda < relFetchIni || diaVenda > relRange.fim) continue;
+      if (isIfoodOrder(o)) {
+        const cur = ifoodPorDia.get(diaVenda) ?? { total: 0, qtd: 0 };
+        cur.total += Number((o as any).total) || 0;
+        cur.qtd += 1;
+        ifoodPorDia.set(diaVenda, cur);
+      } else {
+        const cur = anotaPorDia.get(diaVenda) ?? { total: 0, taxas: 0, qtd: 0 };
+        cur.total += Number((o as any).total) || 0;
+        cur.taxas += extractOtherFees((o as any).payload).total;
+        cur.qtd += 1;
+        anotaPorDia.set(diaVenda, cur);
+      }
+    }
+    const dias: RelDia[] = [];
+    for (let d = relRange.ini; d <= relRange.fim; d = somaDiasISO(d, 1)) {
+      const vendaAnota = anotaPorDia.get(somaDiasISO(d, -1));
+      const anota = Math.max(0, (vendaAnota?.total ?? 0) - (vendaAnota?.taxas ?? 0));
+      const isQuarta = new Date(d + "T12:00:00").getDay() === 3;
+      let ifood = 0, ifoodQtd = 0;
+      if (isQuarta) {
+        for (let k = 7; k >= 1; k--) {
+          const diaVenda = somaDiasISO(d, -k);
+          if (diaVenda > hoje) continue; // quarta futura: acumula só até agora
+          const v = ifoodPorDia.get(diaVenda);
+          if (v) { ifood += v.total; ifoodQtd += v.qtd; }
+        }
+      }
+      dias.push({
+        data: d,
+        anotaQtd: vendaAnota?.qtd ?? 0,
+        anota,
+        ifoodQtd,
+        ifood,
+        total: anota + ifood,
+        previsto: d > hoje,
+        isQuarta,
+      });
+    }
+    return dias;
+  }, [relOrders, relRange, relFetchIni, isIfoodOrder, diaLocalISO, somaDiasISO]);
+  const relTotais = useMemo(() => relDias.reduce(
+    (s, d) => ({
+      anota: s.anota + d.anota,
+      ifood: s.ifood + d.ifood,
+      total: s.total + d.total,
+      recebido: s.recebido + (d.previsto ? 0 : d.total),
+      previsto: s.previsto + (d.previsto ? d.total : 0),
+    }),
+    { anota: 0, ifood: 0, total: 0, recebido: 0, previsto: 0 },
+  ), [relDias]);
+
   // Calculate iFood weekly accumulation (Wednesdays)
   const getProximasQuartas = (inicio: string, fim: string): string[] => {
     const quartas: string[] = [];
@@ -1479,15 +1647,8 @@ function FinanceiroPage() {
   const anotaDirectOrders = useMemo(() => anotaOrders.filter(o => !isIfoodOrder(o)), [anotaOrders, isIfoodOrder]);
   const ifoodTotal = useMemo(() => ifoodOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [ifoodOrders]);
   const anotaDirectTotal = useMemo(() => anotaDirectOrders.reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaDirectOrders]);
-  // Anota AI D+1: apenas vendas diretas Anota (não iFood) que caem no próximo dia útil
-  const anotaD1 = useMemo(() => anotaDirectOrders
-    .filter(o => {
-      const imported = new Date(o.imported_at);
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return imported <= tomorrow;
-    })
-    .reduce((s, o) => s + (Number(o.total) || 0), 0), [anotaDirectOrders]);
+  // Anota AI D+1 a cair hoje (líquido de "outras taxas", sem iFood) — mesma fonte do mini card da Receita Bruta
+  const anotaD1 = d1Hoje.liquido;
   // Valores por quarta-feira para iFood (janela: quarta 00:01 até próxima quarta 00:01)
   const ifoodQuartasValores = useMemo(() => {
     return quartasFeiras.map(q => {
@@ -2203,7 +2364,29 @@ if (!unlocked) return null;
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4">
-        <KpiCard label="Receita Bruta" value={fmtMoney(kpis.receita)} icon={TrendingUp} tone="success" hint={`Anota direto: ${fmtMoney(anotaDirectTotal)} | iFood: ${fmtMoney(ifoodTotal)}`} onClick={() => setShowReceitaDetail(true)} />
+        <KpiCard
+          label="Receita Bruta"
+          value={fmtMoney(kpis.receita)}
+          icon={TrendingUp}
+          tone="success"
+          hint={`Anota direto: ${fmtMoney(anotaDirectTotal)} | iFood: ${fmtMoney(ifoodTotal)}`}
+          onClick={() => setShowReceitaDetail(true)}
+          footer={
+            <div
+              className="rounded-lg border border-success/25 bg-success/10 px-3 py-2"
+              onClick={(e) => { e.stopPropagation(); setShowReceitaDetail(true); }}
+              title={`Vendas Anota direto de ${fmtDate(ontemISO)} (D+1, sem iFood) — bruto ${fmtMoney(d1Hoje.bruto)} menos outras taxas ${fmtMoney(d1Hoje.outrasTaxas)}`}
+            >
+              <p className="text-[11px] font-medium uppercase tracking-wide text-success">A cair hoje (D+1)</p>
+              <p className="mt-0.5 font-display text-xl font-bold tabular text-success">{fmtMoney(d1Hoje.liquido)}</p>
+              <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                {d1Hoje.qtd === 0
+                  ? `Sem vendas Anota direto em ${fmtDate(ontemISO)}`
+                  : `${d1Hoje.qtd} pedido(s) de ${fmtDate(ontemISO)} • líquido de outras taxas (${fmtMoney(d1Hoje.outrasTaxas)}) • sem iFood`}
+              </p>
+            </div>
+          }
+        />
         <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentesTotal > 0 ? "warning" : "success"} hint={`${vencimentosPendentesTotal} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""} • ${vencimentosPendentes.length} compras + ${manualVencimentos.length} lançamentos`} onClick={() => setShowVencimentosDetail(true)} />
         <KpiCard label="Lucro Bruto" value={fmtMoney(kpis.lucroBruto)} icon={PiggyBank} tone={kpis.lucroBruto >= 0 ? "success" : "danger"} hint="Receita − CMV − variáveis − insumos − taxas de entrega/outras" />
         <KpiCard
@@ -2227,6 +2410,133 @@ if (!unlocked) return null;
         <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : "Taxas extras dos pedidos no período — clique para detalhes"} onClick={() => setShowTaxasDetail(true)} />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita — clique para ver o que consome a margem" onClick={() => setShowMargemDetail(true)} />
+      </div>
+
+      {/* Relatório Financeiro — o que de fato entra na conta, dia a dia */}
+      <div className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="font-semibold flex items-center gap-2">
+              <Landmark className="size-4 text-primary" /> Relatório Financeiro
+              <Badge variant="outline" className="text-xs">{fmtMoney(relTotais.total)} no intervalo</Badge>
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Anota AI direto cai em D+1 (líquido de outras taxas, sem iFood) • iFood paga o acumulado da semana na quarta-feira
+              {relRange.limitado ? " • intervalo limitado a 62 dias" : ""}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex rounded-lg border border-border p-1">
+              {([
+                { v: "dia", label: "Dia" },
+                { v: "semana", label: "Semana" },
+                { v: "mes", label: "Mês" },
+                { v: "personalizado", label: "Personalizado" },
+              ] as const).map((t) => (
+                <button
+                  key={t.v}
+                  onClick={() => setRelTipo(t.v)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${relTipo === t.v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {relTipo === "personalizado" ? (
+              <>
+                <Input type="date" value={relInicio} onChange={(e) => setRelInicio(e.target.value)} className="w-auto" title="Início" />
+                <span className="text-xs text-muted-foreground">até</span>
+                <Input type="date" value={relFim} onChange={(e) => setRelFim(e.target.value)} className="w-auto" title="Fim" />
+              </>
+            ) : relTipo === "mes" ? (
+              <Input type="month" value={relData.slice(0, 7)} onChange={(e) => { if (/^\d{4}-\d{2}$/.test(e.target.value)) setRelData(`${e.target.value}-01`); }} className="w-auto" title="Mês" />
+            ) : (
+              <Input type="date" value={relData} onChange={(e) => setRelData(e.target.value)} className="w-auto" title={relTipo === "dia" ? "Dia" : "Qualquer dia da semana"} />
+            )}
+          </div>
+        </div>
+
+        <p className="mt-3 text-xs text-muted-foreground">
+          {relTipo === "dia" && `Movimento creditado em ${fmtDate(relRange.ini)}`}
+          {relTipo === "semana" && `Semana de ${fmtDate(relRange.ini)} a ${fmtDate(relRange.fim)}`}
+          {relTipo === "mes" && `Mês de ${new Date(relRange.ini + "T12:00:00").toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}`}
+          {relTipo === "personalizado" && `De ${fmtDate(relRange.ini)} a ${fmtDate(relRange.fim)}`}
+        </p>
+
+        <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="rounded-lg border border-success/25 bg-success/10 p-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-success">Anota AI (D+1)</p>
+            <p className="mt-0.5 font-display text-xl font-bold tabular text-success">{fmtMoney(relTotais.anota)}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Direto, líquido de outras taxas</p>
+          </div>
+          <div className="rounded-lg border border-warning/25 bg-warning/10 p-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-warning">iFood (quartas)</p>
+            <p className="mt-0.5 font-display text-xl font-bold tabular text-warning">{fmtMoney(relTotais.ifood)}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Acumulado semanal pago na quarta</p>
+          </div>
+          <div className="rounded-lg border border-border bg-muted/20 p-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Já recebido</p>
+            <p className="mt-0.5 font-display text-xl font-bold tabular">{fmtMoney(relTotais.recebido)}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Dias até hoje</p>
+          </div>
+          <div className="rounded-lg border border-info/25 bg-info/10 p-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-info">Previsto</p>
+            <p className="mt-0.5 font-display text-xl font-bold tabular text-info">{fmtMoney(relTotais.previsto)}</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Dias futuros no intervalo</p>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-xl border border-border overflow-x-auto">
+          <div className="max-h-[420px] overflow-y-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/50">
+                  <TableHead className="min-w-[150px] sticky top-0 z-10 bg-muted">Data</TableHead>
+                  <TableHead className="min-w-[160px] text-right sticky top-0 z-10 bg-muted">Anota AI (D+1)</TableHead>
+                  <TableHead className="min-w-[160px] text-right sticky top-0 z-10 bg-muted">iFood</TableHead>
+                  <TableHead className="min-w-[150px] text-right sticky top-0 z-10 bg-muted">Total do dia</TableHead>
+                  <TableHead className="min-w-[110px] text-center sticky top-0 z-10 bg-muted">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {relDias.map((d) => (
+                  <TableRow key={d.data} className={d.isQuarta ? "bg-warning/5" : ""}>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-1.5">
+                        <span>{fmtDate(d.data)}</span>
+                        <span className="text-xs capitalize text-muted-foreground">
+                          {new Date(d.data + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "")}
+                        </span>
+                        {d.isQuarta && <Badge variant="outline" className="text-xs border-warning/30 text-warning" title="Dia de repasse do iFood">Qua</Badge>}
+                      </div>
+                      <div className="text-[11px] font-normal text-muted-foreground">
+                        {d.anotaQtd > 0 ? `${d.anotaQtd} ped. Anota (D-1)` : "—"}
+                        {d.ifoodQtd > 0 ? ` • ${d.ifoodQtd} ped. iFood na semana` : ""}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right tabular">{d.anota > 0 ? fmtMoney(d.anota) : "—"}</TableCell>
+                    <TableCell className="text-right tabular">{d.ifood > 0 ? fmtMoney(d.ifood) : "—"}</TableCell>
+                    <TableCell className="text-right tabular font-semibold">{d.total > 0 ? fmtMoney(d.total) : "—"}</TableCell>
+                    <TableCell className="text-center">
+                      {d.previsto
+                        ? <Badge variant="outline" className="border-info/30 text-info text-xs">Previsto</Badge>
+                        : <Badge variant="default" className="bg-success text-success-foreground text-xs">Recebido</Badge>}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {relDias.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center text-sm text-muted-foreground">Sem dias no intervalo selecionado.</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border bg-muted/30 px-4 py-3">
+            <span className="text-sm font-medium">Total no intervalo ({relDias.length} dia(s))</span>
+            <span className="font-display text-xl font-bold tabular">{fmtMoney(relTotais.total)}</span>
+          </div>
+        </div>
       </div>
 
       {/* Insights */}
@@ -3676,9 +3986,9 @@ if (!unlocked) return null;
               </h4>
               <div className="mt-3 grid grid-cols-2 gap-4">
                 <div>
-                  <p className="text-xs text-muted-foreground">Anota AI Direto (D+1)</p>
+                  <p className="text-xs text-muted-foreground">Anota AI Direto (D+1) — cai hoje</p>
                   <p className="font-display text-xl font-bold text-success">{fmtMoney(anotaD1)}</p>
-                  <p className="text-xs text-muted-foreground">Direto, até amanhã</p>
+                  <p className="text-xs text-muted-foreground">{d1Hoje.qtd} pedido(s) de {fmtDate(ontemISO)} • bruto {fmtMoney(d1Hoje.bruto)} − outras taxas {fmtMoney(d1Hoje.outrasTaxas)} • sem iFood</p>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">iFood (próxima quarta {fmtDate(ifoodProximaQuarta.data)})</p>
