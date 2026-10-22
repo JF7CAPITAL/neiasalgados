@@ -413,7 +413,7 @@ function PontoPage() {
           <>
             <Button variant="outline" size="sm" asChild>
               <Link to="/quiosque" target="_blank">
-                <Camera className="mr-1.5 size-4" /> Abrir quiosque{" "}
+                <Camera className="mr-1.5 size-4" /> Registrar ponto{" "}
                 <ExternalLink className="ml-1 size-3" />
               </Link>
             </Button>
