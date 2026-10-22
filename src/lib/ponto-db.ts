@@ -5,7 +5,7 @@ import type { PontoCollaborator, TimeEntry, TimeEntryTipo } from "@/lib/ponto";
 const FOTO_BUCKET = "ponto-fotos";
 
 const COLLAB_COLUMNS =
-  "id, nome, cargo, status, horario, foto_url, em_turno, ponto_habilitado, ponto_tipo_jornada, carga_horaria_minutos, tolerancia_minutos, banco_horas";
+  "id, nome, cargo, status, horario, foto_url, em_turno, ponto_habilitado, ponto_tipo_jornada, carga_horaria_minutos, tolerancia_minutos, banco_horas, biometria_consentimento_em";
 
 export async function fetchPontoCollaborators(): Promise<PontoCollaborator[]> {
   const { data, error } = await supabase

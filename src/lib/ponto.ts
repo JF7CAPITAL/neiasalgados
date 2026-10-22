@@ -18,6 +18,7 @@ export interface PontoCollaborator {
   carga_horaria_minutos: number;
   tolerancia_minutos: number;
   banco_horas: number | null;
+  biometria_consentimento_em: string | null;
 }
 
 export interface DayPair {

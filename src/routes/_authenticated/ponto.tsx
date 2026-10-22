@@ -61,6 +61,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { SignedPhoto } from "@/components/ponto/SignedPhoto";
+import { BiometriaPanel } from "@/components/ponto/BiometriaPanel";
 import { useAuth, hasAccess } from "@/lib/auth";
 import { useRealtime } from "@/hooks/useRealtime";
 import { logActivity } from "@/lib/db";
@@ -117,6 +118,8 @@ function PontoPage() {
 
   const [entryToDelete, setEntryToDelete] = useState<TimeEntry | null>(null);
   const [photoEntry, setPhotoEntry] = useState<TimeEntry | null>(null);
+  const [biometriaOpen, setBiometriaOpen] = useState(false);
+  const [biometriaCollaboratorId, setBiometriaCollaboratorId] = useState("");
   const [closeTarget, setCloseTarget] = useState<{
     id: string;
     nome: string;
@@ -154,6 +157,13 @@ function PontoPage() {
     () => new Map(collaborators.map((c) => [c.id, c])),
     [collaborators],
   );
+  const biometriaCandidates = useMemo(
+    () => collaborators.filter((c) => c.status === "ativo" && c.ponto_habilitado),
+    [collaborators],
+  );
+  const biometriaCollaborator = biometriaCollaboratorId
+    ? collaboratorMap.get(biometriaCollaboratorId)
+    : undefined;
   const searchLower = search.trim().toLowerCase();
 
   const filteredEntries = useMemo(() => {
@@ -419,6 +429,16 @@ function PontoPage() {
               <Download className="mr-1.5 size-4" /> Exportar
             </Button>
             <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setBiometriaCollaboratorId("");
+                setBiometriaOpen(true);
+              }}
+            >
+              <ScanFace className="mr-1.5 size-4" /> Biometria
+            </Button>
+            <Button
               size="sm"
               onClick={() => {
                 setForm({
@@ -482,8 +502,15 @@ function PontoPage() {
               cadastrada.
             </span>
           </div>
-          <Button variant="outline" size="sm" asChild>
-            <Link to="/colaboradores">Cadastrar biometria</Link>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setBiometriaCollaboratorId("");
+              setBiometriaOpen(true);
+            }}
+          >
+            <ScanFace className="mr-1.5 size-4" /> Cadastrar biometria
           </Button>
         </div>
       )}
@@ -807,6 +834,66 @@ function PontoPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      <Dialog
+        open={biometriaOpen}
+        onOpenChange={(open) => {
+          setBiometriaOpen(open);
+          if (!open) setBiometriaCollaboratorId("");
+        }}
+      >
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Cadastrar biometria facial</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Colaborador</Label>
+              <Select value={biometriaCollaboratorId} onValueChange={setBiometriaCollaboratorId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione o colaborador..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {biometriaCandidates.length === 0 ? (
+                    <SelectItem value="__none" disabled>
+                      Nenhum colaborador ativo com ponto habilitado
+                    </SelectItem>
+                  ) : (
+                    biometriaCandidates.map((collaborator) => (
+                      <SelectItem key={collaborator.id} value={collaborator.id}>
+                        {collaborator.nome}
+                        {enrolledIds.has(collaborator.id)
+                          ? " — biometria ativa"
+                          : " — sem biometria"}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {biometriaCollaborator ? (
+              <BiometriaPanel
+                key={biometriaCollaborator.id}
+                collaboratorId={biometriaCollaborator.id}
+                collaboratorNome={biometriaCollaborator.nome}
+                consentAt={biometriaCollaborator.biometria_consentimento_em}
+                onSaved={() => {
+                  qc.invalidateQueries({ queryKey: ["ponto-enrolled"] });
+                  qc.invalidateQueries({ queryKey: ["ponto-collaborators"] });
+                }}
+              />
+            ) : (
+              <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center">
+                <ScanFace className="mx-auto mb-2 size-10 text-muted-foreground/60" />
+                <p className="text-sm text-muted-foreground">
+                  Selecione um colaborador para cadastrar ou atualizar a biometria facial.
+                </p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={adjustOpen} onOpenChange={setAdjustOpen}>
         <DialogContent className="max-w-lg">
