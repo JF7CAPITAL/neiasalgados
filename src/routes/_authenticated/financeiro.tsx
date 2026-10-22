@@ -102,6 +102,33 @@ function persistAccountsLS(list: FinanceAccount[]) {
   try { localStorage.setItem(ACCOUNTS_LS_KEY, JSON.stringify(list)); } catch { /* ignore */ }
 }
 
+// ---------------------------------------------------------------------------
+// Taxa de entrega: por motoboy, define se o valor é repassado (despesa) ou
+// fica com a loja como receita líquida (não abate o lucro). A chave "sem"
+// representa pedidos sem motoboy vinculado.
+// ---------------------------------------------------------------------------
+const DELIVERY_FEE_LS_KEY = "neia_finance_delivery_fee_net_revenue_v1";
+const DELIVERY_FEE_NO_MOTOBOY_KEY = "sem";
+type DeliveryFeeSettings = Record<string, boolean>;
+
+function loadDeliveryFeeSettingsLS(): DeliveryFeeSettings {
+  try {
+    const raw = localStorage.getItem(DELIVERY_FEE_LS_KEY);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+    const out: DeliveryFeeSettings = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key) out[String(key)] = value === true;
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function persistDeliveryFeeSettingsLS(settings: DeliveryFeeSettings) {
+  try { localStorage.setItem(DELIVERY_FEE_LS_KEY, JSON.stringify(settings)); } catch { /* ignore */ }
+}
+
 const DRE_TIPOS = [
   { value: "receita", label: "Receita" },
   { value: "custo_direto", label: "Custo Direto (CMV)" },
@@ -1138,6 +1165,74 @@ function FinanceiroPage() {
     enabled: unlocked,
   });
 
+  // Preferência por motoboy: taxa de entrega como receita líquida (loja retém)
+  // ou como despesa (repassada ao motoboy). Persistida no Supabase com fallback local.
+  const { data: deliveryFeeSettings = {} } = useQuery({
+    queryKey: ["finance-delivery-fee-settings"],
+    queryFn: async () => {
+      const local = loadDeliveryFeeSettingsLS();
+      const { data, error } = await (supabase as any)
+        .from("finance_delivery_fee_settings")
+        .select("motoboy_key, receita_liquida");
+      if (error) {
+        const msg = error.message || "";
+        if (
+          ["42P01", "42703", "PGRST205"].includes(error.code) ||
+          /finance_delivery_fee_settings|does not exist|Could not find/i.test(msg)
+        ) {
+          return local;
+        }
+        throw error;
+      }
+      const map: DeliveryFeeSettings = { ...local };
+      for (const row of (data ?? []) as { motoboy_key: string; receita_liquida: boolean }[]) {
+        map[String(row.motoboy_key)] = row.receita_liquida === true;
+      }
+      persistDeliveryFeeSettingsLS(map);
+      return map;
+    },
+    enabled: unlocked,
+  });
+
+  const toggleDeliveryFeeNetRevenue = useMutation({
+    mutationFn: async ({ key, netRevenue }: { key: string; netRevenue: boolean }) => {
+      persistDeliveryFeeSettingsLS({ ...deliveryFeeSettings, [key]: netRevenue });
+      const { error } = await (supabase as any)
+        .from("finance_delivery_fee_settings")
+        .upsert(
+          {
+            motoboy_key: key,
+            receita_liquida: netRevenue,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "motoboy_key" },
+        );
+      if (error) {
+        const msg = error.message || "";
+        if (
+          ["42P01", "42703", "PGRST205"].includes(error.code) ||
+          /finance_delivery_fee_settings|does not exist|Could not find/i.test(msg)
+        ) {
+          return { persisted: false as const, netRevenue };
+        }
+        throw error;
+      }
+      return { persisted: true as const, netRevenue };
+    },
+    onSuccess: async (result) => {
+      await qc.invalidateQueries({ queryKey: ["finance-delivery-fee-settings"] });
+      toast.success(
+        result.netRevenue
+          ? "Taxa de entrega marcada como receita líquida."
+          : "Taxa de entrega marcada como despesa (repasse ao motoboy).",
+      );
+      if (!result.persisted) {
+        toast.info("Preferência salva neste navegador. Aplique a migration para sincronizar entre dispositivos.");
+      }
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   // Helper para identificar vendas iFood (via Anota AI, mas originadas no iFood)
   const isIfoodOrder = useCallback((o: { payload: any }) => {
     const p = o.payload as any;
@@ -1439,10 +1534,14 @@ function FinanceiroPage() {
   const taxasPorPedido = useMemo(() => anotaOrders.map(o => {
     const taxaEntrega = extractDeliveryFee(o.payload);
     const outras = extractOtherFees(o.payload);
+    const motoboyKey = o.motoboy_id ?? DELIVERY_FEE_NO_MOTOBOY_KEY;
+    const taxaComoReceitaLiquida = deliveryFeeSettings[motoboyKey] === true;
     return {
       id: o.id,
       numero: o.numero ?? o.external_order_id?.slice(-6) ?? o.id.slice(0, 8),
       motoboyId: o.motoboy_id ?? null,
+      motoboyKey,
+      taxaComoReceitaLiquida,
       imported_at: o.imported_at,
       total: Number(o.total) || 0,
       taxaEntrega,
@@ -1450,8 +1549,18 @@ function FinanceiroPage() {
       outrasItens: outras.itens,
       totalTaxas: taxaEntrega + outras.total,
     };
-  }), [anotaOrders]);
+  }), [anotaOrders, deliveryFeeSettings]);
   const taxasEntregaTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.taxaEntrega, 0), [taxasPorPedido]);
+  // Parte da taxa de entrega que fica com a loja (não é abatida como despesa).
+  const taxasEntregaReceitaLiquidaTotal = useMemo(
+    () => taxasPorPedido.reduce((s, t) => s + (t.taxaComoReceitaLiquida ? t.taxaEntrega : 0), 0),
+    [taxasPorPedido],
+  );
+  // Parte repassada ao motoboy — essa sim entra como despesa/custo variável no DRE.
+  const taxasEntregaDespesaTotal = useMemo(
+    () => taxasPorPedido.reduce((s, t) => s + (t.taxaComoReceitaLiquida ? 0 : t.taxaEntrega), 0),
+    [taxasPorPedido],
+  );
   const outrasTaxasTotal = useMemo(() => taxasPorPedido.reduce((s, t) => s + t.outrasTaxas, 0), [taxasPorPedido]);
   const taxasTotalGeral = useMemo(() => taxasEntregaTotal + outrasTaxasTotal, [taxasEntregaTotal, outrasTaxasTotal]);
   const pedidosComTaxaEntrega = useMemo(() => taxasPorPedido.filter(t => t.taxaEntrega > 0).length, [taxasPorPedido]);
@@ -1514,13 +1623,14 @@ function FinanceiroPage() {
         editable: false,
       });
     }
-    // Taxas dos pedidos (entrega + extras) entram no DRE como custo variável do período, sempre com status "pago"
-    if (taxasEntregaTotal > 0) {
+    // Taxas dos pedidos (entrega + extras) entram no DRE como custo variável do período, sempre com status "pago".
+    // Motoboys configurados como "receita líquida" não entram aqui: a taxa permanece na receita.
+    if (taxasEntregaDespesaTotal > 0) {
       rows.push({
         secao: "TAXAS DE ENTREGA",
         categoria: "Taxas de entrega dos pedidos",
-        descricao: `${pedidosComTaxaEntrega} pedido(s) com taxa no período`,
-        valor: taxasEntregaTotal,
+        descricao: `${pedidosComTaxaEntrega} pedido(s) com taxa no período${taxasEntregaReceitaLiquidaTotal > 0 ? ` • ${fmtMoney(taxasEntregaReceitaLiquidaTotal)} mantidas como receita líquida` : ""}`,
+        valor: taxasEntregaDespesaTotal,
         fonte: "auto",
         vencimento: null,
         data_pagamento: null,
@@ -1577,7 +1687,7 @@ function FinanceiroPage() {
       });
     }
     return rows;
-  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, motoboyCollabs, folhaPagaPeriodoEquipe, folhaPagaPeriodoMotoboys, staffCollabs, periodoInicio, periodoFim]);
+  }, [autoDre, manualEntries, insumosPaidTotal, receivedPurchaseOrders, taxasEntregaDespesaTotal, taxasEntregaReceitaLiquidaTotal, pedidosComTaxaEntrega, outrasTaxasTotal, pedidosComOutrasTaxas, motoboyCollabs, folhaPagaPeriodoEquipe, folhaPagaPeriodoMotoboys, staffCollabs, periodoInicio, periodoFim]);
 
   // Calculate KPIs - DRE Completo: inclui pagos + "Há pagar" (forecast) dentro do período filtrado.
   // Taxas dos pedidos abatem o lucro bruto (custo variável); folha dos motoboys
@@ -1609,7 +1719,7 @@ function FinanceiroPage() {
       { chave: "Custo Direto (CMV)", valor: kpis.custoDireto, pct: pct(kpis.custoDireto), dica: "Insumos/CMV sobre a receita. Se > 35%, revise fichas técnicas, desperdício e preço de compra." },
       { chave: "Custo Variável", valor: kpis.custoVariavel, pct: pct(kpis.custoVariavel), dica: "Embalagens e variáveis por pedido. Amarre ao ticket médio." },
       { chave: "Despesas com Insumos", valor: kpis.despesasInsumos, pct: pct(kpis.despesasInsumos), dica: "Ordens de compra quitadas no período. Compare com CMV para ver descasamento caixa x competência." },
-      { chave: "Taxas de Entrega", valor: kpis.taxasEntrega, pct: pct(kpis.taxasEntrega), dica: "Taxas de entrega dos pedidos no período. Repasse parcial no preço ou taxa do cliente protege a margem." },
+      { chave: "Taxas de Entrega", valor: kpis.taxasEntrega, pct: pct(kpis.taxasEntrega), dica: "Taxas de entrega repassadas aos motoboys. Motoboys marcados como receita líquida não entram aqui — a taxa permanece na receita." },
       { chave: "Outras Taxas", valor: kpis.outrasTaxas, pct: pct(kpis.outrasTaxas), dica: "Taxas extras (embalagem, serviço...). Mapeie por tipo na aba Vencimentos." },
       { chave: "Despesas Operacionais (equipe)", valor: kpis.despesasOp, pct: pct(kpis.despesasOp), dica: "Pagamentos à equipe dentro do período (sem motoboys) + operação. Idealmente < 30-35% da receita em food service." },
       { chave: "Folha dos Motoboys", valor: kpis.folhaMotoboys, pct: pct(kpis.folhaMotoboys), dica: "Pagamentos aos motoboys dentro do período. Avalie entregas próprias vs terceirizadas." },
@@ -1816,10 +1926,13 @@ function FinanceiroPage() {
   const taxPorPedido = useMemo(() => taxOrders.map(o => {
     const taxaEntrega = extractDeliveryFee(o.payload);
     const outras = extractOtherFees(o.payload);
+    const motoboyKey = o.motoboy_id ?? DELIVERY_FEE_NO_MOTOBOY_KEY;
     return {
       id: o.id,
       numero: o.numero ?? o.external_order_id?.slice(-6) ?? o.id.slice(0, 8),
       motoboyId: o.motoboy_id ?? null,
+      motoboyKey,
+      taxaComoReceitaLiquida: deliveryFeeSettings[motoboyKey] === true,
       imported_at: o.imported_at,
       total: Number(o.total) || 0,
       taxaEntrega,
@@ -1827,7 +1940,7 @@ function FinanceiroPage() {
       outrasItens: outras.itens,
       totalTaxas: taxaEntrega + outras.total,
     };
-  }), [taxOrders]);
+  }), [taxOrders, deliveryFeeSettings]);
   // Opções de motoboy presentes no intervalo (para o filtro por nome)
   const taxMotoboysOpts = useMemo(() => {
     const ids = new Map<string, string>();
@@ -1861,14 +1974,35 @@ function FinanceiroPage() {
     }
     return [...map.values()].sort((a, b) => b.total - a.total);
   }, [taxPorPedido, motoboyNomePorId]);
+  // Linhas de configuração do tratamento da taxa (inclui "sem motoboy" mesmo sem taxas)
+  const taxConfigRows = useMemo(() => {
+    const rows = taxPorMotoboy.map((m) => ({
+      key: m.id ?? DELIVERY_FEE_NO_MOTOBOY_KEY,
+      nome: m.nome,
+      qtd: m.qtd,
+      total: m.total,
+    }));
+    const known = new Set(rows.map((r) => r.key));
+    for (const collaborator of motoboyCollabs as any[]) {
+      const key = String(collaborator?.id ?? "");
+      if (!key || known.has(key)) continue;
+      rows.push({ key, nome: String(collaborator?.nome ?? "Motoboy"), qtd: 0, total: 0 });
+    }
+    if (!rows.some((r) => r.key === DELIVERY_FEE_NO_MOTOBOY_KEY)) {
+      rows.push({ key: DELIVERY_FEE_NO_MOTOBOY_KEY, nome: "Sem motoboy vinculado", qtd: 0, total: 0 });
+    }
+    return rows;
+  }, [taxPorMotoboy, motoboyCollabs]);
   const taxTotais = useMemo(() => taxFiltrados.reduce(
     (s, t) => ({
       entrega: s.entrega + t.taxaEntrega,
+      despesa: s.despesa + (t.taxaComoReceitaLiquida ? 0 : t.taxaEntrega),
+      receitaLiquida: s.receitaLiquida + (t.taxaComoReceitaLiquida ? t.taxaEntrega : 0),
       outras: s.outras + t.outrasTaxas,
       geral: s.geral + t.totalTaxas,
       pedidos: s.pedidos + (t.totalTaxas > 0 ? 1 : 0),
     }),
-    { entrega: 0, outras: 0, geral: 0, pedidos: 0 },
+    { entrega: 0, despesa: 0, receitaLiquida: 0, outras: 0, geral: 0, pedidos: 0 },
   ), [taxFiltrados]);
   const taxOutrasPorNome = useMemo(() => {
     const map = new Map<string, { total: number; qtd: number }>();
@@ -2603,7 +2737,7 @@ if (!unlocked) return null;
           }
         />
         <KpiCard label="Despesas com insumos" value={fmtMoney(insumosTotal)} icon={ShoppingCart} tone="warning" hint={`${receivedPurchaseOrders.length} ordens recebidas no período · Média: ${fmtMoney(insumosAvgPrice)} · Principal indicador de custo de insumos`} onClick={() => setShowInsumosDetail(true)} />
-        <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa no período — clique para detalhes`} onClick={() => setShowTaxasDetail(true)} />
+        <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa${taxasEntregaReceitaLiquidaTotal > 0 ? ` • ${fmtMoney(taxasEntregaReceitaLiquidaTotal)} como receita líquida` : ""} • despesa ${fmtMoney(taxasEntregaDespesaTotal)} — clique para detalhes`} onClick={() => setShowTaxasDetail(true)} />
         <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : "Taxas extras dos pedidos no período — clique para detalhes"} onClick={() => setShowTaxasDetail(true)} />
         <KpiCard label="Resultado Líquido" value={fmtMoney(kpis.resultado)} icon={TrendingDown} tone={kpis.resultado >= 0 ? "success" : "danger"} hint={kpis.resultado >= 0 ? "Lucro" : "Prejuízo"} />
         <KpiCard label="Margem Líquida" value={`${kpis.margem.toFixed(1)}%`} icon={Calculator} tone={kpis.margem >= 0 ? "success" : "danger"} hint="Resultado / Receita — clique para ver o que consome a margem" onClick={() => setShowMargemDetail(true)} />
@@ -2926,7 +3060,7 @@ if (!unlocked) return null;
           <div className="grid grid-cols-2 gap-4 mb-6 lg:grid-cols-4">
             <KpiCard label="Vencimentos" value={fmtMoney(vencimentosTotal)} icon={CalendarDays} tone={vencimentosVencidos.length > 0 ? "danger" : vencimentosPendentesTotal > 0 ? "warning" : "success"} hint={`${vencimentosPendentesTotal} pendente(s)${vencimentosVencidos.length ? ` • ${vencimentosVencidos.length} vencido(s)` : ""}`} />
             <KpiCard label="Despesas com insumos a pagar" value={fmtMoney(insumosAPagarTotal)} icon={ShoppingCart} tone={vencimentosPendentes.length > 0 ? "warning" : "success"} hint={`${vencimentosPendentes.length} compra(s) a prazo não paga(s)${manualAPagarTotal > 0 ? ` • ${fmtMoney(manualAPagarTotal)} em lançamentos` : ""}`} />
-            <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa no período • ${fmtDate(periodoInicio)} a ${fmtDate(periodoFim)}`} />
+            <KpiCard label="Taxas de entrega" value={fmtMoney(taxasEntregaTotal)} icon={Truck} tone={taxasEntregaTotal > 0 ? "info" : "success"} hint={`${pedidosComTaxaEntrega} pedido(s) com taxa • despesa ${fmtMoney(taxasEntregaDespesaTotal)}${taxasEntregaReceitaLiquidaTotal > 0 ? ` • receita líquida ${fmtMoney(taxasEntregaReceitaLiquidaTotal)}` : ""} • ${fmtDate(periodoInicio)} a ${fmtDate(periodoFim)}`} />
             <KpiCard label="Outras taxas" value={fmtMoney(outrasTaxasTotal)} icon={ReceiptText} tone={outrasTaxasTotal > 0 ? "info" : "success"} hint={outrasTaxasPorNome.length > 0 ? `${pedidosComOutrasTaxas} pedido(s) • ${outrasTaxasPorNome.slice(0, 2).map(t => `${t.nome}: ${fmtMoney(t.total)}`).join(" • ")}${outrasTaxasPorNome.length > 2 ? "…" : ""}` : `${pedidosComOutrasTaxas} pedido(s) com taxas extras no período`} />
           </div>
           {vencimentosPendentesTotal === 0 ? (
@@ -3038,9 +3172,16 @@ if (!unlocked) return null;
           )}
           {/* Taxas dos pedidos no período — detalhamento separado, sempre visível */}
           <div className="mt-6">
-            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><Truck className="size-4" /> Taxas dos pedidos — {fmtDate(periodoInicio)} a {fmtDate(periodoFim)}</h4>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-sm font-semibold flex items-center gap-2"><Truck className="size-4" /> Taxas dos pedidos — {fmtDate(periodoInicio)} a {fmtDate(periodoFim)}</h4>
+              <Button variant="outline" size="sm" onClick={() => setShowTaxasDetail(true)}>
+                <Truck className="mr-1.5 size-4" /> Configurar taxas de entrega
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground mb-3">
               Taxas de entrega {fmtMoney(taxasEntregaTotal)} ({pedidosComTaxaEntrega} pedido(s))
+              {" • "}Despesa {fmtMoney(taxasEntregaDespesaTotal)}
+              {taxasEntregaReceitaLiquidaTotal > 0 && ` • Receita líquida ${fmtMoney(taxasEntregaReceitaLiquidaTotal)}`}
               {" • "}Outras taxas {fmtMoney(outrasTaxasTotal)} ({pedidosComOutrasTaxas} pedido(s))
               {" • "}Total em taxas {fmtMoney(taxasTotalGeral)} em {anotaOrders.length} pedido(s) no período
               {outrasTaxasPorNome.length > 0 && ` • ${outrasTaxasPorNome.map(t => `${t.nome} (${t.qtd}x): ${fmtMoney(t.total)}`).join(" • ")}`}
@@ -4028,7 +4169,7 @@ if (!unlocked) return null;
               {taxTipo === "semana" && `Semana de ${fmtDate(taxRange.ini)} a ${fmtDate(taxRange.fim)}`}
               {taxTipo === "mes" && `Mês de ${new Date(taxRange.ini + "T12:00:00").toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}`}
               {taxTipo === "personalizado" && `De ${fmtDate(taxRange.ini)} a ${fmtDate(taxRange.fim)}`}
-              {` • Entrega ${fmtMoney(taxTotais.entrega)} • Outras ${fmtMoney(taxTotais.outras)} • Total ${fmtMoney(taxTotais.geral)}`}
+              {` • Entrega ${fmtMoney(taxTotais.entrega)} • Despesa ${fmtMoney(taxTotais.despesa)} • Receita líquida ${fmtMoney(taxTotais.receitaLiquida)} • Outras ${fmtMoney(taxTotais.outras)}`}
               {taxRange.limitado ? " • intervalo limitado a 62 dias" : ""}
             </p>
           </DialogHeader>
@@ -4071,33 +4212,60 @@ if (!unlocked) return null;
               </Select>
             </div>
 
-            <div className="overflow-x-auto rounded-xl border border-border">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50">
-                    <TableHead className="min-w-[200px]">Motoboy</TableHead>
-                    <TableHead className="text-center">Pedidos com taxa</TableHead>
-                    <TableHead className="text-right">Total taxa de entrega</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {taxPorMotoboy.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={3} className="text-center text-sm text-muted-foreground">Sem taxas de entrega no intervalo.</TableCell>
+            <div className="rounded-xl border border-border">
+              <div className="border-b bg-muted/30 px-4 py-3">
+                <p className="text-sm font-medium">Tratamento da taxa de entrega</p>
+                <p className="text-xs text-muted-foreground">
+                  Ative "Receita líquida" quando o motoboy <strong>não recebe</strong> a taxa — o
+                  valor permanece na receita e não abate o lucro. Desativado, a taxa é despesa
+                  (repasse ao motoboy). Vale para todos os pedidos vinculados ao motoboy, inclusive
+                  pedidos sem motoboy.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead className="min-w-[200px]">Motoboy</TableHead>
+                      <TableHead className="text-center">Pedidos com taxa</TableHead>
+                      <TableHead className="text-right">Total taxa de entrega</TableHead>
+                      <TableHead className="text-right">Entra como</TableHead>
                     </TableRow>
-                  ) : (
-                    taxPorMotoboy.map((m) => (
-                      <TableRow key={m.id ?? "sem"} className={taxMotoboy !== "todos" && (taxMotoboy === m.id || (taxMotoboy === "sem" && m.id === null)) ? "bg-primary/5" : ""}>
-                        <TableCell className="font-medium">
-                          <Badge variant="outline" className="text-xs border-info/30 text-info">{m.nome}</Badge>
-                        </TableCell>
-                        <TableCell className="text-center tabular">{m.qtd}</TableCell>
-                        <TableCell className="text-right tabular font-semibold">{fmtMoney(m.total)}</TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {taxConfigRows.map((m) => {
+                      const netRevenue = deliveryFeeSettings[m.key] === true;
+                      const isSelected =
+                        taxMotoboy !== "todos" &&
+                        (taxMotoboy === m.key || (taxMotoboy === "sem" && m.key === DELIVERY_FEE_NO_MOTOBOY_KEY));
+                      return (
+                        <TableRow key={m.key} className={isSelected ? "bg-primary/5" : ""}>
+                          <TableCell className="font-medium">
+                            <Badge variant="outline" className="text-xs border-info/30 text-info">{m.nome}</Badge>
+                          </TableCell>
+                          <TableCell className="text-center tabular">{m.qtd}</TableCell>
+                          <TableCell className="text-right tabular font-semibold">{fmtMoney(m.total)}</TableCell>
+                          <TableCell>
+                            <div className="flex items-center justify-end gap-2">
+                              <span className={netRevenue ? "text-xs font-medium text-success" : "text-xs text-muted-foreground"}>
+                                {netRevenue ? "Receita líquida" : "Despesa"}
+                              </span>
+                              <Switch
+                                checked={netRevenue}
+                                onCheckedChange={(checked) =>
+                                  toggleDeliveryFeeNetRevenue.mutate({ key: m.key, netRevenue: checked === true })
+                                }
+                                disabled={toggleDeliveryFeeNetRevenue.isPending}
+                                title={netRevenue ? "Taxa fica com a loja (receita líquida)" : "Taxa é repassada ao motoboy (despesa)"}
+                              />
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
 
             {taxOutrasPorNome.length > 0 && (
@@ -4158,10 +4326,18 @@ if (!unlocked) return null;
                 </Table>
               </div>
             )}
-            <div className="grid grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg">
+            <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg sm:grid-cols-5">
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Taxas de entrega</p>
                 <p className="font-display text-xl font-semibold">{fmtMoney(taxTotais.entrega)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Despesa (repasse)</p>
+                <p className="font-display text-xl font-semibold">{fmtMoney(taxTotais.despesa)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-muted-foreground">Receita líquida</p>
+                <p className="font-display text-xl font-semibold text-success">{fmtMoney(taxTotais.receitaLiquida)}</p>
               </div>
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Outras taxas</p>

@@ -36,6 +36,7 @@ export const NAV_ITEMS: NavItem[] = [
     roles: ["admin", "producao", "estoque", "compras", "financeiro", "rh", "operacional"],
     group: "Visão geral",
   },
+  { label: "Ponto", to: "/ponto", icon: ScanFace, roles: ["admin", "rh"], group: "Visão geral" },
 
   {
     label: "Anota AI",
@@ -118,7 +119,6 @@ export const NAV_ITEMS: NavItem[] = [
     roles: ["admin", "rh"],
     group: "Gestão",
   },
-  { label: "Ponto", to: "/ponto", icon: ScanFace, roles: ["admin", "rh"], group: "Gestão" },
   {
     label: "Relatório de Produção",
     to: "/relatorio-producao",
