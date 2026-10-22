@@ -1,10 +1,25 @@
 import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Users, Plus, Pencil, Trash2, Search, Loader2, Printer, Upload, FileText, Image, X, Download, Eye } from "lucide-react";
+import {
+  Users,
+  Plus,
+  Pencil,
+  Trash2,
+  Search,
+  Loader2,
+  Printer,
+  Upload,
+  FileText,
+  Image,
+  X,
+  Download,
+  Eye,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
+import type { TablesInsert } from "@/integrations/supabase/types";
 import { logActivity } from "@/lib/db";
 import { useRealtime } from "@/hooks/useRealtime";
 import { fmtDate } from "@/lib/format";
@@ -16,32 +31,75 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { formatFileSize } from "@/lib/format";
+import { BiometriaPanel } from "@/components/ponto/BiometriaPanel";
 
 export const Route = createFileRoute("/_authenticated/colaboradores")({
   component: ColaboradoresPage,
 });
 
 type Collab = {
-  id: string; nome: string; cpf: string | null; rg: string | null; telefone: string | null;
-  celular: string | null; email: string | null; endereco: string | null; cargo: string | null;
-  data_admissao: string | null; status: string; em_turno: boolean;
-  turno: string | null; horario: string | null; escala: string | null; observacoes: string | null;
+  id: string;
+  nome: string;
+  cpf: string | null;
+  rg: string | null;
+  telefone: string | null;
+  celular: string | null;
+  email: string | null;
+  endereco: string | null;
+  cargo: string | null;
+  data_admissao: string | null;
+  status: string;
+  em_turno: boolean;
+  turno: string | null;
+  horario: string | null;
+  escala: string | null;
+  observacoes: string | null;
   foto_url: string | null;
   salario: number | null;
   saldo_devedor: number | null;
   pagamento: number | null;
   is_motoboy?: boolean | null;
+  ponto_habilitado: boolean;
+  ponto_tipo_jornada: string;
+  carga_horaria_minutos: number;
+  tolerancia_minutos: number;
+  biometria_consentimento_em: string | null;
 };
 
 type CollabDoc = {
@@ -56,7 +114,19 @@ type CollabDoc = {
   created_at: string;
 };
 
-const empty: Partial<Collab> = { nome: "", status: "ativo", em_turno: false, salario: 0, pagamento: 0, saldo_devedor: 0, is_motoboy: false };
+const empty: Partial<Collab> = {
+  nome: "",
+  status: "ativo",
+  em_turno: false,
+  salario: 0,
+  pagamento: 0,
+  saldo_devedor: 0,
+  is_motoboy: false,
+  ponto_habilitado: true,
+  ponto_tipo_jornada: "4_batidas",
+  carga_horaria_minutos: 480,
+  tolerancia_minutos: 10,
+};
 const docTypes = ["documento", "foto", "comprovante", "contrato", "outro"] as const;
 const STATUS_OPTIONS = ["ativo", "inativo", "afastado", "desligado"] as const;
 
@@ -76,7 +146,11 @@ function ColaboradoresPage() {
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["collaborators"],
     queryFn: async () => {
-      const { data, error } = await supabase.from("collaborators").select("*").is("deleted_at", null).order("nome");
+      const { data, error } = await supabase
+        .from("collaborators")
+        .select("*")
+        .is("deleted_at", null)
+        .order("nome");
       if (error) throw error;
       return (data ?? []) as unknown as Collab[];
     },
@@ -139,54 +213,107 @@ function ColaboradoresPage() {
         }
       }
       const payload = {
-        nome: c.nome!, cpf: c.cpf || null, rg: c.rg || null, telefone: c.telefone || null,
-        celular: c.celular || null, email: c.email || null, endereco: c.endereco || null,
-        cargo: c.cargo || null, data_admissao: c.data_admissao || null,
+        nome: c.nome!,
+        cpf: c.cpf || null,
+        rg: c.rg || null,
+        telefone: c.telefone || null,
+        celular: c.celular || null,
+        email: c.email || null,
+        endereco: c.endereco || null,
+        cargo: c.cargo || null,
+        data_admissao: c.data_admissao || null,
         // Normaliza para minúsculas sem espaços: evita "Ativo"/"ATIVO "/"ativo"
         // sumirem da Folha de pagamento no Financeiro (filtro case-sensitive).
-        status: String(c.status || "ativo").trim().toLowerCase() || "ativo",
-        em_turno: c.em_turno ?? false, turno: c.turno || null, horario: c.horario || null,
-        escala: c.escala || null, observacoes: c.observacoes || null,
-        salario, pagamento, saldo_devedor,
+        status:
+          String(c.status || "ativo")
+            .trim()
+            .toLowerCase() || "ativo",
+        em_turno: c.em_turno ?? false,
+        turno: c.turno || null,
+        horario: c.horario || null,
+        escala: c.escala || null,
+        observacoes: c.observacoes || null,
+        salario,
+        pagamento,
+        saldo_devedor,
         is_motoboy: c.is_motoboy ?? false,
-      } as any;
+        ponto_habilitado: c.ponto_habilitado ?? true,
+        ponto_tipo_jornada: c.ponto_tipo_jornada === "2_batidas" ? "2_batidas" : "4_batidas",
+        carga_horaria_minutos: Number(c.carga_horaria_minutos) || 480,
+        tolerancia_minutos: Number(c.tolerancia_minutos) || 0,
+      } as TablesInsert<"collaborators">;
       // Fallback se a coluna is_motoboy ainda não existir (migration pendente)
-      const semMotoboy = ({ is_motoboy, ...r }: any) => r;
+      const semMotoboy = (r: TablesInsert<"collaborators">): TablesInsert<"collaborators"> => {
+        const copy = { ...r };
+        delete copy.is_motoboy;
+        return copy;
+      };
       if (c.id) {
-        let { error } = await supabase.from("collaborators").update(payload).eq("id", c.id);
+        const { error } = await supabase.from("collaborators").update(payload).eq("id", c.id);
         if (error && (error.code === "42703" || /is_motoboy/i.test(error.message))) {
           console.warn("[colaboradores] sem coluna is_motoboy, migration pendente:", error.message);
-          const retry = await supabase.from("collaborators").update(semMotoboy(payload)).eq("id", c.id);
+          const retry = await supabase
+            .from("collaborators")
+            .update(semMotoboy(payload))
+            .eq("id", c.id);
           if (retry.error) throw retry.error;
         } else if (error) throw error;
         await logActivity("rh", "editou colaborador", c.id, { nome: c.nome });
       } else {
-        let { data, error } = await supabase.from("collaborators").insert(payload).select("id").single();
+        const created = await supabase.from("collaborators").insert(payload).select("id").single();
+        const error = created.error;
+        let data = created.data;
         if (error && (error.code === "42703" || /is_motoboy/i.test(error.message))) {
           console.warn("[colaboradores] sem coluna is_motoboy, migration pendente:", error.message);
-          const retry = await supabase.from("collaborators").insert(semMotoboy(payload)).select("id").single();
+          const retry = await supabase
+            .from("collaborators")
+            .insert(semMotoboy(payload))
+            .select("id")
+            .single();
           if (retry.error) throw retry.error;
           data = retry.data;
         } else if (error) throw error;
+        if (!data) throw new Error("Colaborador criado, mas o ID não foi retornado.");
         await logActivity("rh", "criou colaborador", data.id, { nome: c.nome });
       }
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["collaborators"] }); toast.success("Colaborador salvo!"); setOpen(false); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["collaborators"] });
+      toast.success("Colaborador salvo!");
+      setOpen(false);
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const remove = useMutation({
     mutationFn: async (c: Collab) => {
-      const { error } = await supabase.from("collaborators").update({ deleted_at: new Date().toISOString() }).eq("id", c.id);
+      const { error } = await supabase
+        .from("collaborators")
+        .update({ deleted_at: new Date().toISOString() })
+        .eq("id", c.id);
       if (error) throw error;
       await logActivity("rh", "excluiu colaborador", c.id, { nome: c.nome });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["collaborators"] }); toast.success("Removido."); setToDelete(null); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["collaborators"] });
+      toast.success("Removido.");
+      setToDelete(null);
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const uploadDocument = useMutation({
-    mutationFn: async ({ collaboratorId, file, tipo, observacoes }: { collaboratorId: string; file: File; tipo: string; observacoes: string }) => {
+    mutationFn: async ({
+      collaboratorId,
+      file,
+      tipo,
+      observacoes,
+    }: {
+      collaboratorId: string;
+      file: File;
+      tipo: string;
+      observacoes: string;
+    }) => {
       const ext = file.name.split(".").pop() ?? "jpg";
       const path = `collaborators/${collaboratorId}/${tipo}-${Date.now()}.${ext}`;
       const { error } = await supabase.storage
@@ -238,12 +365,14 @@ function ColaboradoresPage() {
       return;
     }
     setUploadingDoc(file.name);
-    setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
+    setUploadProgress((prev) => ({ ...prev, [file.name]: 0 }));
     uploadDocument.mutate({ collaboratorId: editing.id, file, tipo, observacoes: "" });
     e.target.value = "";
   };
 
-  const filtered = rows.filter((c) => [c.nome, c.cargo, c.cpf].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()));
+  const filtered = rows.filter((c) =>
+    [c.nome, c.cargo, c.cpf].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()),
+  );
 
   const toggleAll = () => {
     if (selected.size === filtered.length) setSelected(new Set());
@@ -258,110 +387,264 @@ function ColaboradoresPage() {
   };
 
   const handlePrint = () => {
-    const list = selected.size
-      ? rows.filter((c) => selected.has(c.id))
-      : filtered;
-    printCollaboratorsReport(list.map((c) => ({ nome: c.nome, telefone: c.telefone ?? "", observacoes: c.observacoes ?? "" })));
+    const list = selected.size ? rows.filter((c) => selected.has(c.id)) : filtered;
+    printCollaboratorsReport(
+      list.map((c) => ({
+        nome: c.nome,
+        telefone: c.telefone ?? "",
+        observacoes: c.observacoes ?? "",
+      })),
+    );
   };
 
   const isImage = (mime: string | null) => mime?.startsWith("image/") ?? false;
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Colaboradores" subtitle="Gestão de RH e turnos" icon={Users}
+      <PageHeader
+        title="Colaboradores"
+        subtitle="Gestão de RH e turnos"
+        icon={Users}
         actions={
           <>
             <Button variant="outline" size="sm" onClick={handlePrint}>
               <Printer className="mr-1.5 size-4" /> Imprimir
             </Button>
-            <Button onClick={() => { setEditing({ ...empty }); setActiveTab("dados"); setOpen(true); }}>
+            <Button
+              onClick={() => {
+                setEditing({ ...empty });
+                setActiveTab("dados");
+                setOpen(true);
+              }}
+            >
               <Plus className="mr-1.5 size-4" /> Novo
             </Button>
           </>
-        } />
+        }
+      />
 
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input className="pl-9" placeholder="Buscar colaborador..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <Input
+          className="pl-9"
+          placeholder="Buscar colaborador..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
       </div>
 
-      {isLoading ? <div className="h-48 animate-pulse rounded-xl border border-border bg-card" />
-        : filtered.length === 0 ? <EmptyState icon={Users} title="Nenhum colaborador" />
-        : (
-          <div className="overflow-x-auto rounded-xl border border-border bg-card">
-            <Table>
-              <TableHeader><TableRow>
+      {isLoading ? (
+        <div className="h-48 animate-pulse rounded-xl border border-border bg-card" />
+      ) : filtered.length === 0 ? (
+        <EmptyState icon={Users} title="Nenhum colaborador" />
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
                 <TableHead className="w-10">
-                  <Checkbox checked={filtered.length > 0 && selected.size === filtered.length} onCheckedChange={toggleAll} />
+                  <Checkbox
+                    checked={filtered.length > 0 && selected.size === filtered.length}
+                    onCheckedChange={toggleAll}
+                  />
                 </TableHead>
-                <TableHead>Nome</TableHead><TableHead>Cargo</TableHead><TableHead>Turno</TableHead>
-                <TableHead>Admissão</TableHead><TableHead>Em turno</TableHead><TableHead className="w-24 text-right">Ações</TableHead>
-              </TableRow></TableHeader>
-              <TableBody>
-                {filtered.map((c) => (
-                  <TableRow key={c.id}>
-                    <TableCell><Checkbox checked={selected.has(c.id)} onCheckedChange={() => toggle(c.id)} /></TableCell>
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-1.5">
-                        <span>{c.nome}</span>
-                        {c.is_motoboy && <Badge variant="outline" className="text-xs border-info/30 text-info">Motoboy</Badge>}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">{c.turno || "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">{fmtDate(c.data_admissao)}</TableCell>
-                    <TableCell>{c.em_turno ? "Sim" : "Não"}</TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { setEditing({ ...c }); setActiveTab("dados"); setOpen(true); }}><Pencil className="size-4" /></Button>
-                      <Button variant="ghost" size="icon" onClick={() => setToDelete(c)}><Trash2 className="size-4 text-destructive" /></Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
+                <TableHead>Nome</TableHead>
+                <TableHead>Cargo</TableHead>
+                <TableHead>Turno</TableHead>
+                <TableHead>Admissão</TableHead>
+                <TableHead>Em turno</TableHead>
+                <TableHead className="w-24 text-right">Ações</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((c) => (
+                <TableRow key={c.id}>
+                  <TableCell>
+                    <Checkbox checked={selected.has(c.id)} onCheckedChange={() => toggle(c.id)} />
+                  </TableCell>
+                  <TableCell className="font-medium">
+                    <div className="flex items-center gap-1.5">
+                      <span>{c.nome}</span>
+                      {c.is_motoboy && (
+                        <Badge variant="outline" className="text-xs border-info/30 text-info">
+                          Motoboy
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{c.cargo || "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">{c.turno || "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {fmtDate(c.data_admissao)}
+                  </TableCell>
+                  <TableCell>{c.em_turno ? "Sim" : "Não"}</TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => {
+                        setEditing({ ...c });
+                        setActiveTab("dados");
+                        setOpen(true);
+                      }}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => setToDelete(c)}>
+                      <Trash2 className="size-4 text-destructive" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
-      <Dialog open={open} onOpenChange={(o) => { if (!o) { setOpen(false); setEditing(null); setActiveTab("dados"); } }}>
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          if (!o) {
+            setOpen(false);
+            setEditing(null);
+            setActiveTab("dados");
+          }
+        }}
+      >
         <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col overflow-hidden">
-          <DialogHeader className="shrink-0"><DialogTitle>{editing?.id ? "Editar" : "Novo"} colaborador</DialogTitle></DialogHeader>
+          <DialogHeader className="shrink-0">
+            <DialogTitle>{editing?.id ? "Editar" : "Novo"} colaborador</DialogTitle>
+          </DialogHeader>
           {editing && (
             <div className="flex min-h-0 flex-1 flex-col">
-              <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
-                <TabsList className="grid w-full shrink-0 grid-cols-2">
+              <Tabs
+                value={activeTab}
+                onValueChange={setActiveTab}
+                className="flex min-h-0 flex-1 flex-col"
+              >
+                <TabsList className="grid w-full shrink-0 grid-cols-3">
                   <TabsTrigger value="dados">Dados do Colaborador</TabsTrigger>
                   <TabsTrigger value="documentos">Documentos</TabsTrigger>
+                  <TabsTrigger value="biometria">Biometria</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="dados" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <F label="Nome" cn="sm:col-span-2"><Input value={editing.nome ?? ""} onChange={(e) => setEditing({ ...editing, nome: e.target.value })} /></F>
-                    <F label="CPF"><Input value={editing.cpf ?? ""} onChange={(e) => setEditing({ ...editing, cpf: e.target.value })} /></F>
-                    <F label="RG"><Input value={editing.rg ?? ""} onChange={(e) => setEditing({ ...editing, rg: e.target.value })} /></F>
-                    <F label="Telefone"><Input value={editing.telefone ?? ""} onChange={(e) => setEditing({ ...editing, telefone: e.target.value })} /></F>
-                    <F label="Celular"><Input value={editing.celular ?? ""} onChange={(e) => setEditing({ ...editing, celular: e.target.value })} /></F>
-                    <F label="Email" cn="sm:col-span-2"><Input type="email" value={editing.email ?? ""} onChange={(e) => setEditing({ ...editing, email: e.target.value })} /></F>
-                    <F label="Endereço" cn="sm:col-span-2"><Input value={editing.endereco ?? ""} onChange={(e) => setEditing({ ...editing, endereco: e.target.value })} /></F>
-                    <F label="Cargo"><Input value={editing.cargo ?? ""} onChange={(e) => setEditing({ ...editing, cargo: e.target.value })} /></F>
-                    <F label="Data admissão"><Input type="date" value={editing.data_admissao ?? ""} onChange={(e) => setEditing({ ...editing, data_admissao: e.target.value })} /></F>
-                    <F label="Turno"><Input value={editing.turno ?? ""} onChange={(e) => setEditing({ ...editing, turno: e.target.value })} /></F>
-                    <F label="Horário"><Input value={editing.horario ?? ""} onChange={(e) => setEditing({ ...editing, horario: e.target.value })} /></F>
-                    <F label="Escala"><Input value={editing.escala ?? ""} onChange={(e) => setEditing({ ...editing, escala: e.target.value })} /></F>
+                    <F label="Nome" cn="sm:col-span-2">
+                      <Input
+                        value={editing.nome ?? ""}
+                        onChange={(e) => setEditing({ ...editing, nome: e.target.value })}
+                      />
+                    </F>
+                    <F label="CPF">
+                      <Input
+                        value={editing.cpf ?? ""}
+                        onChange={(e) => setEditing({ ...editing, cpf: e.target.value })}
+                      />
+                    </F>
+                    <F label="RG">
+                      <Input
+                        value={editing.rg ?? ""}
+                        onChange={(e) => setEditing({ ...editing, rg: e.target.value })}
+                      />
+                    </F>
+                    <F label="Telefone">
+                      <Input
+                        value={editing.telefone ?? ""}
+                        onChange={(e) => setEditing({ ...editing, telefone: e.target.value })}
+                      />
+                    </F>
+                    <F label="Celular">
+                      <Input
+                        value={editing.celular ?? ""}
+                        onChange={(e) => setEditing({ ...editing, celular: e.target.value })}
+                      />
+                    </F>
+                    <F label="Email" cn="sm:col-span-2">
+                      <Input
+                        type="email"
+                        value={editing.email ?? ""}
+                        onChange={(e) => setEditing({ ...editing, email: e.target.value })}
+                      />
+                    </F>
+                    <F label="Endereço" cn="sm:col-span-2">
+                      <Input
+                        value={editing.endereco ?? ""}
+                        onChange={(e) => setEditing({ ...editing, endereco: e.target.value })}
+                      />
+                    </F>
+                    <F label="Cargo">
+                      <Input
+                        value={editing.cargo ?? ""}
+                        onChange={(e) => setEditing({ ...editing, cargo: e.target.value })}
+                      />
+                    </F>
+                    <F label="Data admissão">
+                      <Input
+                        type="date"
+                        value={editing.data_admissao ?? ""}
+                        onChange={(e) => setEditing({ ...editing, data_admissao: e.target.value })}
+                      />
+                    </F>
+                    <F label="Turno">
+                      <Input
+                        value={editing.turno ?? ""}
+                        onChange={(e) => setEditing({ ...editing, turno: e.target.value })}
+                      />
+                    </F>
+                    <F label="Horário">
+                      <Input
+                        value={editing.horario ?? ""}
+                        onChange={(e) => setEditing({ ...editing, horario: e.target.value })}
+                      />
+                    </F>
+                    <F label="Escala">
+                      <Input
+                        value={editing.escala ?? ""}
+                        onChange={(e) => setEditing({ ...editing, escala: e.target.value })}
+                      />
+                    </F>
                     <F label="Status">
                       <Select
-                        value={String(editing.status || "ativo").trim().toLowerCase() || "ativo"}
+                        value={
+                          String(editing.status || "ativo")
+                            .trim()
+                            .toLowerCase() || "ativo"
+                        }
                         onValueChange={(v) => setEditing({ ...editing, status: v })}
                       >
-                        <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Status" />
+                        </SelectTrigger>
                         <SelectContent>
                           {STATUS_OPTIONS.map((s) => (
-                            <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
+                            <SelectItem key={s} value={s} className="capitalize">
+                              {s}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </F>
-                    <F label="Salário (R$)"><Input type="number" step="0.01" value={editing.salario ?? 0} onChange={(e) => setEditing({ ...editing, salario: Number(e.target.value) })} /></F>
-                    <F label="Pagamentos realizados (R$)"><Input type="number" step="0.01" value={editing.pagamento ?? 0} onChange={(e) => setEditing({ ...editing, pagamento: Number(e.target.value) })} /></F>
+                    <F label="Salário (R$)">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={editing.salario ?? 0}
+                        onChange={(e) =>
+                          setEditing({ ...editing, salario: Number(e.target.value) })
+                        }
+                      />
+                    </F>
+                    <F label="Pagamentos realizados (R$)">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={editing.pagamento ?? 0}
+                        onChange={(e) =>
+                          setEditing({ ...editing, pagamento: Number(e.target.value) })
+                        }
+                      />
+                    </F>
                     <F label="Saldo devedor (R$) - calculado">
                       <Input
                         type="number"
@@ -388,24 +671,104 @@ function ColaboradoresPage() {
                         disabled
                         className="bg-muted"
                       />
-                      <p className="text-[11px] text-muted-foreground">Saldo = salário − pagamentos realizados. Se pagamento &lt; salário, acumula para o próximo mês até ser quitado.</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Saldo = salário − pagamentos realizados. Se pagamento &lt; salário, acumula
+                        para o próximo mês até ser quitado.
+                      </p>
                     </F>
-                    <F label="Observações" cn="sm:col-span-2"><Textarea value={editing.observacoes ?? ""} onChange={(e) => setEditing({ ...editing, observacoes: e.target.value })} /></F>
+                    <F label="Observações" cn="sm:col-span-2">
+                      <Textarea
+                        value={editing.observacoes ?? ""}
+                        onChange={(e) => setEditing({ ...editing, observacoes: e.target.value })}
+                      />
+                    </F>
                     <div className="flex items-center gap-2 sm:col-span-2">
-                      <Switch checked={editing.em_turno ?? false} onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })} />
+                      <Switch
+                        checked={editing.em_turno ?? false}
+                        onCheckedChange={(v) => setEditing({ ...editing, em_turno: v })}
+                      />
                       <Label>Em turno agora</Label>
                     </div>
                     <div className="flex items-center gap-2 sm:col-span-2 rounded-lg border border-border p-3">
-                      <Switch checked={editing.is_motoboy ?? false} onCheckedChange={(v) => setEditing({ ...editing, is_motoboy: v })} />
+                      <Switch
+                        checked={editing.is_motoboy ?? false}
+                        onCheckedChange={(v) => setEditing({ ...editing, is_motoboy: v })}
+                      />
                       <div className="space-y-0.5">
                         <Label>É motoboy</Label>
-                        <p className="text-[11px] text-muted-foreground">Motoboys aparecem na Folha dos motoboys no Financeiro.</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          Motoboys aparecem na Folha dos motoboys no Financeiro.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="space-y-3 rounded-lg border border-border p-3 sm:col-span-2">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={editing.ponto_habilitado ?? true}
+                          onCheckedChange={(v) => setEditing({ ...editing, ponto_habilitado: v })}
+                        />
+                        <div className="space-y-0.5">
+                          <Label>Habilitado para registrar ponto</Label>
+                          <p className="text-[11px] text-muted-foreground">
+                            Se desligado, o colaborador não é reconhecido no quiosque de ponto.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <F label="Jornada">
+                          <Select
+                            value={editing.ponto_tipo_jornada ?? "4_batidas"}
+                            onValueChange={(v) => setEditing({ ...editing, ponto_tipo_jornada: v })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="4_batidas">4 batidas (com intervalo)</SelectItem>
+                              <SelectItem value="2_batidas">2 batidas (entrada/saída)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </F>
+                        <F label="Carga diária (horas)">
+                          <Input
+                            type="number"
+                            min={0}
+                            step={0.25}
+                            value={((Number(editing.carga_horaria_minutos) || 480) / 60).toString()}
+                            onChange={(e) =>
+                              setEditing({
+                                ...editing,
+                                carga_horaria_minutos: Math.max(
+                                  0,
+                                  Math.round((Number(e.target.value) || 0) * 60),
+                                ),
+                              })
+                            }
+                          />
+                        </F>
+                        <F label="Tolerância (min)">
+                          <Input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={editing.tolerancia_minutos ?? 10}
+                            onChange={(e) =>
+                              setEditing({
+                                ...editing,
+                                tolerancia_minutos: Math.max(0, Number(e.target.value) || 0),
+                              })
+                            }
+                          />
+                        </F>
                       </div>
                     </div>
                   </div>
                 </TabsContent>
 
-                <TabsContent value="documentos" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+                <TabsContent
+                  value="documentos"
+                  className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1"
+                >
                   {editing.id ? (
                     <div className="space-y-4">
                       <div className="grid grid-cols-3 gap-3">
@@ -431,27 +794,50 @@ function ColaboradoresPage() {
                           <Label className="text-xs font-medium">Documentos anexados</Label>
                           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                             {docs.map((doc) => (
-                              <div key={doc.id} className="relative border rounded-lg p-3 bg-card hover:shadow-md transition-shadow">
+                              <div
+                                key={doc.id}
+                                className="relative border rounded-lg p-3 bg-card hover:shadow-md transition-shadow"
+                              >
                                 <div className="aspect-square mb-2 rounded bg-muted flex items-center justify-center overflow-hidden relative">
                                   {isImage(doc.mime_type) ? (
-                                    <img src={doc.arquivo_url} alt={doc.nome} className="w-full h-full object-cover" />
+                                    <img
+                                      src={doc.arquivo_url}
+                                      alt={doc.nome}
+                                      className="w-full h-full object-cover"
+                                    />
                                   ) : (
                                     <FileText className="size-12 text-muted-foreground" />
                                   )}
                                   <div className="absolute inset-0 bg-black/50 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                                    <Button variant="ghost" size="icon" onClick={() => window.open(doc.arquivo_url, "_blank")}><Eye className="size-4" /></Button>
-                                    <Button variant="ghost" size="icon" onClick={() => {
-                                      const a = document.createElement("a");
-                                      a.href = doc.arquivo_url;
-                                      a.download = doc.nome;
-                                      a.click();
-                                    }}><Download className="size-4" /></Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      onClick={() => window.open(doc.arquivo_url, "_blank")}
+                                    >
+                                      <Eye className="size-4" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      onClick={() => {
+                                        const a = document.createElement("a");
+                                        a.href = doc.arquivo_url;
+                                        a.download = doc.nome;
+                                        a.click();
+                                      }}
+                                    >
+                                      <Download className="size-4" />
+                                    </Button>
                                   </div>
                                 </div>
                                 <div className="space-y-1 text-xs">
-                                  <p className="font-medium truncate" title={doc.nome}>{doc.nome}</p>
+                                  <p className="font-medium truncate" title={doc.nome}>
+                                    {doc.nome}
+                                  </p>
                                   <p className="text-muted-foreground capitalize">{doc.tipo}</p>
-                                  <p className="text-muted-foreground">{formatFileSize(doc.tamanho_bytes)}</p>
+                                  <p className="text-muted-foreground">
+                                    {formatFileSize(doc.tamanho_bytes)}
+                                  </p>
                                 </div>
                                 <Button
                                   variant="ghost"
@@ -475,10 +861,31 @@ function ColaboradoresPage() {
                     </div>
                   )}
                 </TabsContent>
+
+                <TabsContent value="biometria" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+                  {editing.id ? (
+                    <BiometriaPanel
+                      collaboratorId={editing.id}
+                      collaboratorNome={editing.nome ?? ""}
+                      consentAt={editing.biometria_consentimento_em}
+                      onSaved={() => qc.invalidateQueries({ queryKey: ["collaborators"] })}
+                    />
+                  ) : (
+                    <div className="text-center py-12 text-muted-foreground">
+                      <Users className="size-12 mx-auto mb-2 opacity-50" />
+                      <p>Salve o colaborador primeiro para cadastrar a biometria facial</p>
+                    </div>
+                  )}
+                </TabsContent>
                 {activeTab === "dados" && (
                   <DialogFooter className="shrink-0 border-t pt-4">
-                    <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
-                    <Button onClick={() => save.mutate(editing)} disabled={!editing.nome || save.isPending}>
+                    <Button variant="outline" onClick={() => setOpen(false)}>
+                      Cancelar
+                    </Button>
+                    <Button
+                      onClick={() => save.mutate(editing)}
+                      disabled={!editing.nome || save.isPending}
+                    >
                       {save.isPending && <Loader2 className="mr-2 size-4 animate-spin" />} Salvar
                     </Button>
                   </DialogFooter>
@@ -491,10 +898,16 @@ function ColaboradoresPage() {
 
       <AlertDialog open={!!toDelete} onOpenChange={(o) => !o && setToDelete(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Remover colaborador?</AlertDialogTitle>
-            <AlertDialogDescription>"{toDelete?.nome}" será desativado.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={() => toDelete && remove.mutate(toDelete)}>Remover</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remover colaborador?</AlertDialogTitle>
+            <AlertDialogDescription>"{toDelete?.nome}" será desativado.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={() => toDelete && remove.mutate(toDelete)}>
+              Remover
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>
@@ -502,5 +915,10 @@ function ColaboradoresPage() {
 }
 
 function F({ label, children, cn }: { label: string; children: React.ReactNode; cn?: string }) {
-  return <div className={"space-y-1.5 " + (cn ?? "")}><Label className="text-xs">{label}</Label>{children}</div>;
+  return (
+    <div className={"space-y-1.5 " + (cn ?? "")}>
+      <Label className="text-xs">{label}</Label>
+      {children}
+    </div>
+  );
 }

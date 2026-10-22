@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as QuiosqueRouteImport } from './routes/quiosque'
 import { Route as AuthenticatedAlmoxarifadoRouteImport } from './routes/_authenticated/almoxarifado'
 import { Route as AuthenticatedAnotaRouteImport } from './routes/_authenticated/anota'
 import { Route as AuthenticatedColaboradoresRouteImport } from './routes/_authenticated/colaboradores'
@@ -23,6 +24,7 @@ import { Route as AuthenticatedHistoricoRouteImport } from './routes/_authentica
 import { Route as AuthenticatedMensagensRouteImport } from './routes/_authenticated/mensagens'
 import { Route as AuthenticatedOrdensRouteImport } from './routes/_authenticated/ordens'
 import { Route as AuthenticatedPainelRouteImport } from './routes/_authenticated/painel'
+import { Route as AuthenticatedPontoRouteImport } from './routes/_authenticated/ponto'
 import { Route as AuthenticatedProdutosRouteImport } from './routes/_authenticated/produtos'
 import { Route as AuthenticatedRecheiosRouteImport } from './routes/_authenticated/recheios'
 import { Route as AuthenticatedRelatorioProducaoRouteImport } from './routes/_authenticated/relatorio-producao'
@@ -43,6 +45,11 @@ const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QuiosqueRoute = QuiosqueRouteImport.update({
+  id: '/quiosque',
+  path: '/quiosque',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedAlmoxarifadoRoute =
@@ -103,6 +110,11 @@ const AuthenticatedPainelRoute = AuthenticatedPainelRouteImport.update({
   path: '/painel',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedPontoRoute = AuthenticatedPontoRouteImport.update({
+  id: '/ponto',
+  path: '/ponto',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedProdutosRoute = AuthenticatedProdutosRouteImport.update({
   id: '/produtos',
   path: '/produtos',
@@ -143,6 +155,7 @@ const ApiWhatsappWebhookRoute = ApiWhatsappWebhookRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/quiosque': typeof QuiosqueRoute
   '/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
   '/anota': typeof AuthenticatedAnotaRoute
   '/colaboradores': typeof AuthenticatedColaboradoresRoute
@@ -154,6 +167,7 @@ export interface FileRoutesByFullPath {
   '/mensagens': typeof AuthenticatedMensagensRoute
   '/ordens': typeof AuthenticatedOrdensRoute
   '/painel': typeof AuthenticatedPainelRoute
+  '/ponto': typeof AuthenticatedPontoRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/recheios': typeof AuthenticatedRecheiosRoute
   '/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
@@ -165,6 +179,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/quiosque': typeof QuiosqueRoute
   '/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
   '/anota': typeof AuthenticatedAnotaRoute
   '/colaboradores': typeof AuthenticatedColaboradoresRoute
@@ -176,6 +191,7 @@ export interface FileRoutesByTo {
   '/mensagens': typeof AuthenticatedMensagensRoute
   '/ordens': typeof AuthenticatedOrdensRoute
   '/painel': typeof AuthenticatedPainelRoute
+  '/ponto': typeof AuthenticatedPontoRoute
   '/produtos': typeof AuthenticatedProdutosRoute
   '/recheios': typeof AuthenticatedRecheiosRoute
   '/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
@@ -189,6 +205,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
+  '/quiosque': typeof QuiosqueRoute
   '/_authenticated/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
   '/_authenticated/anota': typeof AuthenticatedAnotaRoute
   '/_authenticated/colaboradores': typeof AuthenticatedColaboradoresRoute
@@ -200,6 +217,7 @@ export interface FileRoutesById {
   '/_authenticated/mensagens': typeof AuthenticatedMensagensRoute
   '/_authenticated/ordens': typeof AuthenticatedOrdensRoute
   '/_authenticated/painel': typeof AuthenticatedPainelRoute
+  '/_authenticated/ponto': typeof AuthenticatedPontoRoute
   '/_authenticated/produtos': typeof AuthenticatedProdutosRoute
   '/_authenticated/recheios': typeof AuthenticatedRecheiosRoute
   '/_authenticated/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
@@ -213,6 +231,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/auth'
+    | '/quiosque'
     | '/almoxarifado'
     | '/anota'
     | '/colaboradores'
@@ -224,6 +243,7 @@ export interface FileRouteTypes {
     | '/mensagens'
     | '/ordens'
     | '/painel'
+    | '/ponto'
     | '/produtos'
     | '/recheios'
     | '/relatorio-producao'
@@ -235,6 +255,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/auth'
+    | '/quiosque'
     | '/almoxarifado'
     | '/anota'
     | '/colaboradores'
@@ -246,6 +267,7 @@ export interface FileRouteTypes {
     | '/mensagens'
     | '/ordens'
     | '/painel'
+    | '/ponto'
     | '/produtos'
     | '/recheios'
     | '/relatorio-producao'
@@ -258,6 +280,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_authenticated'
     | '/auth'
+    | '/quiosque'
     | '/_authenticated/almoxarifado'
     | '/_authenticated/anota'
     | '/_authenticated/colaboradores'
@@ -269,6 +292,7 @@ export interface FileRouteTypes {
     | '/_authenticated/mensagens'
     | '/_authenticated/ordens'
     | '/_authenticated/painel'
+    | '/_authenticated/ponto'
     | '/_authenticated/produtos'
     | '/_authenticated/recheios'
     | '/_authenticated/relatorio-producao'
@@ -282,6 +306,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
+  QuiosqueRoute: typeof QuiosqueRoute
   ApiAnotaWebhookRoute: typeof ApiAnotaWebhookRoute
   ApiWhatsappWebhookRoute: typeof ApiWhatsappWebhookRoute
 }
@@ -307,6 +332,13 @@ declare module '@tanstack/react-router' {
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/quiosque': {
+      id: '/quiosque'
+      path: '/quiosque'
+      fullPath: '/quiosque'
+      preLoaderRoute: typeof QuiosqueRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/almoxarifado': {
@@ -386,6 +418,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedPainelRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/ponto': {
+      id: '/_authenticated/ponto'
+      path: '/ponto'
+      fullPath: '/ponto'
+      preLoaderRoute: typeof AuthenticatedPontoRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/produtos': {
       id: '/_authenticated/produtos'
       path: '/produtos'
@@ -450,6 +489,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedMensagensRoute: typeof AuthenticatedMensagensRoute
   AuthenticatedOrdensRoute: typeof AuthenticatedOrdensRoute
   AuthenticatedPainelRoute: typeof AuthenticatedPainelRoute
+  AuthenticatedPontoRoute: typeof AuthenticatedPontoRoute
   AuthenticatedProdutosRoute: typeof AuthenticatedProdutosRoute
   AuthenticatedRecheiosRoute: typeof AuthenticatedRecheiosRoute
   AuthenticatedRelatorioProducaoRoute: typeof AuthenticatedRelatorioProducaoRoute
@@ -469,6 +509,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedMensagensRoute: AuthenticatedMensagensRoute,
   AuthenticatedOrdensRoute: AuthenticatedOrdensRoute,
   AuthenticatedPainelRoute: AuthenticatedPainelRoute,
+  AuthenticatedPontoRoute: AuthenticatedPontoRoute,
   AuthenticatedProdutosRoute: AuthenticatedProdutosRoute,
   AuthenticatedRecheiosRoute: AuthenticatedRecheiosRoute,
   AuthenticatedRelatorioProducaoRoute: AuthenticatedRelatorioProducaoRoute,
@@ -483,6 +524,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
+  QuiosqueRoute: QuiosqueRoute,
   ApiAnotaWebhookRoute: ApiAnotaWebhookRoute,
   ApiWhatsappWebhookRoute: ApiWhatsappWebhookRoute,
 }

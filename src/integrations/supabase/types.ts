@@ -12,31 +12,6 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "14.5"
   }
-  graphql_public: {
-    Tables: {
-      [_ in never]: never
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      graphql: {
-        Args: {
-          extensions?: Json
-          operationName?: string
-          query?: string
-          variables?: Json
-        }
-        Returns: Json
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
   public: {
     Tables: {
       activity_logs: {
@@ -317,9 +292,56 @@ export type Database = {
           },
         ]
       }
+      collaborator_faces: {
+        Row: {
+          ativo: boolean
+          collaborator_id: string
+          created_at: string
+          created_by: string | null
+          descriptor: Json
+          foto_path: string | null
+          id: string
+          modelo: string
+          updated_at: string
+        }
+        Insert: {
+          ativo?: boolean
+          collaborator_id: string
+          created_at?: string
+          created_by?: string | null
+          descriptor: Json
+          foto_path?: string | null
+          id?: string
+          modelo?: string
+          updated_at?: string
+        }
+        Update: {
+          ativo?: boolean
+          collaborator_id?: string
+          created_at?: string
+          created_by?: string | null
+          descriptor?: Json
+          foto_path?: string | null
+          id?: string
+          modelo?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "collaborator_faces_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       collaborators: {
         Row: {
           banco_horas: number | null
+          biometria_consentimento_em: string | null
+          biometria_consentimento_por: string | null
+          carga_horaria_minutos: number
           cargo: string | null
           celular: string | null
           cpf: string | null
@@ -338,16 +360,22 @@ export type Database = {
           nome: string
           observacoes: string | null
           pagamento: number | null
+          ponto_habilitado: boolean
+          ponto_tipo_jornada: string
           rg: string | null
           salario: number | null
           saldo_devedor: number | null
           status: string
           telefone: string | null
+          tolerancia_minutos: number
           turno: string | null
           updated_at: string
         }
         Insert: {
           banco_horas?: number | null
+          biometria_consentimento_em?: string | null
+          biometria_consentimento_por?: string | null
+          carga_horaria_minutos?: number
           cargo?: string | null
           celular?: string | null
           cpf?: string | null
@@ -366,16 +394,22 @@ export type Database = {
           nome: string
           observacoes?: string | null
           pagamento?: number | null
+          ponto_habilitado?: boolean
+          ponto_tipo_jornada?: string
           rg?: string | null
           salario?: number | null
           saldo_devedor?: number | null
           status?: string
           telefone?: string | null
+          tolerancia_minutos?: number
           turno?: string | null
           updated_at?: string
         }
         Update: {
           banco_horas?: number | null
+          biometria_consentimento_em?: string | null
+          biometria_consentimento_por?: string | null
+          carga_horaria_minutos?: number
           cargo?: string | null
           celular?: string | null
           cpf?: string | null
@@ -394,11 +428,14 @@ export type Database = {
           nome?: string
           observacoes?: string | null
           pagamento?: number | null
+          ponto_habilitado?: boolean
+          ponto_tipo_jornada?: string
           rg?: string | null
           salario?: number | null
           saldo_devedor?: number | null
           status?: string
           telefone?: string | null
+          tolerancia_minutos?: number
           turno?: string | null
           updated_at?: string
         }
@@ -815,6 +852,44 @@ export type Database = {
             columns: ["supplier_id"]
             isOneToOne: false
             referencedRelation: "suppliers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ponto_fechamentos: {
+        Row: {
+          collaborator_id: string
+          created_at: string
+          fechado_por: string | null
+          id: string
+          periodo_fim: string
+          periodo_inicio: string
+          saldo_minutos: number
+        }
+        Insert: {
+          collaborator_id: string
+          created_at?: string
+          fechado_por?: string | null
+          id?: string
+          periodo_fim: string
+          periodo_inicio: string
+          saldo_minutos: number
+        }
+        Update: {
+          collaborator_id?: string
+          created_at?: string
+          fechado_por?: string | null
+          id?: string
+          periodo_fim?: string
+          periodo_inicio?: string
+          saldo_minutos?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ponto_fechamentos_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
             referencedColumns: ["id"]
           },
         ]
@@ -1271,6 +1346,65 @@ export type Database = {
         }
         Relationships: []
       }
+      time_entries: {
+        Row: {
+          ajustado_por: string | null
+          ajuste_motivo: string | null
+          collaborator_id: string
+          confianca: number | null
+          created_at: string
+          created_by: string | null
+          dispositivo: string | null
+          foto_path: string | null
+          id: string
+          observacoes: string | null
+          origem: string
+          registrado_em: string
+          tipo: string
+          updated_at: string
+        }
+        Insert: {
+          ajustado_por?: string | null
+          ajuste_motivo?: string | null
+          collaborator_id: string
+          confianca?: number | null
+          created_at?: string
+          created_by?: string | null
+          dispositivo?: string | null
+          foto_path?: string | null
+          id?: string
+          observacoes?: string | null
+          origem?: string
+          registrado_em?: string
+          tipo: string
+          updated_at?: string
+        }
+        Update: {
+          ajustado_por?: string | null
+          ajuste_motivo?: string | null
+          collaborator_id?: string
+          confianca?: number | null
+          created_at?: string
+          created_by?: string | null
+          dispositivo?: string | null
+          foto_path?: string | null
+          id?: string
+          observacoes?: string | null
+          origem?: string
+          registrado_em?: string
+          tipo?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "time_entries_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_roles: {
         Row: {
           created_at: string
@@ -1510,6 +1644,16 @@ export type Database = {
         }
         Returns: undefined
       }
+      fechar_ponto_periodo: {
+        Args: {
+          _collaborator_id: string
+          _fim: string
+          _inicio: string
+          _saldo_minutos: number
+          _user_id: string
+        }
+        Returns: number
+      }
       get_dre_data: {
         Args: { p_fim: string; p_inicio: string }
         Returns: {
@@ -1713,9 +1857,6 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
-  graphql_public: {
-    Enums: {},
-  },
   public: {
     Enums: {
       app_role: [
