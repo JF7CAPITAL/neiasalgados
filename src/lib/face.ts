@@ -27,7 +27,6 @@ export interface GalleryFace {
   collaboratorId: string;
   collaboratorName: string;
   descriptor: number[];
-  fotoPath: string | null;
 }
 
 export interface FaceMatch {

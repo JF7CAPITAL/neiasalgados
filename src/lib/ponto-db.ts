@@ -133,7 +133,6 @@ interface FaceGalleryRow {
   id: string;
   collaborator_id: string;
   descriptor: unknown;
-  foto_path: string | null;
   collaborator: {
     nome: string;
     status: string;
@@ -150,7 +149,7 @@ export async function loadFaceGallery(force = false): Promise<GalleryFace[]> {
   const { data, error } = await supabase
     .from("collaborator_faces")
     .select(
-      "id, collaborator_id, descriptor, foto_path, collaborator:collaborators!inner(nome, status, ponto_habilitado, deleted_at)",
+      "id, collaborator_id, descriptor, collaborator:collaborators!inner(nome, status, ponto_habilitado, deleted_at)",
     )
     .eq("ativo", true);
   if (error) throw error;
@@ -168,7 +167,6 @@ export async function loadFaceGallery(force = false): Promise<GalleryFace[]> {
       collaboratorId: row.collaborator_id,
       collaboratorName: collaborator.nome,
       descriptor: row.descriptor as number[],
-      fotoPath: row.foto_path,
     });
   }
 

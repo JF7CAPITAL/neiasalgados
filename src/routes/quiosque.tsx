@@ -55,7 +55,6 @@ import {
   type PontoCollaborator,
   type TimeEntryTipo,
 } from "@/lib/ponto";
-import type { GalleryFace } from "@/lib/face";
 
 export const Route = createFileRoute("/quiosque")({
   ssr: false,
