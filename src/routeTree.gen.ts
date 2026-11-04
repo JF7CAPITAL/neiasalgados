@@ -16,6 +16,7 @@ import { Route as QuiosqueRouteImport } from './routes/quiosque'
 import { Route as AuthenticatedAlmoxarifadoRouteImport } from './routes/_authenticated/almoxarifado'
 import { Route as AuthenticatedAnotaRouteImport } from './routes/_authenticated/anota'
 import { Route as AuthenticatedColaboradoresRouteImport } from './routes/_authenticated/colaboradores'
+import { Route as AuthenticatedConfiguracaoRouteRouteImport } from './routes/_authenticated/configuracao/route'
 import { Route as AuthenticatedEntradasRouteImport } from './routes/_authenticated/entradas'
 import { Route as AuthenticatedEstoqueRouteImport } from './routes/_authenticated/estoque'
 import { Route as AuthenticatedFinanceiroRouteImport } from './routes/_authenticated/financeiro'
@@ -32,6 +33,9 @@ import { Route as AuthenticatedRelatoriosRouteImport } from './routes/_authentic
 import { Route as AuthenticatedSaidasRouteImport } from './routes/_authenticated/saidas'
 import { Route as ApiAnotaWebhookRouteImport } from './routes/api/anota-webhook'
 import { Route as ApiWhatsappWebhookRouteImport } from './routes/api/whatsapp-webhook'
+import { Route as AuthenticatedConfiguracaoEmailRouteImport } from './routes/_authenticated/configuracao/email'
+import { Route as AuthenticatedConfiguracaoFinanceiroRouteImport } from './routes/_authenticated/configuracao/financeiro'
+import { Route as AuthenticatedConfiguracaoSenhaRouteImport } from './routes/_authenticated/configuracao/senha'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -67,6 +71,12 @@ const AuthenticatedColaboradoresRoute =
   AuthenticatedColaboradoresRouteImport.update({
     id: '/colaboradores',
     path: '/colaboradores',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedConfiguracaoRouteRoute =
+  AuthenticatedConfiguracaoRouteRouteImport.update({
+    id: '/configuracao',
+    path: '/configuracao',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedEntradasRoute = AuthenticatedEntradasRouteImport.update({
@@ -151,11 +161,30 @@ const ApiWhatsappWebhookRoute = ApiWhatsappWebhookRouteImport.update({
   path: '/api/whatsapp-webhook',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthenticatedConfiguracaoEmailRoute =
+  AuthenticatedConfiguracaoEmailRouteImport.update({
+    id: '/email',
+    path: '/email',
+    getParentRoute: () => AuthenticatedConfiguracaoRouteRoute,
+  } as any)
+const AuthenticatedConfiguracaoFinanceiroRoute =
+  AuthenticatedConfiguracaoFinanceiroRouteImport.update({
+    id: '/financeiro',
+    path: '/financeiro',
+    getParentRoute: () => AuthenticatedConfiguracaoRouteRoute,
+  } as any)
+const AuthenticatedConfiguracaoSenhaRoute =
+  AuthenticatedConfiguracaoSenhaRouteImport.update({
+    id: '/senha',
+    path: '/senha',
+    getParentRoute: () => AuthenticatedConfiguracaoRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/quiosque': typeof QuiosqueRoute
+  '/configuracao': typeof AuthenticatedConfiguracaoRouteRouteWithChildren
   '/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
   '/anota': typeof AuthenticatedAnotaRoute
   '/colaboradores': typeof AuthenticatedColaboradoresRoute
@@ -175,11 +204,15 @@ export interface FileRoutesByFullPath {
   '/saidas': typeof AuthenticatedSaidasRoute
   '/api/anota-webhook': typeof ApiAnotaWebhookRoute
   '/api/whatsapp-webhook': typeof ApiWhatsappWebhookRoute
+  '/configuracao/email': typeof AuthenticatedConfiguracaoEmailRoute
+  '/configuracao/financeiro': typeof AuthenticatedConfiguracaoFinanceiroRoute
+  '/configuracao/senha': typeof AuthenticatedConfiguracaoSenhaRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/quiosque': typeof QuiosqueRoute
+  '/configuracao': typeof AuthenticatedConfiguracaoRouteRouteWithChildren
   '/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
   '/anota': typeof AuthenticatedAnotaRoute
   '/colaboradores': typeof AuthenticatedColaboradoresRoute
@@ -199,6 +232,9 @@ export interface FileRoutesByTo {
   '/saidas': typeof AuthenticatedSaidasRoute
   '/api/anota-webhook': typeof ApiAnotaWebhookRoute
   '/api/whatsapp-webhook': typeof ApiWhatsappWebhookRoute
+  '/configuracao/email': typeof AuthenticatedConfiguracaoEmailRoute
+  '/configuracao/financeiro': typeof AuthenticatedConfiguracaoFinanceiroRoute
+  '/configuracao/senha': typeof AuthenticatedConfiguracaoSenhaRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -206,6 +242,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRoute
   '/quiosque': typeof QuiosqueRoute
+  '/_authenticated/configuracao': typeof AuthenticatedConfiguracaoRouteRouteWithChildren
   '/_authenticated/almoxarifado': typeof AuthenticatedAlmoxarifadoRoute
   '/_authenticated/anota': typeof AuthenticatedAnotaRoute
   '/_authenticated/colaboradores': typeof AuthenticatedColaboradoresRoute
@@ -225,6 +262,9 @@ export interface FileRoutesById {
   '/_authenticated/saidas': typeof AuthenticatedSaidasRoute
   '/api/anota-webhook': typeof ApiAnotaWebhookRoute
   '/api/whatsapp-webhook': typeof ApiWhatsappWebhookRoute
+  '/_authenticated/configuracao/email': typeof AuthenticatedConfiguracaoEmailRoute
+  '/_authenticated/configuracao/financeiro': typeof AuthenticatedConfiguracaoFinanceiroRoute
+  '/_authenticated/configuracao/senha': typeof AuthenticatedConfiguracaoSenhaRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -232,6 +272,7 @@ export interface FileRouteTypes {
     | '/'
     | '/auth'
     | '/quiosque'
+    | '/configuracao'
     | '/almoxarifado'
     | '/anota'
     | '/colaboradores'
@@ -251,11 +292,15 @@ export interface FileRouteTypes {
     | '/saidas'
     | '/api/anota-webhook'
     | '/api/whatsapp-webhook'
+    | '/configuracao/email'
+    | '/configuracao/financeiro'
+    | '/configuracao/senha'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/auth'
     | '/quiosque'
+    | '/configuracao'
     | '/almoxarifado'
     | '/anota'
     | '/colaboradores'
@@ -275,12 +320,16 @@ export interface FileRouteTypes {
     | '/saidas'
     | '/api/anota-webhook'
     | '/api/whatsapp-webhook'
+    | '/configuracao/email'
+    | '/configuracao/financeiro'
+    | '/configuracao/senha'
   id:
     | '__root__'
     | '/'
     | '/_authenticated'
     | '/auth'
     | '/quiosque'
+    | '/_authenticated/configuracao'
     | '/_authenticated/almoxarifado'
     | '/_authenticated/anota'
     | '/_authenticated/colaboradores'
@@ -300,6 +349,9 @@ export interface FileRouteTypes {
     | '/_authenticated/saidas'
     | '/api/anota-webhook'
     | '/api/whatsapp-webhook'
+    | '/_authenticated/configuracao/email'
+    | '/_authenticated/configuracao/financeiro'
+    | '/_authenticated/configuracao/senha'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -360,6 +412,13 @@ declare module '@tanstack/react-router' {
       path: '/colaboradores'
       fullPath: '/colaboradores'
       preLoaderRoute: typeof AuthenticatedColaboradoresRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/configuracao': {
+      id: '/_authenticated/configuracao'
+      path: '/configuracao'
+      fullPath: '/configuracao'
+      preLoaderRoute: typeof AuthenticatedConfiguracaoRouteRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/entradas': {
@@ -474,10 +533,51 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiWhatsappWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/configuracao/email': {
+      id: '/_authenticated/configuracao/email'
+      path: '/email'
+      fullPath: '/configuracao/email'
+      preLoaderRoute: typeof AuthenticatedConfiguracaoEmailRouteImport
+      parentRoute: typeof AuthenticatedConfiguracaoRouteRoute
+    }
+    '/_authenticated/configuracao/financeiro': {
+      id: '/_authenticated/configuracao/financeiro'
+      path: '/financeiro'
+      fullPath: '/configuracao/financeiro'
+      preLoaderRoute: typeof AuthenticatedConfiguracaoFinanceiroRouteImport
+      parentRoute: typeof AuthenticatedConfiguracaoRouteRoute
+    }
+    '/_authenticated/configuracao/senha': {
+      id: '/_authenticated/configuracao/senha'
+      path: '/senha'
+      fullPath: '/configuracao/senha'
+      preLoaderRoute: typeof AuthenticatedConfiguracaoSenhaRouteImport
+      parentRoute: typeof AuthenticatedConfiguracaoRouteRoute
+    }
   }
 }
 
+interface AuthenticatedConfiguracaoRouteRouteChildren {
+  AuthenticatedConfiguracaoEmailRoute: typeof AuthenticatedConfiguracaoEmailRoute
+  AuthenticatedConfiguracaoFinanceiroRoute: typeof AuthenticatedConfiguracaoFinanceiroRoute
+  AuthenticatedConfiguracaoSenhaRoute: typeof AuthenticatedConfiguracaoSenhaRoute
+}
+
+const AuthenticatedConfiguracaoRouteRouteChildren: AuthenticatedConfiguracaoRouteRouteChildren =
+  {
+    AuthenticatedConfiguracaoEmailRoute: AuthenticatedConfiguracaoEmailRoute,
+    AuthenticatedConfiguracaoFinanceiroRoute:
+      AuthenticatedConfiguracaoFinanceiroRoute,
+    AuthenticatedConfiguracaoSenhaRoute: AuthenticatedConfiguracaoSenhaRoute,
+  }
+
+const AuthenticatedConfiguracaoRouteRouteWithChildren =
+  AuthenticatedConfiguracaoRouteRoute._addFileChildren(
+    AuthenticatedConfiguracaoRouteRouteChildren,
+  )
+
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedConfiguracaoRouteRoute: typeof AuthenticatedConfiguracaoRouteRouteWithChildren
   AuthenticatedAlmoxarifadoRoute: typeof AuthenticatedAlmoxarifadoRoute
   AuthenticatedAnotaRoute: typeof AuthenticatedAnotaRoute
   AuthenticatedColaboradoresRoute: typeof AuthenticatedColaboradoresRoute
@@ -498,6 +598,8 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedConfiguracaoRouteRoute:
+    AuthenticatedConfiguracaoRouteRouteWithChildren,
   AuthenticatedAlmoxarifadoRoute: AuthenticatedAlmoxarifadoRoute,
   AuthenticatedAnotaRoute: AuthenticatedAnotaRoute,
   AuthenticatedColaboradoresRoute: AuthenticatedColaboradoresRoute,

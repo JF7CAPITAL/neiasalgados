@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { Menu, LogOut, X } from "lucide-react";
+import { Menu, LogOut, X, Settings, Key, Mail, Lock } from "lucide-react";
 
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -58,6 +58,54 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         </div>
       ))}
+      
+      {/* Configuração section */}
+      <div>
+        <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          Configuração
+        </p>
+        <div className="space-y-1">
+          <Link
+            to="/configuracao/senha"
+            onClick={onNavigate}
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              pathname === "/configuracao/senha" || pathname.startsWith("/configuracao/senha/")
+                ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+            )}
+          >
+            <Key className="size-[18px] shrink-0" />
+            Alterar senha
+          </Link>
+          <Link
+            to="/configuracao/email"
+            onClick={onNavigate}
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              pathname === "/configuracao/email" || pathname.startsWith("/configuracao/email/")
+                ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+            )}
+          >
+            <Mail className="size-[18px] shrink-0" />
+            Alterar email
+          </Link>
+          <Link
+            to="/configuracao/financeiro"
+            onClick={onNavigate}
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              pathname === "/configuracao/financeiro" || pathname.startsWith("/configuracao/financeiro/")
+                ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+            )}
+          >
+            <Lock className="size-[18px] shrink-0" />
+            Senha do financeiro
+          </Link>
+        </div>
+      </div>
     </nav>
   );
 }
