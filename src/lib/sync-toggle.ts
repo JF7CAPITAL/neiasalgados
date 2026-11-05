@@ -1,20 +1,23 @@
-const STORAGE_KEY = "anota-sync-enabled";
+const STORAGE_KEY = "anota-auto-promote";
+/** Chave antiga do toggle de sincronização (lida uma vez para migrar a escolha). */
+const LEGACY_STORAGE_KEY = "anota-sync-enabled";
 
 type Listener = (enabled: boolean) => void;
 const listeners = new Set<Listener>();
 
-export function isSyncEnabled(): boolean {
+/** Toggle "Promover agendados automaticamente" (localStorage). */
+export function isAutoPromoteEnabled(): boolean {
   if (typeof window === "undefined") return true;
-  const stored = localStorage.getItem(STORAGE_KEY);
+  const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
   return stored === null ? true : stored === "true";
 }
 
-export function setSyncEnabled(enabled: boolean) {
+export function setAutoPromoteEnabled(enabled: boolean) {
   localStorage.setItem(STORAGE_KEY, String(enabled));
   listeners.forEach((fn) => fn(enabled));
 }
 
-export function onSyncToggle(fn: Listener): () => void {
+export function onAutoPromoteToggle(fn: Listener): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }

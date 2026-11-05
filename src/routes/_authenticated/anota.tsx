@@ -26,8 +26,7 @@ import { toast } from "sonner";
 
 import { supabase } from "@/integrations/supabase/client";
 import {
-  testAnotaConnection,
-  syncAnotaOrders,
+  reprocessAnotaWebhookFailures,
   saveAnotaMapping,
   saveAnotaCombo,
   ANOTA_CHECK_LABELS,
@@ -67,14 +66,16 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { isSyncEnabled, setSyncEnabled, onSyncToggle } from "@/lib/sync-toggle";
+import {
+  isAutoPromoteEnabled,
+  setAutoPromoteEnabled,
+  onAutoPromoteToggle,
+} from "@/lib/sync-toggle";
 import { useRealtime } from "@/hooks/useRealtime";
 
 export const Route = createFileRoute("/_authenticated/anota")({
   component: AnotaPage,
 });
-
-type Filtro = "todos" | "analise" | "producao" | "finalizados";
 
 function diasAte(dataStr: string): string {
   const data = new Date(dataStr);
@@ -156,8 +157,7 @@ const TEMPLATE_VARIABLES = [
 
 function AnotaPage() {
   const qc = useQueryClient();
-  const [syncEnabled, setSyncEnabledState] = useState(() => isSyncEnabled());
-  const [filtro, setFiltro] = useState<Filtro>("todos");
+  const [autoPromote, setAutoPromoteState] = useState(() => isAutoPromoteEnabled());
   const [buscaData, setBuscaData] = useState(
     new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }),
   );
@@ -165,19 +165,18 @@ function AnotaPage() {
   const [buscaTexto, setBuscaTexto] = useState("");
 
   useEffect(() => {
-    const unsub = onSyncToggle((enabled) => setSyncEnabledState(enabled));
+    const unsub = onAutoPromoteToggle((enabled) => setAutoPromoteState(enabled));
     return unsub;
   }, []);
 
-  // Atualiza a tela em tempo real quando qualquer cliente (ou o sync)
+  // Atualiza a tela em tempo real quando qualquer cliente (ou o webhook)
   // altera os dados de pedidos/mapeamento do Anota.
   useRealtime(
     ["anota_orders", "anota_order_items", "anota_product_map", "anota_combo_item_map"],
     ["anota-orders", "anota-items", "anota-combo-map", "anota-scheduled", "anota-busca", "dashboard"],
   );
 
-  const testFn = useServerFn(testAnotaConnection);
-  const syncFn = useServerFn(syncAnotaOrders);
+  const reprocessFn = useServerFn(reprocessAnotaWebhookFailures);
   const saveMapFn = useServerFn(saveAnotaMapping);
   const saveComboFn = useServerFn(saveAnotaCombo);
   const whatsSettingsFn = useServerFn(getWhatsAppSettings);
@@ -193,7 +192,7 @@ function AnotaPage() {
   const getKeywordRulesFn = useServerFn(getWhatsAppKeywordRules);
   const saveKeywordRulesFn = useServerFn(saveWhatsAppKeywordRules);
 
-  const { data: orders = [], refetch: refetchOrders } = useQuery({
+  const { data: orders = [] } = useQuery({
     queryKey: ["anota-orders"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -207,6 +206,33 @@ function AnotaPage() {
       return data;
     },
     refetchInterval: 30000,
+  });
+
+  // Saúde do webhook: último evento recebido e falhas de processamento ainda
+  // pendentes (sem a API do Anota não há reconciliação automática).
+  const { data: webhook } = useQuery({
+    queryKey: ["anota-webhook-status"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("activity_logs")
+        .select("acao, created_at, detalhes")
+        .eq("modulo", "anota_webhook")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (error) throw error;
+      const rows = data ?? [];
+      const falhas = rows.filter(
+        (r) =>
+          r.acao === "falhou_processamento" &&
+          !(r.detalhes as { resolvido?: boolean } | null)?.resolvido,
+      ).length;
+      return {
+        falhas,
+        ultimo: rows.find((r) => r.acao === "recebeu_pedido")?.created_at ?? null,
+        naoAutorizado: rows.some((r) => r.acao === "recebeu_nao_autorizado"),
+      };
+    },
+    refetchInterval: 60000,
   });
 
   const { data: items = [] } = useQuery({
@@ -609,7 +635,7 @@ function AnotaPage() {
       if (!selectedOrderId) return null;
       const { data, error } = await supabase
         .from("anota_orders")
-        .select("id, numero, external_order_id, cliente, total, check_status")
+        .select("id, numero, external_order_id, cliente, total, check_status, cancelamento_motivo")
         .eq("id", selectedOrderId)
         .maybeSingle();
       if (error) throw error;
@@ -634,24 +660,18 @@ function AnotaPage() {
     enabled: !!selectedOrderId,
   });
 
-  const test = useMutation({
-    mutationFn: () => testFn(),
-    onSuccess: (r) => (r.ok ? toast.success(r.message) : toast.error(r.message)),
-    onError: (e: Error) => toast.error(e.message),
-  });
-
-  const sync = useMutation({
-    mutationFn: () => syncFn({ data: { filtro } }),
+  const reprocess = useMutation({
+    mutationFn: () => reprocessFn(),
     onSuccess: (r) => {
       if (r.ok) toast.success(r.message);
       else toast.error(r.message);
+      qc.invalidateQueries({ queryKey: ["anota-webhook-status"] });
       qc.invalidateQueries({ queryKey: ["anota-orders"] });
       qc.invalidateQueries({ queryKey: ["anota-items"] });
       qc.invalidateQueries({ queryKey: ["anota-scheduled"] });
       qc.invalidateQueries({ queryKey: ["anota-busca"] });
       qc.invalidateQueries({ queryKey: ["stock"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
-      refetchOrders();
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -808,57 +828,77 @@ function AnotaPage() {
     <div className="space-y-6">
       <PageHeader
         title="Anota AI"
-        subtitle="Importe pedidos de venda e dê baixa automática no estoque"
+        subtitle="Receba pedidos pelo webhook e dê baixa automática no estoque"
         icon={ShoppingBag}
         actions={
-          <>
-            <div className="flex items-center gap-2">
-              <Switch
-                id="sync-toggle"
-                checked={syncEnabled}
-                onCheckedChange={(v) => setSyncEnabled(v)}
-              />
-              <Label htmlFor="sync-toggle" className="text-sm">
-                {syncEnabled ? "Sync ativo" : "Sync desativado"}
-              </Label>
-            </div>
-            <Button
-              variant="outline"
-              onClick={() => test.mutate()}
-              disabled={test.isPending || !syncEnabled}
-            >
-              {test.isPending ? (
-                <Loader2 className="mr-2 size-4 animate-spin" />
-              ) : (
-                <Plug className="mr-2 size-4" />
-              )}
-              Testar conexão
-            </Button>
-            <Select value={filtro} onValueChange={(v) => setFiltro(v as Filtro)}>
-              <SelectTrigger className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="todos">Todos os status</SelectItem>
-                <SelectItem value="analise">Em análise</SelectItem>
-                <SelectItem value="producao">Em produção</SelectItem>
-                <SelectItem value="finalizados">Finalizados</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button onClick={() => sync.mutate()} disabled={sync.isPending || !syncEnabled}>
-              {sync.isPending ? (
-                <Loader2 className="mr-2 size-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 size-4" />
-              )}
-              Sincronizar pedidos
-            </Button>
-          </>
+          <div className="flex items-center gap-2">
+            <Switch
+              id="auto-promote-toggle"
+              checked={autoPromote}
+              onCheckedChange={(v) => setAutoPromoteEnabled(v)}
+            />
+            <Label htmlFor="auto-promote-toggle" className="text-sm">
+              {autoPromote ? "Promoção automática ativa" : "Promoção automática desativada"}
+            </Label>
+          </div>
         }
       />
 
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 ${
+          webhook && (webhook.falhas > 0 || webhook.naoAutorizado)
+            ? "border-destructive/40 bg-destructive/10"
+            : "border-border bg-muted/30"
+        }`}
+      >
+        <div className="flex items-center gap-2 text-sm">
+          {!webhook ? (
+            <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+          ) : webhook.falhas > 0 || webhook.naoAutorizado ? (
+            <AlertTriangle className="size-4 shrink-0 text-destructive" />
+          ) : (
+            <CheckCircle2 className="size-4 shrink-0 text-success" />
+          )}
+          <div>
+            <span className="font-medium">Webhook Anota AI</span>{" "}
+            <span className="text-muted-foreground">
+              {!webhook
+                ? "— verificando…"
+                : webhook.ultimo
+                  ? `— último evento recebido ${fmtDateTime(webhook.ultimo)}`
+                  : "— nenhum evento recebido ainda"}
+            </span>
+            {webhook && webhook.falhas > 0 && (
+              <span className="block text-destructive">
+                {webhook.falhas} evento(s) falharam ao processar e continuam pendentes.
+              </span>
+            )}
+            {webhook?.naoAutorizado && (
+              <span className="block text-destructive">
+                Houve chamadas rejeitadas (token inválido) — confira o ANOTA_WEBHOOK_SECRET.
+              </span>
+            )}
+          </div>
+        </div>
+        {(webhook?.falhas ?? 0) > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => reprocess.mutate()}
+            disabled={reprocess.isPending}
+          >
+            {reprocess.isPending ? (
+              <Loader2 className="mr-2 size-4 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-2 size-4" />
+            )}
+            Reprocessar falhas
+          </Button>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <KpiCard label="Pedidos importados" value={hojeOrders.length} hint={`${hojeOrders.length} sincronizados hoje`} icon={ShoppingBag} />
+        <KpiCard label="Pedidos importados" value={hojeOrders.length} hint={`${hojeOrders.length} recebidos hoje`} icon={ShoppingBag} />
         <KpiCard
           label="Itens sem mapeamento"
           value={pendentes}
@@ -896,7 +936,7 @@ function AnotaPage() {
           {hojeOrders.length === 0 ? (
             <EmptyState
               title="Nenhum pedido hoje"
-              description="Os pedidos sincronizados hoje aparecerão aqui."
+              description="Os pedidos recebidos hoje aparecerão aqui."
               icon={ShoppingBag}
             />
           ) : (
@@ -1036,7 +1076,7 @@ function AnotaPage() {
               description={
                 buscaTexto.trim()
                   ? `Nenhum pedido corresponde a "${buscaTexto}".`
-                  : `Nenhum pedido sincronizado em ${new Date(`${buscaData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}.`
+                  : `Nenhum pedido em ${new Date(`${buscaData}T12:00:00-03:00`).toLocaleDateString("pt-BR")}.`
               }
               icon={Search}
             />
@@ -1300,8 +1340,8 @@ function AnotaPage() {
                 <Label className="text-sm font-medium">Notificações automáticas</Label>
                 <p className="text-xs text-muted-foreground">
                   Cada notificação tem um título, a mensagem, a regra de disparo e uma imagem
-                  opcional enviada junto com o texto. Ative/desative o envio automático durante a
-                  sincronização de pedidos.
+                  opcional enviada junto com o texto. Ative/desative o envio automático quando um
+                  pedido entra ou muda de status.
                 </p>
               </div>
               <Switch
@@ -1507,7 +1547,7 @@ function AnotaPage() {
               </DialogHeader>
               <div className="space-y-3 text-sm text-muted-foreground">
                 <p>
-                  Quando o pedido sincronizado contiver uma das palavras-chave nos itens, no nome do
+                  Quando o pedido recebido contiver uma das palavras-chave nos itens, no nome do
                   cliente ou no payload, a mensagem configurada é enviada automaticamente ao cliente.
                 </p>
                 <p>
@@ -1725,12 +1765,18 @@ function AnotaPage() {
                     );
                   })()}
                 </div>
+                {!!selectedDetail?.cancelamento_motivo && (
+                  <div className="col-span-2">
+                    <span className="text-muted-foreground">Motivo do cancelamento:</span>{" "}
+                    <span className="font-medium">{selectedDetail.cancelamento_motivo}</span>
+                  </div>
+                )}
               </div>
               <div className="border-t pt-3">
                 <h4 className="mb-2 text-sm font-medium">Itens do pedido</h4>
                 {orderItems.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    Nenhum item encontrado. Sincronize novamente os pedidos.
+                    Nenhum item encontrado para este pedido.
                   </p>
                 ) : (
                   <table className="w-full text-sm">
@@ -1958,7 +2004,7 @@ function AnotaPage() {
           </DialogHeader>
           <p className="-mt-2 text-sm text-muted-foreground">
             Pedidos com status finalizado (check_status = 3) mas sem estoque_aplicado. Verifique
-            itens sem mapeamento ou falhas na sincronização.
+            itens sem mapeamento ou falhas no webhook.
           </p>
           {finalizadosSemBaixaItems.length > 0 ? (
             <div className="overflow-x-auto mt-4">

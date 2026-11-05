@@ -22,6 +22,7 @@ export const Route = createFileRoute("/api/anota-webhook")({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        let payload: unknown;
         try {
           const url = new URL(request.url);
           const token = url.searchParams.get("token") ?? "";
@@ -54,7 +55,6 @@ export const Route = createFileRoute("/api/anota-webhook")({
             return Response.json({ ok: false, error: "corpo vazio" });
           }
 
-          let payload: unknown;
           try {
             payload = JSON.parse(raw);
           } catch {
@@ -78,6 +78,13 @@ export const Route = createFileRoute("/api/anota-webhook")({
           }
 
           const result = await processAnotaWebhookOrder(supabaseAdmin, payload);
+
+          // Sem a API do Anota não há reconciliação automática: toda falha de
+          // processamento fica registrada para o botão "Reprocessar falhas".
+          if (!result.ok) {
+            await logFalhaProcessamento(payload, `processamento sem efeito (${result.acao})`);
+          }
+
           return Response.json({
             ok: result.ok,
             acao: result.acao,
@@ -86,6 +93,9 @@ export const Route = createFileRoute("/api/anota-webhook")({
           });
         } catch (e) {
           console.error("[anota-webhook] erro:", e);
+          if (payload !== undefined) {
+            await logFalhaProcessamento(payload, e instanceof Error ? e.message : String(e));
+          }
           // Responde 200 mesmo em erro para o Anota não reenviar em loop.
           return Response.json({ ok: false, error: "erro interno" });
         }
@@ -93,3 +103,19 @@ export const Route = createFileRoute("/api/anota-webhook")({
     },
   },
 });
+
+/** Registra uma falha de processamento do webhook para reprocessamento posterior. */
+async function logFalhaProcessamento(payload: unknown, motivo: string) {
+  try {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    await supabaseAdmin.from("activity_logs").insert({
+      modulo: "anota_webhook",
+      acao: "falhou_processamento",
+      registro_id: null,
+      user_id: null,
+      detalhes: { motivo, payload } as never,
+    });
+  } catch (e) {
+    console.error("[anota-webhook] falha ao logar falha de processamento:", e);
+  }
+}

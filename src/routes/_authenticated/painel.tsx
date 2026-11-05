@@ -610,7 +610,7 @@ function DashboardPage() {
     <div className="space-y-6">
       <PageHeader
         title="Painel de Controle"
-        subtitle={lastSync ? `Última sincronização Anota AI: ${fmtDateTime(lastSync)} — Clique nos cards para ver detalhes` : "Clique nos cards para ver detalhes"}
+        subtitle={lastSync ? `Última atualização Anota AI: ${fmtDateTime(lastSync)} — Clique nos cards para ver detalhes` : "Clique nos cards para ver detalhes"}
         icon={LayoutDashboard}
       />
 

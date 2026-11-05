@@ -138,6 +138,7 @@ export type Database = {
       }
       anota_orders: {
         Row: {
+          cancelamento_motivo: string | null
           check_status: number
           cliente: string | null
           created_at: string
@@ -158,6 +159,7 @@ export type Database = {
           whatsapp_statuses_notified: string[]
         }
         Insert: {
+          cancelamento_motivo?: string | null
           check_status?: number
           cliente?: string | null
           created_at?: string
@@ -178,6 +180,7 @@ export type Database = {
           whatsapp_statuses_notified?: string[]
         }
         Update: {
+          cancelamento_motivo?: string | null
           check_status?: number
           cliente?: string | null
           created_at?: string
