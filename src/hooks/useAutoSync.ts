@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { promoteScheduledAnotaOrders } from "@/lib/anota.functions";
+import { runAnotaMaintenanceNow } from "@/lib/anota.functions";
 import { notifySync, onSync, getLastSync } from "@/lib/anota-sync";
 import { isAutoPromoteEnabled } from "@/lib/sync-toggle";
 import { supabase } from "@/integrations/supabase/client";
@@ -19,7 +19,7 @@ const SYNC_QUERY_KEYS = [
 export function useAutoSync(intervalMs = 30000, debounceMs = 15000) {
   const [lastSync, setLastSync] = useState<string | null>(getLastSync());
   const qc = useQueryClient();
-  const promoteFn = useServerFn(promoteScheduledAnotaOrders);
+  const maintainFn = useServerFn(runAnotaMaintenanceNow);
   const running = useRef(false);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -34,16 +34,19 @@ export function useAutoSync(intervalMs = 30000, debounceMs = 15000) {
       // Invalidação sempre: os dados chegam pelo webhook, não por uma
       // sincronização periódica com a API (descontinuada).
       invalidateAll();
-      if (!isAutoPromoteEnabled()) return;
-      const r = await promoteFn();
-      if (r.ok && r.promovidos > 0) invalidateAll();
+      // Manutenção automática: reaproveita mapeamentos, promove agendados
+      // (se a promoção automática estiver ligada) e aplica baixas pendentes.
+      const r = await maintainFn({ data: { promover: isAutoPromoteEnabled() } });
+      if (r.ok && (r.promovidos > 0 || r.baixasAplicadas > 0 || r.mapeamentosReconciliados > 0)) {
+        invalidateAll();
+      }
       notifySync(new Date().toISOString());
     } catch {
       // silent fail no ciclo automático
     } finally {
       running.current = false;
     }
-  }, [promoteFn, invalidateAll]);
+  }, [maintainFn, invalidateAll]);
 
   const scheduleImmediate = useCallback(() => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);

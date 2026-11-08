@@ -494,7 +494,7 @@ async function revertAnotaOrderStock(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   orderId: string,
-  userId: string,
+  userId: string | null,
 ): Promise<boolean> {
   const { data: order } = await supabase
     .from("anota_orders")
@@ -527,7 +527,7 @@ async function revertAnotaOrderStock(
     quantidade: number;
     destino: string;
     observacoes: string;
-    user_id: string;
+    user_id: string | null;
     ref_order_id: string;
   }[] = [];
   for (const it of itens as {
@@ -612,7 +612,7 @@ async function applyAnotaOrderDetail(
   },
   detail: ParsedOrder,
   mapByRef: Map<string, string | null>,
-  userId: string,
+  userId: string | null,
 ): Promise<ApplyOrderDetailResult> {
   const newCheck = effectiveCheckStatus(detail.raw, detail.check);
   const statusChanged = prev.check_status !== newCheck;
@@ -654,12 +654,44 @@ async function loadComboRecipeRefs(
   return new Set((data ?? []).map((c: { combo_ref: string }) => c.combo_ref));
 }
 
+/** Reconcilia o mapeamento dos itens históricos a partir de anota_product_map.
+ *  Reaproveita os produtos já cadastrados/mapeados na época da API mesmo em
+ *  pedidos importados depois pelo webhook (que podem ter ficado com
+ *  mapeado = false). Idempotente: só toca itens ainda sem produto. */
+async function reconcileAnotaItemMappings(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+): Promise<number> {
+  const { data: maps, error } = await supabase
+    .from("anota_product_map")
+    .select("anota_item_ref, product_id")
+    .not("product_id", "is", null);
+  if (error) {
+    console.error("[reconcileAnotaItemMappings] query error:", error);
+    return 0;
+  }
+  let reconciliados = 0;
+  for (const m of (maps ?? []) as { anota_item_ref: string; product_id: string }[]) {
+    const { error: updErr, count } = await supabase
+      .from("anota_order_items")
+      .update({ product_id: m.product_id, mapeado: true }, { count: "exact" })
+      .eq("anota_item_ref", m.anota_item_ref)
+      .or("mapeado.eq.false,product_id.is.null");
+    if (updErr) {
+      console.error("[reconcileAnotaItemMappings] update error:", updErr);
+      continue;
+    }
+    reconciliados += count ?? 0;
+  }
+  return reconciliados;
+}
+
 /** Reaplica baixa de estoque em pedidos finalizados ainda sem baixa. */
 async function aplicarBaixasPendentes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   comboRecipeRefs: Set<string>,
-  userId: string,
+  userId: string | null,
 ): Promise<number> {
   const { data: pendentes, error: pendentesErr } = await supabase
     .from("anota_orders")
@@ -701,7 +733,7 @@ async function aplicarBaixaSeMapeado(
   supabase: any,
   orderId: string,
   comboRecipeRefs: Set<string>,
-  userId: string,
+  userId: string | null,
 ): Promise<boolean> {
   const { data: itens } = await supabase
     .from("anota_order_items")
@@ -734,7 +766,7 @@ async function processAnotaCancel(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   root: JsonRecord,
-  userId: string,
+  userId: string | null,
 ): Promise<AnotaWebhookResult> {
   const externalId = firstString(root, ["_id", "id", "order_id", "orderId"]) ?? "";
   if (!externalId) return { ok: false, acao: "ignorado", externalId: "", check: 0 };
@@ -800,13 +832,15 @@ async function processAnotaCancel(
  *  external_order_id. Não depende da listagem: é o que garante que pedidos
  *  agendados entrem no ERP mesmo quando o Anota não os expõe no ping/list.
  *
- *  O `userId` é usado apenas em campos de auditoria (sem sessão no webhook,
- *  usa-se um identificador de sistema). */
+ *  O `userId` é usado apenas em campos de auditoria. Sem sessão no webhook
+ *  não há usuário real, então usamos `null` (as colunas user_id são uuid e
+ *  nullable; um identificador textual como "anota_webhook" faria o RPC e o
+ *  insert de movements falharem silenciosamente, deixando o pedido sem baixa). */
 export async function processAnotaWebhookOrder(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   payload: unknown,
-  userId = "anota_webhook",
+  userId: string | null = null,
 ): Promise<AnotaWebhookResult> {
   const root = asRecord(payload);
 
@@ -965,6 +999,30 @@ export interface PromoteScheduledResult {
   promovidos: number;
 }
 
+export interface AnotaMaintenanceResult {
+  ok: boolean;
+  message: string;
+  promovidos: number;
+  baixasAplicadas: number;
+  mapeamentosReconciliados: number;
+}
+
+/** Rotina de manutenção do Anota AI (idempotente): reaproveita mapeamentos
+ *  históricos, promove agendados vencidos e aplica baixas pendentes de
+ *  pedidos finalizados. Usada pelo auto-sync do app e pelo cron (pg_cron). */
+export async function runAnotaMaintenance(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  userId: string | null,
+  promover = true,
+): Promise<Omit<AnotaMaintenanceResult, "ok" | "message">> {
+  const mapeamentosReconciliados = await reconcileAnotaItemMappings(supabase);
+  const promovidos = promover ? await promoteExpiredScheduledOrders(supabase) : 0;
+  const comboRecipeRefs = await loadComboRecipeRefs(supabase);
+  const baixasAplicadas = await aplicarBaixasPendentes(supabase, comboRecipeRefs, userId);
+  return { promovidos, baixasAplicadas, mapeamentosReconciliados };
+}
+
 /** Server function: o próprio ERP move os agendados vencidos para produção. */
 export const promoteScheduledAnotaOrders = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -978,6 +1036,30 @@ export const promoteScheduledAnotaOrders = createServerFn({ method: "POST" })
           ? `${promovidos} pedido(s) agendado(s) promovido(s) para produção.`
           : "Nenhum pedido agendado venceu ainda.",
       promovidos,
+    };
+  });
+
+/** Server function: rotina automática (chamada pelo auto-sync a cada ciclo).
+ *  Reaproveita mapeamentos antigos + aplica baixas pendentes + promove agendados. */
+export const runAnotaMaintenanceNow = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: { promover?: boolean } | undefined) => input ?? {})
+  .handler(async ({ context, data }): Promise<AnotaMaintenanceResult> => {
+    await ensureRole(context);
+    const result = await runAnotaMaintenance(
+      context.supabase,
+      context.userId,
+      data?.promover !== false,
+    );
+    const partes: string[] = [];
+    if (result.mapeamentosReconciliados > 0)
+      partes.push(`${result.mapeamentosReconciliados} item(ns) remapeado(s)`);
+    if (result.promovidos > 0) partes.push(`${result.promovidos} agendado(s) promovido(s)`);
+    if (result.baixasAplicadas > 0) partes.push(`${result.baixasAplicadas} baixa(s) aplicada(s)`);
+    return {
+      ok: true,
+      message: partes.length > 0 ? `Manutenção Anota AI: ${partes.join(", ")}.` : "Nada a fazer.",
+      ...result,
     };
   });
 
@@ -1113,6 +1195,7 @@ export const saveAnotaMapping = createServerFn({ method: "POST" })
     }
 
     // Reaplica baixa para pedidos finalizados agora completamente mapeados
+    await reconcileAnotaItemMappings(supabase);
     const comboRecipeRefs = await loadComboRecipeRefs(supabase);
     const baixasAplicadas = await aplicarBaixasPendentes(supabase, comboRecipeRefs, context.userId);
 
@@ -1149,16 +1232,20 @@ export interface AplicarBaixasPendentesResult {
   ok: boolean;
   message: string;
   baixasAplicadas: number;
+  mapeamentosReconciliados: number;
 }
 
 /** Aplica baixa de estoque em todos os pedidos finalizados (check_status=3) que ainda não têm estoque_aplicado=true.
- *  Útil para corrigir pedidos que ficaram sem baixa porque os itens não estavam mapeados quando o pedido foi finalizado. */
+ *  Reaproveita os mapeamentos de anota_product_map antes de debitar, corrigindo
+ *  pedidos que ficaram sem baixa porque os itens não estavam mapeados quando
+ *  o pedido foi finalizado. */
 export const aplicarBaixasPendentesAnota = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }): Promise<AplicarBaixasPendentesResult> => {
     await ensureRole(context);
     const supabase = context.supabase;
 
+    const mapeamentosReconciliados = await reconcileAnotaItemMappings(supabase);
     const comboRecipeRefs = await loadComboRecipeRefs(supabase);
     const baixasAplicadas = await aplicarBaixasPendentes(supabase, comboRecipeRefs, context.userId);
 
@@ -1166,9 +1253,14 @@ export const aplicarBaixasPendentesAnota = createServerFn({ method: "POST" })
       ok: true,
       message:
         baixasAplicadas > 0
-          ? `${baixasAplicadas} pedido(s) finalizado(s) tiveram baixa de estoque aplicada.`
+          ? `${baixasAplicadas} pedido(s) finalizado(s) tiveram baixa de estoque aplicada${
+              mapeamentosReconciliados > 0
+                ? ` (${mapeamentosReconciliados} item(ns) remapeado(s))`
+                : ""
+            }.`
           : "Nenhum pedido finalizado pendente de baixa encontrado.",
       baixasAplicadas,
+      mapeamentosReconciliados,
     };
   });
 
@@ -1211,6 +1303,7 @@ export const saveAnotaCombo = createServerFn({ method: "POST" })
       }
     }
 
+    await reconcileAnotaItemMappings(supabase);
     const comboRecipeRefs = await loadComboRecipeRefs(supabase);
     const baixasAplicadas = await aplicarBaixasPendentes(supabase, comboRecipeRefs, context.userId);
 

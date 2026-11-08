@@ -31,6 +31,7 @@ import { Route as AuthenticatedRecheiosRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedRelatorioProducaoRouteImport } from './routes/_authenticated/relatorio-producao'
 import { Route as AuthenticatedRelatoriosRouteImport } from './routes/_authenticated/relatorios'
 import { Route as AuthenticatedSaidasRouteImport } from './routes/_authenticated/saidas'
+import { Route as ApiAnotaMaintenanceRouteImport } from './routes/api/anota-maintenance'
 import { Route as ApiAnotaWebhookRouteImport } from './routes/api/anota-webhook'
 import { Route as ApiWhatsappWebhookRouteImport } from './routes/api/whatsapp-webhook'
 import { Route as AuthenticatedConfiguracaoEmailRouteImport } from './routes/_authenticated/configuracao/email'
@@ -151,6 +152,11 @@ const AuthenticatedSaidasRoute = AuthenticatedSaidasRouteImport.update({
   path: '/saidas',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const ApiAnotaMaintenanceRoute = ApiAnotaMaintenanceRouteImport.update({
+  id: '/api/anota-maintenance',
+  path: '/api/anota-maintenance',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAnotaWebhookRoute = ApiAnotaWebhookRouteImport.update({
   id: '/api/anota-webhook',
   path: '/api/anota-webhook',
@@ -202,6 +208,7 @@ export interface FileRoutesByFullPath {
   '/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
   '/relatorios': typeof AuthenticatedRelatoriosRoute
   '/saidas': typeof AuthenticatedSaidasRoute
+  '/api/anota-maintenance': typeof ApiAnotaMaintenanceRoute
   '/api/anota-webhook': typeof ApiAnotaWebhookRoute
   '/api/whatsapp-webhook': typeof ApiWhatsappWebhookRoute
   '/configuracao/email': typeof AuthenticatedConfiguracaoEmailRoute
@@ -230,6 +237,7 @@ export interface FileRoutesByTo {
   '/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
   '/relatorios': typeof AuthenticatedRelatoriosRoute
   '/saidas': typeof AuthenticatedSaidasRoute
+  '/api/anota-maintenance': typeof ApiAnotaMaintenanceRoute
   '/api/anota-webhook': typeof ApiAnotaWebhookRoute
   '/api/whatsapp-webhook': typeof ApiWhatsappWebhookRoute
   '/configuracao/email': typeof AuthenticatedConfiguracaoEmailRoute
@@ -260,6 +268,7 @@ export interface FileRoutesById {
   '/_authenticated/relatorio-producao': typeof AuthenticatedRelatorioProducaoRoute
   '/_authenticated/relatorios': typeof AuthenticatedRelatoriosRoute
   '/_authenticated/saidas': typeof AuthenticatedSaidasRoute
+  '/api/anota-maintenance': typeof ApiAnotaMaintenanceRoute
   '/api/anota-webhook': typeof ApiAnotaWebhookRoute
   '/api/whatsapp-webhook': typeof ApiWhatsappWebhookRoute
   '/_authenticated/configuracao/email': typeof AuthenticatedConfiguracaoEmailRoute
@@ -290,6 +299,7 @@ export interface FileRouteTypes {
     | '/relatorio-producao'
     | '/relatorios'
     | '/saidas'
+    | '/api/anota-maintenance'
     | '/api/anota-webhook'
     | '/api/whatsapp-webhook'
     | '/configuracao/email'
@@ -318,6 +328,7 @@ export interface FileRouteTypes {
     | '/relatorio-producao'
     | '/relatorios'
     | '/saidas'
+    | '/api/anota-maintenance'
     | '/api/anota-webhook'
     | '/api/whatsapp-webhook'
     | '/configuracao/email'
@@ -347,6 +358,7 @@ export interface FileRouteTypes {
     | '/_authenticated/relatorio-producao'
     | '/_authenticated/relatorios'
     | '/_authenticated/saidas'
+    | '/api/anota-maintenance'
     | '/api/anota-webhook'
     | '/api/whatsapp-webhook'
     | '/_authenticated/configuracao/email'
@@ -359,6 +371,7 @@ export interface RootRouteChildren {
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
   QuiosqueRoute: typeof QuiosqueRoute
+  ApiAnotaMaintenanceRoute: typeof ApiAnotaMaintenanceRoute
   ApiAnotaWebhookRoute: typeof ApiAnotaWebhookRoute
   ApiWhatsappWebhookRoute: typeof ApiWhatsappWebhookRoute
 }
@@ -519,6 +532,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSaidasRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/api/anota-maintenance': {
+      id: '/api/anota-maintenance'
+      path: '/api/anota-maintenance'
+      fullPath: '/api/anota-maintenance'
+      preLoaderRoute: typeof ApiAnotaMaintenanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/anota-webhook': {
       id: '/api/anota-webhook'
       path: '/api/anota-webhook'
@@ -627,19 +647,10 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRoute,
   QuiosqueRoute: QuiosqueRoute,
+  ApiAnotaMaintenanceRoute: ApiAnotaMaintenanceRoute,
   ApiAnotaWebhookRoute: ApiAnotaWebhookRoute,
   ApiWhatsappWebhookRoute: ApiWhatsappWebhookRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
