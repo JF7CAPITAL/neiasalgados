@@ -30,6 +30,7 @@ import {
   saveAnotaMapping,
   saveAnotaCombo,
   ANOTA_CHECK_LABELS,
+  aplicarBaixasPendentesAnota,
 } from "@/lib/anota.functions";
 import {
   testWhatsAppConnection,
@@ -179,6 +180,7 @@ function AnotaPage() {
   const reprocessFn = useServerFn(reprocessAnotaWebhookFailures);
   const saveMapFn = useServerFn(saveAnotaMapping);
   const saveComboFn = useServerFn(saveAnotaCombo);
+  const aplicarBaixasFn = useServerFn(aplicarBaixasPendentesAnota);
   const whatsSettingsFn = useServerFn(getWhatsAppSettings);
   const saveWhatsSettingsFn = useServerFn(saveWhatsAppSettings);
   const getNotifsFn = useServerFn(getWhatsAppNotifications);
@@ -720,6 +722,18 @@ function AnotaPage() {
       qc.invalidateQueries({ queryKey: ["anota-items"] });
       qc.invalidateQueries({ queryKey: ["anota-orders"] });
       qc.invalidateQueries({ queryKey: ["stock"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const aplicarBaixas = useMutation({
+    mutationFn: () => aplicarBaixasFn(),
+    onSuccess: (r) => {
+      if (r.ok) toast.success(r.message);
+      else toast.error(r.message);
+      qc.invalidateQueries({ queryKey: ["anota-orders"] });
+      qc.invalidateQueries({ queryKey: ["stock"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -2061,6 +2075,27 @@ function AnotaPage() {
             <Button variant="outline" onClick={() => setKpiDialog(null)}>
               Fechar
             </Button>
+            {finalizadosSemBaixa > 0 && (
+              <Button
+                onClick={() => {
+                  aplicarBaixas.mutate();
+                  setKpiDialog(null);
+                }}
+                disabled={aplicarBaixas.isPending}
+              >
+                {aplicarBaixas.isPending ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    Aplicando baixas...
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="mr-2 size-4" />
+                    Aplicar baixas pendentes
+                  </>
+                )}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>

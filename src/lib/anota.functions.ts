@@ -1145,6 +1145,33 @@ export interface SaveComboResult {
   baixasAplicadas: number;
 }
 
+export interface AplicarBaixasPendentesResult {
+  ok: boolean;
+  message: string;
+  baixasAplicadas: number;
+}
+
+/** Aplica baixa de estoque em todos os pedidos finalizados (check_status=3) que ainda não têm estoque_aplicado=true.
+ *  Útil para corrigir pedidos que ficaram sem baixa porque os itens não estavam mapeados quando o pedido foi finalizado. */
+export const aplicarBaixasPendentesAnota = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }): Promise<AplicarBaixasPendentesResult> => {
+    await ensureRole(context);
+    const supabase = context.supabase;
+
+    const comboRecipeRefs = await loadComboRecipeRefs(supabase);
+    const baixasAplicadas = await aplicarBaixasPendentes(supabase, comboRecipeRefs, context.userId);
+
+    return {
+      ok: true,
+      message:
+        baixasAplicadas > 0
+          ? `${baixasAplicadas} pedido(s) finalizado(s) tiveram baixa de estoque aplicada.`
+          : "Nenhum pedido finalizado pendente de baixa encontrado.",
+      baixasAplicadas,
+    };
+  });
+
 /** Salva a composição (produtos + quantidades) de combos/itens do Anota AI. */
 export const saveAnotaCombo = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
